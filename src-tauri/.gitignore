@@ -1,0 +1,6 @@
+/target/
+/gen/schemas/
+# TTS binaries + voice models are fetched by `npm run fetch:tts` /
+# `scripts/fetch-tts.sh` (large blobs)
+/resources/tts/
+/resources/tts-linux/

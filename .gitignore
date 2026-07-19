@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.DS_Store
+*.log
+!fixtures/**/*.log
+# the website ships a copy of the big installers
+site/*.exe
+site/*.AppImage
+site/*.deb

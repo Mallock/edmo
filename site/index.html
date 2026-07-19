@@ -1,0 +1,530 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ED Mission Operator — a mission HUD with a voice, for Elite Dangerous</title>
+<meta name="description" content="Free always-on-top mission HUD for Elite Dangerous: live journal-driven mission tracking, a proactive AI operator with offline neural voices, trade & exobiology leads, and a space-opera chronicle of your career. 100% local, no cloud.">
+<link rel="icon" href="img/favicon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Michroma&family=Saira:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:oklch(0.16 0.028 255);
+  --bg-deep:oklch(0.13 0.025 255);
+  --panel:oklch(0.20 0.032 255);
+  --line:oklch(0.32 0.035 255);
+  --text:oklch(0.90 0.012 250);
+  --dim:oklch(0.68 0.025 250);
+  --amber:oklch(0.78 0.135 70);
+  --amber-deep:oklch(0.66 0.13 65);
+  --cyan:oklch(0.80 0.09 220);
+  --green:oklch(0.78 0.14 150);
+  --ink:oklch(0.17 0.03 70);
+  --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px;
+  --space-6:24px; --space-8:32px; --space-12:48px; --space-16:64px; --space-24:96px;
+}
+*{box-sizing:border-box;margin:0;padding:0;min-width:0}
+html{scroll-behavior:smooth;font-size:clamp(16px, 15px + 0.35vw, 18px)}
+body{
+  background:var(--bg);
+  color:var(--text);
+  font-family:"Saira",system-ui,sans-serif;
+  font-weight:400;
+  line-height:1.7;
+  letter-spacing:0.01em;
+  overflow-x:hidden;
+}
+h1,h2,h3,.disp{font-family:"Michroma",sans-serif;font-weight:400;line-height:1.3}
+.mono{font-family:"Cascadia Mono",Consolas,monospace}
+a{color:var(--cyan)}
+img{max-width:100%;height:auto;display:block}
+.wrap{max-width:1100px;margin:0 auto;padding:0 clamp(16px,4vw,40px)}
+
+/* ---- top status strip (mimics the HUD footer) ---- */
+.strip{
+  border-bottom:1px solid var(--line);
+  background:var(--bg-deep);
+  font-size:0.8rem;
+  letter-spacing:0.12em;
+  text-transform:uppercase;
+  color:var(--dim);
+}
+.strip .wrap{display:flex;gap:var(--space-4) var(--space-6);align-items:center;padding-top:12px;padding-bottom:12px;flex-wrap:wrap}
+.strip b{color:var(--amber);font-weight:500}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 6px var(--green);margin-right:6px;vertical-align:1px}
+.strip nav{margin-left:auto;display:flex;gap:var(--space-4)}
+.strip nav a{color:var(--dim);text-decoration:none;padding:4px 0}
+.strip nav a:hover{color:var(--amber)}
+@media (max-width:560px){.strip nav{margin-left:0}}
+
+/* ---- hero ---- */
+.hero{padding:clamp(40px,8vw,100px) 0 var(--space-16)}
+.hero .wrap{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,0.9fr);gap:clamp(28px,5vw,64px);align-items:center}
+@media (max-width:860px){.hero .wrap{grid-template-columns:minmax(0,1fr)}}
+.kicker{
+  font-size:0.8rem;letter-spacing:0.24em;text-transform:uppercase;color:var(--cyan);
+  margin-bottom:var(--space-4)
+}
+.kicker::before{content:"▸ ";color:var(--amber)}
+h1{font-size:clamp(1.9rem,5vw,3.2rem);letter-spacing:0.02em;color:var(--text)}
+h1 em{font-style:normal;color:var(--amber)}
+.lede{margin-top:var(--space-6);font-size:clamp(1.05rem,1.8vw,1.25rem);color:var(--dim);max-width:54ch}
+.lede b{color:var(--text);font-weight:500}
+.cta-row{margin-top:var(--space-8);display:flex;gap:var(--space-4) var(--space-6);align-items:center;flex-wrap:wrap}
+.dl{
+  display:inline-block;background:var(--amber);color:var(--ink);
+  font-family:"Michroma",sans-serif;font-size:1rem;letter-spacing:0.05em;
+  padding:18px 30px;text-decoration:none;
+  border:1px solid var(--amber-deep);
+  transition:transform .15s cubic-bezier(.22,1,.36,1),box-shadow .15s;
+}
+.dl:hover{transform:translateY(-2px);box-shadow:0 6px 24px oklch(0.78 0.135 70 / 0.25)}
+.dl small{display:block;font-family:"Saira",sans-serif;font-size:0.78rem;letter-spacing:0.06em;margin-top:5px;opacity:0.8;overflow-wrap:anywhere}
+.cta-note{font-size:0.92rem;color:var(--dim);max-width:28ch;line-height:1.55}
+@media (max-width:560px){
+  .dl{display:block;width:100%;text-align:center}
+  .cta-note{max-width:none}
+}
+
+/* framed screenshot */
+.shot{position:relative;padding:10px}
+.shot a{display:block}
+.shot img{width:100%;border:1px solid var(--line)}
+.shot::before,.shot::after{content:"";position:absolute;width:28px;height:28px;pointer-events:none}
+.shot::before{top:0;left:0;border-top:2px solid var(--amber);border-left:2px solid var(--amber)}
+.shot::after{bottom:0;right:0;border-bottom:2px solid var(--amber);border-right:2px solid var(--amber)}
+.shot figcaption{
+  font-size:0.8rem;letter-spacing:0.12em;text-transform:uppercase;color:var(--dim);
+  padding-top:var(--space-3);line-height:1.5
+}
+.shot figcaption b{color:var(--cyan);font-weight:500}
+.zoom-hint{color:oklch(0.5 0.03 250);text-transform:none;letter-spacing:0.02em}
+
+/* ---- sections ---- */
+section{padding:var(--space-16) 0}
+.sec-label{
+  display:flex;align-items:baseline;gap:var(--space-4);
+  border-bottom:1px solid var(--line);
+  padding-bottom:var(--space-3);margin-bottom:var(--space-8);
+  flex-wrap:wrap;
+}
+.sec-label .idx{font-family:"Michroma",sans-serif;color:var(--amber);font-size:0.95rem}
+.sec-label h2{font-size:clamp(1.2rem,2.8vw,1.65rem);letter-spacing:0.07em;text-transform:uppercase}
+.sec-label .tail{margin-left:auto;font-size:0.75rem;letter-spacing:0.18em;color:var(--dim);text-transform:uppercase}
+@media (max-width:560px){.sec-label .tail{display:none}}
+
+/* feature manifest */
+.manifest{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr));gap:var(--space-8) var(--space-12)}
+.mi{display:grid;grid-template-columns:auto minmax(0,1fr);gap:var(--space-4)}
+.mi .n{font-family:"Michroma",sans-serif;color:var(--amber);font-size:0.9rem;padding-top:5px}
+.mi h3{font-size:1.08rem;letter-spacing:0.04em;margin-bottom:var(--space-2);color:var(--text)}
+.mi p{font-size:1rem;color:var(--dim);max-width:52ch}
+.mi p b{color:var(--text);font-weight:500}
+
+/* gallery — screenshots at generous size */
+.gallery{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,400px),1fr));gap:var(--space-12) var(--space-8);align-items:start;justify-items:center}
+.gallery .shot{max-width:480px;width:100%}
+
+/* requirements readout */
+.readout{
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,230px),1fr));
+  border:1px solid var(--line);background:var(--panel);
+}
+.readout div{padding:var(--space-6);border:1px solid oklch(0.32 0.035 255 / 0.4)}
+.readout dt{font-size:0.75rem;letter-spacing:0.18em;text-transform:uppercase;color:var(--cyan);margin-bottom:var(--space-2)}
+.readout dd{font-size:1rem;color:var(--text)}
+.readout dd small{display:block;color:var(--dim);font-size:0.88rem;margin-top:3px}
+
+/* install steps */
+.steps{counter-reset:step;max-width:76ch}
+.step{
+  display:grid;grid-template-columns:auto minmax(0,1fr);gap:var(--space-6);
+  padding:var(--space-8) 0;
+}
+.step + .step{border-top:1px solid oklch(0.32 0.035 255 / 0.5)}
+.step::before{
+  counter-increment:step;content:counter(step,decimal-leading-zero);
+  font-family:"Michroma",sans-serif;font-size:1.6rem;color:var(--amber);
+  padding-top:2px;
+}
+@media (max-width:560px){.step{gap:var(--space-4)}.step::before{font-size:1.25rem}}
+.step h3{font-size:1.18rem;letter-spacing:0.03em;margin-bottom:var(--space-3)}
+.step p{color:var(--dim);font-size:1.02rem;max-width:62ch;margin-bottom:var(--space-3)}
+.step p:last-child{margin-bottom:0}
+.step p b,.step li b{color:var(--text);font-weight:500}
+.step .aside{
+  border:1px solid oklch(0.78 0.135 70 / 0.4);background:oklch(0.78 0.135 70 / 0.06);
+  padding:var(--space-4) var(--space-6);font-size:1rem;color:var(--text);
+  margin:var(--space-4) 0;
+}
+.step .aside .t{font-size:0.75rem;letter-spacing:0.18em;text-transform:uppercase;color:var(--amber);display:block;margin-bottom:var(--space-2)}
+.step ul{list-style:none;margin:var(--space-3) 0}
+.step ul li{padding:6px 0 6px 24px;position:relative;color:var(--dim);font-size:1rem}
+.step ul li::before{content:"▸";position:absolute;left:2px;color:var(--cyan)}
+kbd{
+  font-family:"Cascadia Mono",Consolas,monospace;font-size:0.85em;
+  border:1px solid var(--line);background:var(--bg-deep);
+  padding:3px 8px;border-radius:4px;color:var(--cyan);white-space:nowrap;
+}
+
+/* shortcuts table */
+table{border-collapse:collapse;width:100%;max-width:680px;font-size:1rem}
+th{font-size:0.75rem;letter-spacing:0.18em;text-transform:uppercase;color:var(--cyan);text-align:left;padding:0 var(--space-4) var(--space-3) 0;font-weight:500}
+td{padding:11px var(--space-4) 11px 0;border-top:1px solid oklch(0.32 0.035 255 / 0.5);color:var(--dim)}
+td:first-child{white-space:nowrap}
+@media (max-width:480px){td:first-child{white-space:normal}}
+
+/* privacy / faq */
+.twocol{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr));gap:var(--space-12)}
+.qa{margin-bottom:var(--space-6)}
+.qa h3{font-size:1.05rem;letter-spacing:0.03em;color:var(--text);margin-bottom:var(--space-2)}
+.qa p{font-size:1rem;color:var(--dim);max-width:56ch}
+.qa p b{color:var(--text);font-weight:500}
+.priv{border:1px solid var(--line);background:var(--panel);padding:var(--space-8)}
+.priv h3{font-size:0.9rem;letter-spacing:0.16em;text-transform:uppercase;color:var(--green);margin-bottom:var(--space-4)}
+.priv ul{list-style:none}
+.priv li{padding:8px 0 8px 26px;position:relative;font-size:1rem;color:var(--dim)}
+.priv li::before{content:"●";position:absolute;left:2px;color:var(--green);font-size:0.65rem;top:15px}
+.priv li b{color:var(--text);font-weight:500}
+
+/* footer */
+footer{
+  margin-top:var(--space-16);border-top:1px solid var(--line);background:var(--bg-deep);
+  font-size:0.8rem;letter-spacing:0.12em;text-transform:uppercase;color:var(--dim);
+}
+footer .wrap{display:flex;gap:var(--space-4) var(--space-6);align-items:center;padding-top:16px;padding-bottom:16px;flex-wrap:wrap}
+footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif}
+</style>
+</head>
+<body>
+
+<div class="strip">
+  <div class="wrap">
+    <span><b>ED MISSION OPERATOR</b></span>
+    <span>v0.2.0 · Windows 10/11 · Linux beta</span>
+    <span><span class="dot"></span>100% local</span>
+    <nav>
+      <a href="#features">Features</a>
+      <a href="#install">Install</a>
+      <a href="#privacy">Privacy</a>
+    </nav>
+  </div>
+</div>
+
+<header class="hero">
+  <div class="wrap">
+    <div>
+      <p class="kicker">A companion tool for Elite Dangerous commanders</p>
+      <h1>A mission HUD<br>with a <em>voice</em>.</h1>
+      <p class="lede">
+        A small always-on-top panel that reads your Player Journal live: mission cards with
+        objectives and timers, a <b>proactive operator</b> that nudges you when you stall,
+        an <b>AI wingman</b> answering over local neural voices, trade and exobiology leads,
+        a space-opera chronicle written from what you actually did — and now a
+        <b>long-term memory</b>: it remembers your factions, your records and your close calls
+        across sessions. You can even <b>talk to it</b> — hold a key, speak, and it answers out
+        loud, remembering the conversation. <b>Everything runs on your machine.</b>
+      </p>
+      <div class="cta-row">
+        <a class="dl" href="ED-Mission-Operator-0.2.0-setup.exe" download>
+          ⬇ DOWNLOAD FOR WINDOWS
+          <small>ED-Mission-Operator-0.2.0-setup.exe · 131 MB · no admin needed</small>
+        </a>
+        <p class="cta-note">Free hobby project. Two offline voices included. AI features optional.</p>
+        <p class="cta-note">🐧 <b>Linux beta:</b>
+          <a href="ED-Mission-Operator-0.2.0-amd64.deb" download style="color:var(--amber)">.deb (147 MB)</a>
+          ·
+          <a href="ED-Mission-Operator-0.2.0-x86_64.AppImage" download style="color:var(--amber)">AppImage (212 MB)</a>
+          — journals auto-detected from the Steam Proton prefix; X11 recommended
+          (global hotkeys don't exist on Wayland); screen glances are Windows-only for now.
+          Fresh out of the forge — reports welcome. AppImage users: install an emoji font
+          (<span class="mono">fonts-noto-color-emoji</span>) if the buttons look empty.</p>
+      </div>
+    </div>
+    <figure class="shot">
+      <a href="img/hud-missions.png" target="_blank" rel="noopener">
+        <img src="img/hud-missions.png" alt="The Mission Operator HUD showing four active missions, an assassination card with objectives and a live countdown" width="436" height="689">
+      </a>
+      <figcaption><b>Live</b> — four missions restored from the journal <span class="zoom-hint">· click to enlarge</span></figcaption>
+    </figure>
+  </div>
+</header>
+
+<section id="features">
+  <div class="wrap">
+    <div class="sec-label"><span class="idx">01</span><h2>What it does</h2><span class="tail">module manifest</span></div>
+    <div class="manifest">
+      <div class="mi"><span class="n">A</span><div>
+        <h3>Live mission tracking</h3>
+        <p>Reads the game's own journal files as you play. Cards show category, destination,
+        reward, <b>kill and cargo counters</b>, gift commodities for VIPs, and a synthesized
+        objective checklist the game never gives you — with live expiry timers.</p>
+      </div></div>
+      <div class="mi"><span class="n">B</span><div>
+        <h3>Proactive heartbeat</h3>
+        <p>The operator notices when you stall: docked too long with hand-ins waiting, parked in a
+        kill system without engaging, a contract about to expire. It tells you — <b>out loud</b> —
+        and names the actual RES site or Nav Beacon it detected in-system. It keeps a miner
+        company too: a greeting when you drop onto a ring, <b>"that one's worth the limpets"</b>
+        on rich rocks, and tonnage milestones as the refinery fills — quietly, on strict
+        cooldowns.</p>
+      </div></div>
+      <div class="mi"><span class="n">C</span><div>
+        <h3>AI operator <span style="color:var(--dim);font-size:0.82em">(optional)</span></h3>
+        <p>Hook up the free <b>LM Studio</b> and ask anything — "what should I do first?" gets an
+        answer grounded in your real missions, system intel and expiry order. A built-in advisor
+        reads your PC's RAM and GPU and tells you which models actually fit.</p>
+      </div></div>
+      <div class="mi"><span class="n">D</span><div>
+        <h3>Offline neural voices</h3>
+        <p>Two bundled Piper voices speak briefings, warnings and stories — <b>no cloud, ever</b>.
+        Six more voices are a one-click download away. Text never leaves your machine.</p>
+      </div></div>
+      <div class="mi"><span class="n">E</span><div>
+        <h3>Trade &amp; exobio leads</h3>
+        <p>Every commodities market you open is remembered; when a buy-low / sell-high spread
+        clears your threshold, a dismissible <b>trade lead card</b> appears. Same for planets with
+        <b>bio signals you haven't sampled</b> — unclaimed Vista Genomics money, tracked. An
+        <b>opt-in route planner</b> (community data via Spansh) finds profitable multi-hop runs
+        from your current station, sized to your actual cargo hold — and keeps the <b>next
+        waypoint on your clipboard</b>: jump in, and the following system is already copied for a
+        quick Ctrl+V in the galaxy map.</p>
+      </div></div>
+      <div class="mi"><span class="n">F</span><div>
+        <h3>The Saga</h3>
+        <p>When you log off, the operator narrates your session as a numbered <b>space-opera
+        episode</b> — real events, real credits, real names, with continuity from the previous
+        chapter and a cliffhanger for the next. Plus in-flight scuttlebutt about your passengers
+        and the places on your route.</p>
+      </div></div>
+      <div class="mi"><span class="n">G</span><div>
+        <h3>A memory <span style="color:var(--dim);font-size:0.82em">(new in 0.2)</span></h3>
+        <p>The operator <b>remembers you across sessions</b>: your history with every faction,
+        every system you've visited (and where you lost a ship), personal records — richest
+        contract, biggest bounty, best session. It brings memories up at the right moment
+        ("that's your best session ever") and stays quiet the rest of the time — strict cooldowns
+        make chatter-flooding impossible. On its first run it reads your recent journals, so it
+        knows you from day one.</p>
+      </div></div>
+      <div class="mi"><span class="n">H</span><div>
+        <h3>Eyes <span style="color:var(--dim);font-size:0.82em">(optional, off by default)</span></h3>
+        <p>With a vision-capable model in LM Studio, the operator can occasionally <b>glance at
+        your screen</b> and understand what you're doing — even in situations the journal doesn't
+        record. It speaks only when it sees something genuinely worth reacting to. The screenshot
+        travels only to your own machine's LM endpoint and is never saved.</p>
+      </div></div>
+      <div class="mi"><span class="n">I</span><div>
+        <h3>Ears <span style="color:var(--dim);font-size:0.82em">(optional, off by default)</span></h3>
+        <p><b>Talk to it.</b> Hold <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>Space</kbd> — even with
+        the game in focus — speak, release, and the operator answers out loud. Speech recognition
+        runs on a local Whisper model (a one-time download on your click); your voice never
+        leaves the machine. And it holds the thread: <i>"and how far is that?"</i> works, because
+        the operator remembers what it just told you — including its own stories and warnings.</p>
+      </div></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-label"><span class="idx">02</span><h2>On screen</h2><span class="tail">flight recordings — click any shot to enlarge</span></div>
+    <div class="gallery">
+      <figure class="shot">
+        <a href="img/hud-operator.png" target="_blank" rel="noopener">
+          <img src="img/hud-operator.png" alt="The operator feed showing heartbeat nudges about hunting grounds and a streaming AI answer" loading="lazy">
+        </a>
+        <figcaption><b>Operator feed</b> — a community goal &amp; a live AI answer</figcaption>
+      </figure>
+      <figure class="shot">
+        <a href="img/hud-settings.png" target="_blank" rel="noopener">
+          <img src="img/hud-settings.png" alt="Settings panel showing detected machine specs and an AI model recommendation" loading="lazy">
+        </a>
+        <figcaption><b>Settings</b> — model advisor &amp; the offline voice catalog</figcaption>
+      </figure>
+      <figure class="shot">
+        <a href="img/hud-missions.png" target="_blank" rel="noopener">
+          <img src="img/hud-missions.png" alt="Mission card with redirected assassination, hand-in station and completed objectives" loading="lazy">
+        </a>
+        <figcaption><b>Mission cards</b> — objectives the game never shows</figcaption>
+      </figure>
+      <figure class="shot">
+        <a href="img/hud-memory.png" target="_blank" rel="noopener">
+          <img src="img/hud-memory.png" alt="The operator answering 'What do you remember about me?' from its long-term memory, then distilling the session into new memories and taking a screen glance" loading="lazy">
+        </a>
+        <figcaption><b>The memory</b> — ask it what it remembers about you</figcaption>
+      </figure>
+      <figure class="shot">
+        <a href="img/hud-memory-settings.png" target="_blank" rel="noopener">
+          <img src="img/hud-memory-settings.png" alt="Settings section for operator memory and sight: remembered systems, factions and missions, distill and forget buttons, screen glance controls" loading="lazy">
+        </a>
+        <figcaption><b>Memory &amp; sight</b> — your history, one local file, one forget button</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-label"><span class="idx">03</span><h2>Requirements</h2><span class="tail">pre-flight</span></div>
+    <dl class="readout">
+      <div><dt>System</dt><dd>Windows 10 / 11, 64-bit<small>installs per-user — no admin rights · Linux beta: Ubuntu/Debian-family .deb, X11 recommended</small></dd></div>
+      <div><dt>Game</dt><dd>Elite Dangerous (any edition)<small>run in Borderless window mode</small></dd></div>
+      <div><dt>Disk</dt><dd>≈ 400 MB<small>app + two offline voices</small></dd></div>
+      <div><dt>For the AI (optional)</dt><dd>LM Studio, free<small>any GPU helps; the app advises what fits</small></dd></div>
+    </dl>
+  </div>
+</section>
+
+<section id="install">
+  <div class="wrap">
+    <div class="sec-label"><span class="idx">04</span><h2>Installation — step by step</h2><span class="tail">novice friendly</span></div>
+    <div class="steps">
+
+      <div class="step"><div>
+        <h3>Download the installer</h3>
+        <p>Click the download button above — you get a single file,
+        <span class="mono">ED-Mission-Operator-0.2.0-setup.exe</span> (about 131&nbsp;MB — it
+        carries the offline voices). Your browser may ask where to save it; Downloads is fine.</p>
+      </div></div>
+
+      <div class="step"><div>
+        <h3>Run it — and get past the blue warning</h3>
+        <p>Double-click the downloaded file. Windows will very likely show a blue
+        <b>"Windows protected your PC"</b> screen. That's SmartScreen being cautious about a small
+        hobby app that isn't code-signed — not a virus detection.</p>
+        <div class="aside">
+          <span class="t">SmartScreen — what to click</span>
+          Click <b>"More info"</b> (small text, middle of the dialog) → then the
+          <b>"Run anyway"</b> button appears. Click it.
+        </div>
+        <p>The installer needs no choices and no administrator password — it installs only for
+        your user account and starts the app when done.</p>
+      </div></div>
+
+      <div class="step"><div>
+        <h3>Meet the HUD</h3>
+        <p>A small dark panel appears and floats above other windows — that's the operator.
+        Drag it by its title bar to wherever suits your cockpit. It reads
+        <b>"Journal connected"</b> at the bottom when it has found your game files (automatic —
+        no setup needed if Elite has ever run on this PC).</p>
+      </div></div>
+
+      <div class="step"><div>
+        <h3>Start Elite Dangerous — in Borderless mode</h3>
+        <p>In the game: <b>Options → Graphics → Display → Borderless</b> (a true Fullscreen
+        display hides all overlays — this is a Windows rule, not the app's). Your active missions
+        appear on the HUD by themselves; accept a new one at any mission board and the operator
+        will introduce it, out loud.</p>
+      </div></div>
+
+      <div class="step"><div>
+        <h3>Optional — give the operator a brain (the AI)</h3>
+        <p>Everything above works without this. For AI answers and richer stories, install the
+        free <b>LM Studio</b> from <a href="https://lmstudio.ai" rel="noopener">lmstudio.ai</a>,
+        then inside LM Studio:</p>
+        <ul>
+          <li>Open the <b>Discover</b> (magnifying glass) tab and download a model:</li>
+          <li>Modest PC / 4–6 GB graphics card → <b>Gemma 4 E4B</b></li>
+          <li>Gaming PC / 8–16 GB graphics card → <b>Gemma 4 12B QAT</b></li>
+          <li>Load the model (top bar), and you're done — the default server settings are correct.</li>
+        </ul>
+        <p>The HUD's <b>LM</b> dot turns green when it finds LM Studio. Unsure what your PC can
+        run? Open the HUD's Settings ⚙ — it reads your RAM and graphics card and marks every
+        model <span class="mono" style="color:var(--green)">✓ fits</span> or
+        <span class="mono" style="color:var(--amber)">⚠ too big</span>.</p>
+      </div></div>
+
+      <div class="step"><div>
+        <h3>Voices &amp; taste</h3>
+        <p>The operator speaks out of the box (Alba, a Scottish neural voice — fully offline).
+        In <b>Settings ⚙</b> you can switch to the bundled male voice, download six more with one
+        click, adjust rate and volume, tune how chatty the storytelling is — or mute everything
+        with the 🔊 button.</p>
+        <p>Want to talk back? Tick <b>Voice input</b> in the same Voice section and grab the
+        one-time speech-recognition download (~150 MB, fully local). Then hold
+        <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>Space</kbd> — even mid-flight — speak, release,
+        and the operator answers.</p>
+      </div></div>
+
+      <div class="step"><div>
+        <h3>If you ever want it gone</h3>
+        <p><b>Windows Settings → Apps → Installed apps → ED Mission Operator → Uninstall.</b>
+        It leaves your game and its files untouched (it never wrote to them in the first place).</p>
+      </div></div>
+
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-label"><span class="idx">05</span><h2>Keyboard shortcuts</h2><span class="tail">work while the game has focus</span></div>
+    <table>
+      <tr><th>Keys</th><th>Action</th></tr>
+      <tr><td><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>M</kbd></td><td>Show / hide the HUD</td></tr>
+      <tr><td><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>H</kbd></td><td>Ask the operator "what should I do right now?"</td></tr>
+      <tr><td><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>V</kbd></td><td>Toggle voice</td></tr>
+      <tr><td><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>J</kbd></td><td>Cycle through active missions</td></tr>
+      <tr><td><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>K</kbd></td><td>Collapse to a compact bar</td></tr>
+      <tr><td><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>T</kbd></td><td>Click-through mode (mouse ignores the HUD)</td></tr>
+      <tr><td><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>Space</kbd> <i>(hold)</i></td><td>Push-to-talk — speak to the operator (Voice input, optional)</td></tr>
+    </table>
+  </div>
+</section>
+
+<section id="privacy">
+  <div class="wrap">
+    <div class="sec-label"><span class="idx">06</span><h2>Privacy &amp; fair play</h2><span class="tail">flight rules</span></div>
+    <div class="twocol">
+      <div class="priv">
+        <h3>● What it will never do</h3>
+        <ul>
+          <li><b>No cloud, no account, no telemetry.</b> The only network traffic is to LM Studio on your own machine (127.0.0.1) — plus, only if you switch them on: voice downloads you click yourself and the opt-in Spansh route planner (off by default; it sends just your current system name).</li>
+          <li><b>Memory stays home.</b> The operator's long-term memory is one local JSON file you can open, inspect, or wipe with one click ("Forget everything"). Screen glances are off by default; when enabled, screenshots go only to your local LM endpoint and are never written to disk.</li>
+          <li><b>Your voice stays home.</b> Push-to-talk is off by default; when enabled, speech is transcribed by a local Whisper model on your own CPU. No cloud speech service, ever — the microphone is only live while you hold the key.</li>
+          <li><b>Read-only.</b> It reads the journal text files Frontier writes for third-party tools; it never writes to the game's folders.</li>
+          <li><b>No game hooks.</b> It never touches game memory, injects code, or talks to game servers — the same mechanism trusted community tools have used for years.</li>
+          <li><b>Your words stay home.</b> The bundled voices synthesize speech locally; nothing you read or hear leaves your PC.</li>
+        </ul>
+      </div>
+      <div>
+        <div class="qa">
+          <h3>Does it need the internet?</h3>
+          <p>No. Missions, voices, leads and stories all work offline. Internet is only touched
+          if you install LM Studio models, download extra voices, or enable the optional Spansh
+          route planner — each on your explicit click, all off by default.</p>
+        </div>
+        <div class="qa">
+          <h3>Will it cost me frames?</h3>
+          <p>The HUD itself is negligible. AI answers use your GPU for a few seconds when
+          generated — and the built-in advisor deliberately recommends models that leave the
+          game's share of the graphics card alone.</p>
+        </div>
+        <div class="qa">
+          <h3>Which game modes?</h3>
+          <p>Open, private groups and solo — it only reads what the game writes locally, so it
+          works identically everywhere, including Horizons and Odyssey, on foot or in a ring.</p>
+        </div>
+        <div class="qa">
+          <h3>Something broke?</h3>
+          <p>The HUD degrades politely: no LM Studio → deterministic guidance; no voice → text;
+          no game running → it waits. Restart the app and it rebuilds everything from the journal.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span><b style="color:var(--amber)">ED MISSION OPERATOR</b></span>
+    <span>a hobby project · not affiliated with Frontier Developments</span>
+    <span><span class="dot"></span>JRNL · LM · PIPER</span>
+    <span class="o7">o7 CMDR</span>
+  </div>
+</footer>
+
+</body>
+</html>
