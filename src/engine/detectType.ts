@@ -22,8 +22,11 @@ const BGS_STATES = [
   'investment',
 ];
 
-/** Ordered longest-first so multi-word families win over their prefixes. */
+/** Ordered longest-first so multi-word families win over their prefixes.
+ *  On-foot (Odyssey) missions all normalize to `onfoot_...`; they win first so
+ *  e.g. `Mission_OnFoot_Salvage` maps to OnFoot rather than Salvage. */
 const FAMILY_RULES: Array<[RegExp, MissionCategory]> = [
+  [/^onfoot/, 'OnFoot'],
   [/^longdistanceexpedition/, 'LongDistanceExpedition'],
   [/^deliverywing/, 'DeliveryWing'],
   [/^passengervip/, 'PassengerVIP'],
@@ -36,6 +39,12 @@ const FAMILY_RULES: Array<[RegExp, MissionCategory]> = [
   [/^collect/, 'Collect'],
   [/^mining/, 'Mining'],
   [/^rescue/, 'Rescue'],
+  [/^smuggle/, 'Smuggle'],
+  [/^altruism/, 'Donation'], // Mission_AltruismCredits / Mission_Altruism
+  [/^scan/, 'Scan'],
+  [/^hack/, 'Hack'],
+  [/^sabotage/, 'Disable'],
+  [/^disable/, 'Disable'],
   [/^delivery/, 'Delivery'],
   [/^courier/, 'Courier'],
 ];

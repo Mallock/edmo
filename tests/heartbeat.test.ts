@@ -52,6 +52,15 @@ test('idle-docked: nudges when docked at a non-destination station with hand-ins
   assert.equal(hb.evaluate(st, at(12)).length, 1, 'fires again after cooldown');
 });
 
+test('busyFocus suppresses idle-docked nudges (commander is in a menu)', () => {
+  const hb = new Heartbeat();
+  const st = state({ activeMissions: [mission({ category: 'Courier' })], lastActivityAt: at(0) });
+  // Would normally fire at 6 min idle — but the commander is in station services.
+  assert.equal(hb.evaluate(st, at(6), { busyFocus: true }).length, 0);
+  // Drop the menu and it fires.
+  assert.equal(hb.evaluate(st, at(7), { busyFocus: false }).length, 1);
+});
+
 test('idle-docked stays silent when the only mission is handed in here', () => {
   const hb = new Heartbeat();
   const here = mission({ category: 'Courier', destination: { system: 'NJ', station: 'Caro Depot' } });

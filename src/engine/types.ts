@@ -26,6 +26,12 @@ export type MissionCategory =
   | 'Collect'
   | 'Mining'
   | 'Rescue'
+  | 'Donation'
+  | 'Scan'
+  | 'Hack'
+  | 'Disable'
+  | 'Smuggle'
+  | 'OnFoot'
   | 'Other';
 
 export type MissionState =
@@ -83,6 +89,8 @@ export interface Mission {
   targetType?: string;
   /** Required kills for Massacre missions (journal `KillCount`). */
   killCount?: number;
+  /** True for Odyssey on-foot missions (internal Name starts `Mission_OnFoot_`). */
+  onFoot?: boolean;
 
   cargo?: CargoProgress;
   steps: MissionStep[];
@@ -108,6 +116,9 @@ export interface SystemIntel {
   controllingFaction?: string;
   population?: number;
   signals: SystemSignal[];
+  /** Local minor factions in an active BGS state (War, Boom, Election, …) —
+   *  the states that spawn combat/BGS missions. From FSDJump/Location Factions[]. */
+  factionStates?: Array<{ name: string; state: string }>;
 }
 
 /** Snapshot of the whole player situation the operator reasons over. */

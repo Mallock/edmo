@@ -332,6 +332,7 @@ export class MissionStateManager {
         : undefined,
       targetType: str(ev.TargetType_Localised),
       killCount: num(ev.KillCount),
+      onFoot: /^mission_onfoot/i.test(name),
       cargo:
         CARGO_CATEGORIES.has(category) && count != null
           ? { collected: 0, delivered: 0, total: count, progress: 0 }
@@ -486,6 +487,17 @@ export class MissionStateManager {
     this.systemIntel.controllingFaction =
       (faction && str(faction.Name)) || this.systemIntel.controllingFaction;
     this.systemIntel.population = num(ev.Population) ?? this.systemIntel.population;
+    // Local minor factions in an active BGS state — the ones offering war/boom/
+    // election work. Only kept when the journal actually carries Factions[].
+    if (Array.isArray(ev.Factions)) {
+      const active: Array<{ name: string; state: string }> = [];
+      for (const raw of ev.Factions as Array<Record<string, unknown>>) {
+        const name = str(raw.Name);
+        const fstate = str(raw.FactionState);
+        if (name && fstate && fstate !== 'None') active.push({ name, state: fstate });
+      }
+      this.systemIntel.factionStates = active.length ? active : undefined;
+    }
   }
 
   private onCommunityGoal(ev: JournalEvent): void {

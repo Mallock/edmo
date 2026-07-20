@@ -203,7 +203,7 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
 <div class="strip">
   <div class="wrap">
     <span><b>ED MISSION OPERATOR</b></span>
-    <span>v0.2.0 · Windows 10/11 · Linux beta</span>
+    <span>v0.3.0 · Windows 10/11 · Linux beta</span>
     <span><span class="dot"></span>100% local</span>
     <nav>
       <a href="#features">Features</a>
@@ -223,21 +223,25 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
         A small always-on-top panel that reads your Player Journal live: mission cards with
         objectives and timers, a <b>proactive operator</b> that nudges you when you stall,
         an <b>AI wingman</b> answering over local neural voices, trade and exobiology leads,
-        a space-opera chronicle written from what you actually did — and now a
-        <b>long-term memory</b>: it remembers your factions, your records and your close calls
-        across sessions. You can even <b>talk to it</b> — hold a key, speak, and it answers out
+        a space-opera chronicle written from what you actually did, and a
+        <b>long-term memory</b> that remembers your factions, records and close calls across
+        sessions. New in <b>0.3</b>: it now watches your ship in real time — <b>fuel, heat,
+        shields, interdictions, your docking pad</b> — calls out the hazards out loud, checks
+        whether your hold and cabins can even carry a job before you fly it, and understands
+        far more of the mission board (donations, scans, hacks, sabotage, smuggling and
+        on-foot work). You can even <b>talk to it</b> — hold a key, speak, and it answers out
         loud, remembering the conversation. <b>Everything runs on your machine.</b>
       </p>
       <div class="cta-row">
-        <a class="dl" href="ED-Mission-Operator-0.2.0-setup.exe" download>
+        <a class="dl" href="ED-Mission-Operator-0.3.0-setup.exe" download>
           ⬇ DOWNLOAD FOR WINDOWS
-          <small>ED-Mission-Operator-0.2.0-setup.exe · 131 MB · no admin needed</small>
+          <small>ED-Mission-Operator-0.3.0-setup.exe · 131 MB · no admin needed</small>
         </a>
         <p class="cta-note">Free hobby project. Two offline voices included. AI features optional.</p>
         <p class="cta-note">🐧 <b>Linux beta:</b>
-          <a href="ED-Mission-Operator-0.2.0-amd64.deb" download style="color:var(--amber)">.deb (147 MB)</a>
+          <a href="ED-Mission-Operator-0.3.0-amd64.deb" download style="color:var(--amber)">.deb (147 MB)</a>
           ·
-          <a href="ED-Mission-Operator-0.2.0-x86_64.AppImage" download style="color:var(--amber)">AppImage (212 MB)</a>
+          <a href="ED-Mission-Operator-0.3.0-x86_64.AppImage" download style="color:var(--amber)">AppImage (230 MB)</a>
           — journals auto-detected from the Steam Proton prefix; X11 recommended
           (global hotkeys don't exist on Wayland); screen glances are Windows-only for now.
           Fresh out of the forge — reports welcome. AppImage users: install an emoji font
@@ -261,7 +265,10 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
         <h3>Live mission tracking</h3>
         <p>Reads the game's own journal files as you play. Cards show category, destination,
         reward, <b>kill and cargo counters</b>, gift commodities for VIPs, and a synthesized
-        objective checklist the game never gives you — with live expiry timers.</p>
+        objective checklist the game never gives you — with live expiry timers. It now reads
+        the <b>whole board</b>: couriers and cargo, passengers and sightseeing, massacres and
+        assassinations, plus <b>donations, scans, hacks, sabotage, smuggling and on-foot
+        (Odyssey) work</b> — each with its own checklist and tailored advice.</p>
       </div></div>
       <div class="mi"><span class="n">B</span><div>
         <h3>Proactive heartbeat</h3>
@@ -323,6 +330,24 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
         runs on a local Whisper model (a one-time download on your click); your voice never
         leaves the machine. And it holds the thread: <i>"and how far is that?"</i> works, because
         the operator remembers what it just told you — including its own stories and warnings.</p>
+      </div></div>
+      <div class="mi"><span class="n">J</span><div>
+        <h3>Flight safety &amp; ship status <span style="color:var(--dim);font-size:0.82em">(new in 0.3)</span></h3>
+        <p>The operator now watches the game's real-time status feed. A compact strip shows your
+        <b>fuel gauge</b> and live hazards, and it speaks the ones that matter: <b>"interdiction —
+        submit and boost"</b>, overheating, shields down, low fuel. It reads out your
+        <b>docking pad number</b> the instant control clears you, warns before a jump when the
+        next star can't refuel you, and knows when you're deep in a menu so it won't nag you for
+        "stalling" while you plan a route.</p>
+      </div></div>
+      <div class="mi"><span class="n">K</span><div>
+        <h3>Knows your ship, mats &amp; surveys <span style="color:var(--dim);font-size:0.82em">(new in 0.3)</span></h3>
+        <p>From your loadout it does the check the mission board never does: <b>"that delivery
+        won't fit your hold"</b>, <b>"you don't have cabins for these VIPs"</b>, <b>"you're not
+        rigged to mine this"</b>. It keeps a running tally of your <b>engineering materials and
+        unlocked engineers</b>, and while you explore it flags the bodies actually <b>worth
+        mapping</b> — Earth-likes, water and ammonia worlds, terraformables — with an estimate of
+        the survey data riding in your hold.</p>
       </div></div>
     </div>
   </div>
@@ -386,7 +411,7 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
       <div class="step"><div>
         <h3>Download the installer</h3>
         <p>Click the download button above — you get a single file,
-        <span class="mono">ED-Mission-Operator-0.2.0-setup.exe</span> (about 131&nbsp;MB — it
+        <span class="mono">ED-Mission-Operator-0.3.0-setup.exe</span> (about 131&nbsp;MB — it
         carries the offline voices). Your browser may ask where to save it; Downloads is fine.</p>
       </div></div>
 

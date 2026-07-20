@@ -111,6 +111,54 @@ export function synthesizeSteps(mission: Mission, loc?: Location): MissionStep[]
       ];
     }
 
+    case 'Smuggle': {
+      const cargoLabel = mission.commodity
+        ? `${mission.commodity.count} ${mission.commodity.localised}`
+        : 'the illegal cargo';
+      return [
+        step(`Carry ${cargoLabel} (run silent)`, arrived || done, 'accept'),
+        step(`Travel to ${destSys}`, arrived, 'accept'),
+        step(`Evade scans & deliver at ${destStn}`, done, 'complete'),
+      ];
+    }
+
+    case 'Scan': {
+      const what = mission.target?.name ?? mission.targetType ?? 'the target';
+      return [
+        step(`Travel to ${destSys}`, arrived, 'accept'),
+        step(`Scan ${what}`, done, 'combat'),
+        step(`Hand in at ${destStn}`, done, 'complete'),
+      ];
+    }
+
+    case 'Hack': {
+      return [
+        step(`Travel to ${destSys}`, arrived, 'accept'),
+        step('Breach the target data point', done, 'combat'),
+        step(`Extract & hand in at ${destStn}`, done, 'complete'),
+      ];
+    }
+
+    case 'Disable': {
+      return [
+        step(`Travel to ${destSys}`, arrived, 'accept'),
+        step('Disable the target installation', done, 'combat'),
+        step(`Leave & hand in at ${destStn}`, done, 'complete'),
+      ];
+    }
+
+    case 'OnFoot': {
+      return [
+        step(`Travel to ${destSys}`, arrived, 'accept'),
+        step('Disembark & complete the objective on foot', done, 'combat'),
+        step(`Return to ship & hand in at ${destStn}`, done, 'complete'),
+      ];
+    }
+
+    case 'Donation': {
+      return [step(`Donate to ${mission.faction ?? 'the faction'}`, done, 'complete')];
+    }
+
     case 'Courier':
     default: {
       return [

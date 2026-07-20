@@ -15,6 +15,12 @@ export const CATEGORY_COLORS: Record<MissionCategory, string> = {
   Sightseeing: '#a060f0',
   LongDistanceExpedition: '#a060f0',
   PassengerBulk: '#4080f0',
+  Donation: '#40e060',
+  Scan: '#40d0f0',
+  Hack: '#40d0f0',
+  Disable: '#e03030',
+  Smuggle: '#f08030',
+  OnFoot: '#a0c060',
   Other: '#808090',
 };
 

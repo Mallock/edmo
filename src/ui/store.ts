@@ -34,6 +34,10 @@ import {
   type TradeOpportunity,
 } from '../engine/trade.ts';
 import { BioTracker, type BioLead } from '../engine/exobio.ts';
+import { StatusTracker, isBusyFocus, isScoopableStar, type StatusAlert } from '../engine/status.ts';
+import { ShipTracker, describeShip } from '../engine/ship.ts';
+import { MaterialsTracker } from '../engine/materials.ts';
+import { ExploreTracker, type ExploreLead } from '../engine/explore.ts';
 import { parseSpanshRoute, routeSummary, type TradeRoute } from '../engine/spansh.ts';
 import {
   CommanderMemory,
@@ -113,6 +117,22 @@ export interface FeedEntry {
   streaming?: boolean;
 }
 
+/** Compact ship telemetry surfaced to the HUD (from Status.json). */
+export interface HudShipStatus {
+  fuelPct: number | null;
+  inDanger: boolean;
+  beingInterdicted: boolean;
+  silentRunning: boolean;
+  lowFuel: boolean;
+  overheating: boolean;
+  legalState: string | null;
+  onFoot: boolean;
+  docked: boolean;
+  supercruise: boolean;
+  guiFocusLabel: string;
+  pips: [number, number, number] | null;
+}
+
 export interface AppSnapshot {
   missions: Mission[];
   selectedId: number | null;
@@ -124,6 +144,10 @@ export interface AppSnapshot {
   specs: SystemSpecs | null;
   trade: TradeOpportunity | null;
   bio: BioLead | null;
+  /** Live ship telemetry from Status.json, or null before any snapshot. */
+  shipStatus: HudShipStatus | null;
+  /** Highest-value unmapped body known this session, or null. */
+  exploreLead: ExploreLead | null;
   route: TradeRoute | null;
   routeBusy: boolean;
   routeIdx: number;
@@ -228,6 +252,31 @@ export class AppCore {
 
   private stats = new SessionStats();
   private saga = new SagaTracker();
+  // Real-time ship telemetry + loadout + material/exploration ledgers.
+  private statusTracker = new StatusTracker();
+  private ship = new ShipTracker();
+  private materials = (() => {
+    const m = new MaterialsTracker();
+    try {
+      m.load(JSON.parse(localStorage.getItem('edmo.materials.v1') ?? 'null'));
+    } catch {
+      /* start empty */
+    }
+    return m;
+  })();
+  private explore = (() => {
+    const e = new ExploreTracker();
+    try {
+      e.load(JSON.parse(localStorage.getItem('edmo.explore.v1') ?? '[]'));
+    } catch {
+      /* start empty */
+    }
+    return e;
+  })();
+  /** Last hyperspace target star class + remaining jumps (FSDTarget). */
+  private lastFsdStarClass: string | null = null;
+  private lastStatusAlertAt = new Map<string, number>();
+  private lastPadAnnounced = 0;
   private lastMiningAt = 0;
   private lastStoryText = '';
   private seedCountAtLastStory = 0;
@@ -370,6 +419,8 @@ export class AppCore {
       specs: this.specs,
       trade: this.tradeOpp,
       bio: this.bioLead,
+      shipStatus: this.hudShipStatus(),
+      exploreLead: this.explore.leads()[0] ?? null,
       route: this.route,
       routeBusy: this.routeBusy,
       routeIdx: this.routeIdx,
@@ -389,6 +440,26 @@ export class AppCore {
       sttDownloading: this.sttDownloading,
       listening: this.listening,
       version: this.version,
+    };
+  }
+
+  /** Compact live ship telemetry for the HUD, or null before any snapshot. */
+  private hudShipStatus(): HudShipStatus | null {
+    const s = this.statusTracker.current;
+    if (!s) return null;
+    return {
+      fuelPct: s.fuelPct ?? null,
+      inDanger: s.inDanger,
+      beingInterdicted: s.beingInterdicted,
+      silentRunning: s.silentRunning,
+      lowFuel: s.lowFuel,
+      overheating: s.overheating,
+      legalState: s.legalState && s.legalState !== 'Clean' ? s.legalState : null,
+      onFoot: s.onFoot,
+      docked: s.docked,
+      supercruise: s.supercruise,
+      guiFocusLabel: s.guiFocusLabel,
+      pips: s.pips ?? null,
     };
   }
 
@@ -492,6 +563,11 @@ export class AppCore {
     this.bootstrapped = false;
     this.sm = new MissionStateManager();
     this.hb = new Heartbeat({ expiryWarnMin: this.settings.journal.expiryWarningMin });
+    // Fresh telemetry baseline — the next Status.json snapshot re-establishes it
+    // without firing hazard alerts about the previous session.
+    this.statusTracker = new StatusTracker();
+    this.ship = new ShipTracker();
+    this.lastStatusAlertAt.clear();
     try {
       await startWatch(
         this.settings.journal.directory,
@@ -517,6 +593,13 @@ export class AppCore {
       this.stats.apply(ev);
       this.saga.apply(ev);
       this.bioTracker.apply(ev);
+      this.ship.apply(ev);
+      this.materials.apply(ev);
+      this.explore.apply(ev);
+      // Teach the status tracker the fuel-tank size so it can report fuel %.
+      if (ev.event === 'Loadout' && this.ship.current?.fuelCapacity) {
+        this.statusTracker.setFuelCapacity(this.ship.current.fuelCapacity);
+      }
       // Long-term memory folds everything too — its watermark makes bootstrap
       // replays no-ops, while genuinely new history (first run) is inherited.
       if (this.settings.memory.enabled && this.memoryReady) {
@@ -564,7 +647,28 @@ export class AppCore {
       this.recomputeBio(false);
     }
     if (this.memory.dirty) this.persistMemory();
+    this.persistTrackers();
     this.emit();
+  }
+
+  /** Persist the material + exploration ledgers to localStorage when changed. */
+  private persistTrackers(): void {
+    if (this.materials.dirty) {
+      this.materials.dirty = false;
+      try {
+        localStorage.setItem('edmo.materials.v1', JSON.stringify(this.materials.toJSON()));
+      } catch {
+        /* still tracked in-session */
+      }
+    }
+    if (this.explore.dirty) {
+      this.explore.dirty = false;
+      try {
+        localStorage.setItem('edmo.explore.v1', JSON.stringify(this.explore.toJSON()));
+      } catch {
+        /* still tracked in-session */
+      }
+    }
   }
 
   // ------------------------------------------------------------- memory bank
@@ -703,6 +807,55 @@ export class AppCore {
       case 'Bounty':
         this.lastCombatAt = now;
         break;
+      case 'DockingGranted': {
+        // Pad number the instant control clears you — the single most-loved
+        // voice-companion callout. Throttled so re-requests don't repeat it.
+        const pad = typeof ev.LandingPad === 'number' ? ev.LandingPad : null;
+        if (pad == null || now - this.lastPadAnnounced < 5_000) return;
+        this.lastPadAnnounced = now;
+        const station = typeof ev.StationName === 'string' ? ev.StationName : 'the station';
+        const text = `Docking granted — pad ${pad}, commander.`;
+        this.pushFeed('system', `🛬 ${text} (${station})`);
+        this.speak(text);
+        break;
+      }
+      case 'DockingDenied': {
+        const reason = typeof ev.Reason === 'string' ? ev.Reason : '';
+        const human: Record<string, string> = {
+          NoSpace: 'no free pad',
+          TooLarge: 'your ship is too large for this pad class',
+          Hostile: 'you are hostile to this station',
+          Offences: 'you have outstanding offences here',
+          Distance: 'you are too far out — get closer and request again',
+          ActiveFighter: 'recall your fighter first',
+          NoReason: 'request denied',
+        };
+        const why = human[reason] ?? (reason ? reason : 'request denied');
+        const text = `Docking denied — ${why}.`;
+        this.pushFeed('system', `⛔ ${text}`);
+        this.speak(text);
+        break;
+      }
+      case 'FSDTarget': {
+        // Next hyperspace target's star class — used for the fuel/scoop check.
+        this.lastFsdStarClass = typeof ev.StarClass === 'string' ? ev.StarClass : this.lastFsdStarClass;
+        break;
+      }
+      case 'StartJump': {
+        // On a hyperspace jump, warn when fuel is low AND the destination star
+        // can't refuel us (non-KGBFOAM) — the classic way expeditions strand.
+        if (ev.JumpType !== 'Hyperspace') return;
+        const starClass = typeof ev.StarClass === 'string' ? ev.StarClass : this.lastFsdStarClass;
+        const st = this.statusTracker.current;
+        const lowFuel = !!st && (st.lowFuel || (st.fuelPct != null && st.fuelPct < 0.25));
+        if (lowFuel && !isScoopableStar(starClass ?? undefined)) {
+          const text = `Fuel is low and the next star (class ${starClass ?? '?'}) can't be scooped — plot to a scoopable star before you strand.`;
+          this.pushFeed('nudge', text, { severity: 'urgent' });
+          this.speak(text);
+          this.addSeed(`Close fuel call jumping to a class ${starClass ?? '?'} star`);
+        }
+        break;
+      }
       case 'LoadGame':
         // New game session — the mining acknowledgements start fresh.
         this.sessionOreAnnounced.clear();
@@ -956,9 +1109,46 @@ export class AppCore {
       } catch {
         /* partial write — next snapshot wins */
       }
+    } else if (name === 'Status.json') {
+      try {
+        const ev = JSON.parse(text) as JournalEvent;
+        if (ev && ev.event === 'Status') {
+          const alerts = this.statusTracker.apply(ev);
+          // Only voice hazards for a live session — a stale startup snapshot
+          // just establishes the baseline (the tracker never alerts on its
+          // first snapshot anyway).
+          if (this.bootstrapped && Date.now() - this.lastGameActivity < GAME_LIVE_WINDOW_MS) {
+            this.handleStatusAlerts(alerts);
+          }
+        }
+      } catch {
+        /* partial write — next snapshot wins */
+      }
+    } else if (name === 'Cargo.json') {
+      try {
+        const c = JSON.parse(text) as { Count?: number };
+        this.ship.setCargo(typeof c.Count === 'number' ? c.Count : undefined);
+      } catch {
+        /* keep last-good cargo */
+      }
     }
-    // Status.json / Cargo.json currently only refresh game liveness.
+    // ShipLocker/Backpack/Outfitting/Shipyard/ModulesInfo/FCMaterials refresh
+    // game liveness (handled above) and are available for future features.
     this.emit();
+  }
+
+  /** Speak Status.json safety alerts under a per-kind cooldown. */
+  private handleStatusAlerts(alerts: StatusAlert[]): void {
+    if (!alerts.length) return;
+    const now = Date.now();
+    for (const a of alerts) {
+      const last = this.lastStatusAlertAt.get(a.kind);
+      if (last !== undefined && now - last < 60_000) continue;
+      this.lastStatusAlertAt.set(a.kind, now);
+      this.pushFeed('combat', a.message, { severity: a.severity });
+      this.speak(a.message);
+      if (a.kind === 'interdiction' || a.kind === 'shields-down') this.lastCombatAt = now;
+    }
   }
 
   // ------------------------------------------------------------ trade leads
@@ -1415,7 +1605,8 @@ export class AppCore {
     if (!this.bootstrapped || !this.journalStatus.ok) return;
     if (Date.now() - this.lastGameActivity >= GAME_LIVE_WINDOW_MS) return;
     const nowIso = new Date().toISOString();
-    for (const n of this.hb.evaluate(this.sm.getState(), nowIso)) {
+    const busyFocus = !!this.statusTracker.current && isBusyFocus(this.statusTracker.current.guiFocus);
+    for (const n of this.hb.evaluate(this.sm.getState(), nowIso, { busyFocus })) {
       this.pushNudge(n);
     }
   }
@@ -1451,7 +1642,32 @@ export class AppCore {
     if (cg) out.push(`Community Goal running: "${cg.title}" at ${cg.market} in ${cg.system}.`);
     const risk = this.stats.riskNote();
     if (risk) out.push(risk);
-    if (this.stats.unsoldCarto >= 5)
+    // Live ship telemetry (Status.json): fuel, legal state, current mode.
+    const st = this.statusTracker.current;
+    if (st) {
+      const bits: string[] = [];
+      if (st.fuelPct != null) bits.push(`fuel ${Math.round(st.fuelPct * 100)}%`);
+      if (st.legalState && st.legalState !== 'Clean') bits.push(`legal status ${st.legalState}`);
+      if (st.docked) bits.push('docked');
+      else if (st.supercruise) bits.push('in supercruise');
+      else if (st.onFoot) bits.push('on foot');
+      if (st.silentRunning) bits.push('running silent');
+      if (bits.length) out.push(`Ship status: ${bits.join(', ')}.`);
+    }
+    // Ship loadout (Loadout): jump range, cargo/cabins, key fittings.
+    if (this.ship.current) out.push(`Loadout: ${describeShip(this.ship.current)}.`);
+    // Whether the current ship can actually carry the selected mission.
+    const selForFit = this.selectedMission();
+    if (selForFit) {
+      const fit = this.ship.fitNote(selForFit);
+      if (fit) out.push(fit);
+    }
+    // Engineering materials + exploration value the operator can reason about.
+    const matLine = this.materials.contextLine();
+    if (matLine) out.push(matLine);
+    const exLine = this.explore.contextLine();
+    if (exLine) out.push(exLine);
+    else if (this.stats.unsoldCarto >= 5)
       out.push(`${this.stats.unsoldCarto} scanned bodies of cartographic data unsold.`);
     if (this.tradeOpp) {
       const o = this.tradeOpp;

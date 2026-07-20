@@ -235,6 +235,18 @@ export function ruleBasedAdvice(m: Mission, nowIso: string): string {
     case 'Sightseeing':
     case 'LongDistanceExpedition':
       return `Transport your ${m.passengers?.type ?? ''} passengers to ${destLabel(m)}${m.passengers?.wanted ? ' — they are WANTED, avoid scans' : ''}.${urgency}`;
+    case 'Donation':
+      return `This is a donation to ${m.faction ?? 'the faction'} — no cargo needed. Complete it at the mission board for reputation and influence.${urgency}`;
+    case 'Smuggle':
+      return `Smuggling run to ${destLabel(m)} — the goods are illegal there. Run silent on approach, hardpoints stowed, and dodge station scans.${urgency}`;
+    case 'Scan':
+      return `Fly to ${destLabel(m)} and scan the target as briefed, then hand in.${urgency}`;
+    case 'Hack':
+      return `Reach ${destLabel(m)}, breach the target data point/settlement, then extract and hand in.${urgency}`;
+    case 'Disable':
+      return `Head to ${destLabel(m)}, disable the target installation, then leave and hand in — expect it to turn hostile.${urgency}`;
+    case 'OnFoot':
+      return `On-foot job at ${destLabel(m)} — disembark with the right suit, complete the objective, then return to your ship and hand in.${urgency}`;
     case 'Courier':
     default:
       return `Fly to ${destLabel(m)} and hand in for ${formatCredits(m.reward)}.${urgency}`;
@@ -263,6 +275,18 @@ const CATEGORY_GUIDANCE: Record<MissionCategory, string> = {
   Assassinate:
     'Assassination: the named target spawns in the DESTINATION system. Procedure: drop at the Nav Beacon and scan it — this reveals the target\'s location; also watch the FSS for a mission signal source bearing the target\'s name. Engage and destroy the target ship (expect them wanted; a kill-warrant scan is optional). After the kill a redirect will name the hand-in station.',
   Rescue: 'Rescue: enter the hazard area, recover/protect as instructed, and extract safely.',
+  Donation:
+    'Donation: this contract wants credits handed to the faction, not cargo. Fly to the giving station and complete it at the mission board — it funds the faction and buys reputation/influence.',
+  Scan:
+    'Scan mission: travel to the destination and scan the specified target (a ship, data point, settlement or beacon) with the appropriate scanner, then hand in. Some scans want you to approach undetected.',
+  Hack:
+    'Hack/reboot mission (usually on-foot): reach the target settlement or data terminal, use a Recon Limpet or on-foot Profile Analyser / access the panel to breach it, then extract and hand in.',
+  Disable:
+    'Sabotage/disable mission: reach the target facility and disable or destroy the specified installation/production, expect it to turn the site hostile, then leave and hand in. Often illegal — watch your legal state.',
+  Smuggle:
+    'Smuggling run: the cargo is illegal at the destination. Avoid station scans — approach with Silent Running, no hardpoints, and request docking late; deliver via the black market or mission board as instructed.',
+  OnFoot:
+    'On-foot (Odyssey) mission: disembark at the target settlement. Bring the right suit and tools (Maverick to salvage/hack, Dominator to fight); grab the specified goods/data or complete the objective on foot, then return to your ship and hand in.',
   Other: 'Give concise, practical guidance.',
 };
 
@@ -293,6 +317,11 @@ export function describeSystemIntel(state: OperatorState): string | null {
   if (s.allegiance) props.push(s.allegiance);
   if (s.controllingFaction) props.push(`controlled by ${s.controllingFaction}`);
   if (props.length) lines.push(`Current system (${state.location.system}): ${props.join(', ')}`);
+  if (s.factionStates?.length) {
+    lines.push(
+      `Local faction states: ${s.factionStates.slice(0, 6).map((f) => `${f.name} (${f.state})`).join(', ')}`,
+    );
+  }
 
   // Fleet carriers (ubiquitous in hub systems like Colonia) must not drown
   // out real stations; their names end in a XXX-XXX registration.

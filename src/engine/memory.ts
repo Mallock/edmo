@@ -121,6 +121,10 @@ export class CommanderMemory {
   shipType = '';
   records: Record<string, RecordEntry> = {};
   ranks: Record<string, number> = {};
+  /** Superpower reputation −100..100 (Reputation event). */
+  reputations: Record<string, number> = {};
+  /** Headline lifetime totals captured from the Statistics event at login. */
+  lifetimeStats: Record<string, number> = {};
   totals = { missions: 0, failed: 0, bounties: 0, deaths: 0, jumps: 0 };
   notes: MemoryNote[] = [];
   /** Announce gate: key → last-announced ms epoch (persisted). */
@@ -305,6 +309,38 @@ export class CommanderMemory {
         }
         break;
       }
+      case 'Rank': {
+        // Login baseline for every rank — establishes the starting point so the
+        // operator knows the commander's standing without waiting for a
+        // Promotion. Silent: no "you were promoted" for a rank you already held.
+        for (const [k, v] of Object.entries(ev)) {
+          if (typeof v === 'number') this.ranks[k] = v;
+        }
+        this.dirty = true;
+        break;
+      }
+      case 'Reputation': {
+        for (const k of ['Empire', 'Federation', 'Alliance', 'Independent']) {
+          const v = ev[k];
+          if (typeof v === 'number') this.reputations[k] = v;
+        }
+        this.dirty = true;
+        break;
+      }
+      case 'Statistics': {
+        const pick = (obj: unknown, field: string): number | undefined => {
+          const o = obj as Record<string, unknown> | undefined;
+          return o && typeof o[field] === 'number' ? (o[field] as number) : undefined;
+        };
+        const wealth = pick(ev.Bank_Account, 'Current_Wealth');
+        if (wealth != null) this.lifetimeStats.wealth = wealth;
+        const ly = pick(ev.Exploration, 'Total_Hyperspace_Distance');
+        if (ly != null) this.lifetimeStats.lyTraveled = ly;
+        const bounties = pick(ev.Combat, 'Bounties_Claimed');
+        if (bounties != null) this.lifetimeStats.bountiesClaimed = bounties;
+        this.dirty = true;
+        break;
+      }
       default:
         break;
     }
@@ -462,6 +498,16 @@ export class CommanderMemory {
         `Memory: ${this.totals.missions} contracts completed lifetime${this.totals.failed ? ` (${this.totals.failed} failed/abandoned)` : ''}, ${this.totals.bounties} bounties, ${this.totals.jumps} jumps, ${Object.keys(this.systems).length} systems visited${this.totals.deaths ? `, ${this.totals.deaths} ships lost` : ''}${top.length ? `; most work done for ${top.join(', ')}` : ''}.`,
       );
     }
+    const rankBits = Object.keys(RANK_NAMES)
+      .filter((k) => this.ranks[k] != null)
+      .map((k) => rankName(k, this.ranks[k]));
+    if (rankBits.length) out.push(`Memory: ranks — ${rankBits.join(', ')}.`);
+    if (this.lifetimeStats.wealth) {
+      const ly = this.lifetimeStats.lyTraveled
+        ? `, ${Math.round(this.lifetimeStats.lyTraveled).toLocaleString('en-US')} ly travelled`
+        : '';
+      out.push(`Memory: lifetime wealth about ${formatCredits(Math.round(this.lifetimeStats.wealth))}${ly}.`);
+    }
     const recs = Object.values(this.records).map((r) => r.text);
     if (recs.length) out.push(`Memory records: ${recs.join(' · ')}.`);
     // The fleet: which hull actually does which work — keeps the AI from
@@ -546,6 +592,8 @@ export class CommanderMemory {
       ships: this.ships,
       records: this.records,
       ranks: this.ranks,
+      reputations: this.reputations,
+      lifetimeStats: this.lifetimeStats,
       totals: this.totals,
       notes: this.notes,
       announced: this.announced,
@@ -565,6 +613,8 @@ export class CommanderMemory {
     this.ships = (d.ships as typeof this.ships) ?? {};
     this.records = (d.records as Record<string, RecordEntry>) ?? {};
     this.ranks = (d.ranks as Record<string, number>) ?? {};
+    this.reputations = (d.reputations as Record<string, number>) ?? {};
+    this.lifetimeStats = (d.lifetimeStats as Record<string, number>) ?? {};
     this.totals = { ...this.totals, ...(d.totals as typeof this.totals) };
     this.notes = Array.isArray(d.notes) ? (d.notes as MemoryNote[]) : [];
     this.announced = (d.announced as Record<string, number>) ?? {};
@@ -578,6 +628,8 @@ export class CommanderMemory {
     this.ships = {};
     this.records = {};
     this.ranks = {};
+    this.reputations = {};
+    this.lifetimeStats = {};
     this.totals = { missions: 0, failed: 0, bounties: 0, deaths: 0, jumps: 0 };
     this.notes = [];
     this.announced = {};

@@ -6,6 +6,38 @@ import { MissionCard, MissionTabs } from './MissionCard.tsx';
 import { Feed } from './Feed.tsx';
 import { SettingsPanel } from './SettingsPanel.tsx';
 import { categoryColor, countdown } from './util.ts';
+import type { HudShipStatus } from './store.ts';
+
+/** Compact live ship telemetry: fuel gauge + hazard chips (from Status.json). */
+function ShipStatusStrip({ status }: { status: HudShipStatus }) {
+  const chips: Array<{ label: string; cls: string }> = [];
+  if (status.beingInterdicted) chips.push({ label: 'INTERDICTION', cls: 'urgent' });
+  if (status.overheating) chips.push({ label: 'OVERHEAT', cls: 'urgent' });
+  if (status.inDanger && !status.beingInterdicted) chips.push({ label: 'DANGER', cls: 'warn' });
+  if (status.lowFuel) chips.push({ label: 'LOW FUEL', cls: 'warn' });
+  if (status.silentRunning) chips.push({ label: 'SILENT', cls: 'info' });
+  if (status.legalState) chips.push({ label: status.legalState.toUpperCase(), cls: 'warn' });
+  const fuel = status.fuelPct;
+  const fuelCls = fuel == null ? '' : fuel < 0.25 ? 'warn' : fuel < 0.5 ? 'mid' : 'ok';
+  // Nothing worth a strip when everything is nominal and we lack a fuel reading.
+  if (fuel == null && chips.length === 0) return null;
+  return (
+    <div className="status-strip">
+      {fuel != null && (
+        <span className={`fuel-gauge ${fuelCls}`} title={`Main fuel ${Math.round(fuel * 100)}%`}>
+          <i className="fuel-bar" style={{ width: `${Math.round(fuel * 100)}%` }} />
+          <span className="fuel-label mono">⛽ {Math.round(fuel * 100)}%</span>
+        </span>
+      )}
+      {chips.map((c) => (
+        <span key={c.label} className={`status-chip ${c.cls}`}>
+          {c.label}
+        </span>
+      ))}
+      {status.onFoot && <span className="status-chip info">ON FOOT</span>}
+    </div>
+  );
+}
 
 export function App() {
   const snap = useSyncExternalStore(core.subscribe, core.getSnapshot);
@@ -126,6 +158,8 @@ export function App() {
             </div>
           )}
 
+          {snap.shipStatus && <ShipStatusStrip status={snap.shipStatus} />}
+
           {snap.trade && (
             <div className="trade-card">
               <div className="trade-head">
@@ -232,6 +266,24 @@ export function App() {
                 {snap.bio.genuses.length > 0 && <> · {snap.bio.genuses.slice(0, 3).join(', ')}</>}
                 {snap.bio.distanceLs != null && (
                   <span className="trade-age"> · {snap.bio.distanceLs.toLocaleString('en-US')} ls</span>
+                )}
+              </div>
+            </div>
+          )}
+
+          {snap.exploreLead && snap.exploreLead.inCurrentSystem && (
+            <div className="trade-card explore-card">
+              <div className="trade-head">
+                <span className="trade-title explore-title">🌍 WORTH MAPPING</span>
+                <span className="mono trade-profit explore-value">
+                  ~{snap.exploreLead.estValue.toLocaleString('en-US')} cr
+                </span>
+              </div>
+              <div className="trade-body">
+                <b>{snap.exploreLead.body}</b> · {snap.exploreLead.planetClass}
+                {snap.exploreLead.terraformable ? ' · terraformable' : ''}
+                {snap.exploreLead.distanceLs != null && (
+                  <span className="trade-age"> · {Math.round(snap.exploreLead.distanceLs).toLocaleString('en-US')} ls</span>
                 )}
               </div>
             </div>

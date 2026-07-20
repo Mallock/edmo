@@ -3,7 +3,8 @@
 // Rust owns the OS-facing transport; all mission intelligence lives in the
 // tested TypeScript engine on the frontend:
 //   * journal directory locate + newest-file tail (poll, read-only — X.3)
-//   * snapshot readers with mid-rewrite retry (Missions/Status/Cargo/NavRoute)
+//   * snapshot readers with mid-rewrite retry (Missions/Status/Cargo/NavRoute/
+//     Market/ShipLocker/Backpack/Outfitting/Shipyard/ModulesInfo/FCMaterials)
 //   * LM Studio streaming proxy (avoids webview CORS, keeps X.2 auditable)
 //   * Piper TTS sidecar (bundled local neural voice)
 //   * global shortcuts, click-through, window-geometry persistence
@@ -25,8 +26,19 @@ use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
-const SNAPSHOT_FILES: [&str; 5] =
-    ["Missions.json", "Status.json", "Cargo.json", "NavRoute.json", "Market.json"];
+const SNAPSHOT_FILES: [&str; 11] = [
+    "Missions.json",
+    "Status.json",
+    "Cargo.json",
+    "NavRoute.json",
+    "Market.json",
+    "ShipLocker.json",
+    "Backpack.json",
+    "Outfitting.json",
+    "Shipyard.json",
+    "ModulesInfo.json",
+    "FCMaterials.json",
+];
 const POLL_MS: u64 = 600;
 
 // ---------------------------------------------------------------- managed state

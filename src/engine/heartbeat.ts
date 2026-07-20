@@ -65,8 +65,13 @@ export class Heartbeat {
     this.cfg = { ...DEFAULT_HEARTBEAT, ...cfg };
   }
 
-  /** Evaluate the state at `now` (defaults to state.now); return due nudges. */
-  evaluate(state: OperatorState, now: string = state.now): Nudge[] {
+  /**
+   * Evaluate the state at `now` (defaults to state.now); return due nudges.
+   * `opts.busyFocus` (from Status.json GuiFocus) suppresses "idle" nudges when
+   * the commander is deliberately in a menu — galaxy map, station services,
+   * FSS — so planning a route no longer reads as being stalled.
+   */
+  evaluate(state: OperatorState, now: string = state.now, opts: { busyFocus?: boolean } = {}): Nudge[] {
     const idleMin = state.lastActivityAt ? minutesBetween(state.lastActivityAt, now) : 0;
     const candidates: Nudge[] = [];
     let huntingFired = false;
@@ -121,8 +126,9 @@ export class Heartbeat {
       });
     }
 
-    // 3) Idle while docked with hand-ins waiting elsewhere.
-    if (state.docked && idleMin >= this.cfg.idleDockedMin) {
+    // 3) Idle while docked with hand-ins waiting elsewhere. Suppressed while
+    //    the commander is busy in a menu (buying, outfitting, plotting).
+    if (state.docked && !opts.busyFocus && idleMin >= this.cfg.idleDockedMin) {
       const pending = state.activeMissions.filter((m) => !atStation(m, state) && m.destination);
       if (pending.length) {
         const minExp = Math.min(...pending.map((m) => minutesToExpiry(m, now)));
@@ -137,9 +143,10 @@ export class Heartbeat {
     }
 
     // 4) Idle in space with no jumps (suppressed if a more specific hunt nudge
-    //    fired, or if we're already in the priority mission's destination system
-    //    — likely on final supercruise approach, which emits no journal events).
-    if (!state.docked && !huntingFired && idleMin >= this.cfg.idleSpaceMin && state.activeMissions.length) {
+    //    fired, if the commander is busy in a menu, or if we're already in the
+    //    priority mission's destination system — likely on final supercruise
+    //    approach, which emits no journal events).
+    if (!state.docked && !huntingFired && !opts.busyFocus && idleMin >= this.cfg.idleSpaceMin && state.activeMissions.length) {
       const focus = priorityMission(state.activeMissions, now);
       if (focus && !inSystem(focus, state)) {
         candidates.push({
