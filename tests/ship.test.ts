@@ -1,7 +1,13 @@
 /** ShipTracker / Loadout parsing — jump range, cabins, fittings, fit checks. */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseLoadout, fitNote, describeShip, ShipTracker } from '../src/engine/ship.ts';
+import {
+  parseLoadout,
+  fitNote,
+  describeShip,
+  ShipTracker,
+  shipRequiresLargePad,
+} from '../src/engine/ship.ts';
 import type { JournalEvent, Mission } from '../src/engine/types.ts';
 
 const ev = (o: Record<string, unknown>): JournalEvent => o as unknown as JournalEvent;
@@ -104,4 +110,17 @@ test('ShipTracker folds Loadout and uses live cargo for free space', () => {
   t.setCargo(12); // 12/16 t used → 4 t free
   const m = mission({ category: 'Delivery', commodity: { name: 'gold', localised: 'Gold', count: 10 } });
   assert.match(t.fitNote(m)!, /only 4 t is free/);
+});
+
+test('shipRequiresLargePad flags large hulls, clears medium/small and unknowns', () => {
+  // Large-pad roster — must require a large pad so routes skip medium stops.
+  for (const s of ['Cutter', 'anaconda', 'federation_corvette', 'type9', 'type9_military', 'empire_trader', 'belugaliner', 'orca', 'panther_clipper']) {
+    assert.equal(shipRequiresLargePad(s), true, `${s} should need a large pad`);
+  }
+  // Panther Clipper matched loosely in case the id carries a suffix.
+  assert.equal(shipRequiresLargePad('Panther_Clipper_MkII'), true);
+  // Medium/small hulls and unknown/missing must NOT over-constrain the planner.
+  for (const s of ['python', 'krait_mkii', 'asp', 'federation_gunship', 'cobramkiii', undefined, '']) {
+    assert.equal(shipRequiresLargePad(s), false, `${s} should not need a large pad`);
+  }
 });

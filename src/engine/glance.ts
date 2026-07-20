@@ -11,6 +11,8 @@
  * the reply arrives. The feature is opt-in (settings.vision.enabled).
  */
 
+import { GROUNDING_RULES, LORE_PRIMER, OPERATOR_VOICE } from './lore.ts';
+
 /** Wire-format chat message that allows OpenAI image content parts. */
 export interface VisionMessage {
   role: string;
@@ -52,6 +54,10 @@ export function buildGlanceMessages(dataUri: string, contextLine: string, cmdr?:
       role: 'system',
       content:
         `You are the Mission Operator glancing at ${cmdr ? `Commander ${cmdr}` : 'the commander'}'s screen for a moment. ` +
+        'The dark "MISSION OPERATOR" panel overlaid on the screen is YOUR OWN interface — never describe it; ' +
+        'report only on the game beneath it. Scene key: cockpit frame with stars/planets/rings beyond the ' +
+        'canopy = flying; full-screen orange/blue text panels = station or ship menus; starfield with orbit ' +
+        'lines and a spectrum bar = FSS scanner; big map with routes = galaxy map. ' +
         'Report in one short phrase what the commander is doing (activity), e.g. "browsing the galaxy map", ' +
         '"docked, in the station services menu", "supercruising", "mining an asteroid ring", "in combat". ' +
         'Set notable=true ONLY for something the operator should react to RIGHT NOW: visible danger, very low hull or ' +
@@ -63,6 +69,56 @@ export function buildGlanceMessages(dataUri: string, contextLine: string, cmdr?:
       role: 'user',
       content: [
         { type: 'text', text: `Glance at the screen now. ${contextLine}`.trim() },
+        { type: 'image_url', image_url: { url: dataUri } },
+      ],
+    },
+  ];
+}
+
+/**
+ * Copilot commentary — the richer sibling of the verdict glance. Instead of a
+ * silent JSON verdict, the operator SPEAKS about what it sees on screen,
+ * grounded in session facts. Probe-validated on gemma-4-e4b: it reads the HUD
+ * ("tinkering with ship settings over at Berman Market") and ties it to the
+ * mission board. Paced by the store's chatter cooldown, never by the model.
+ */
+export function buildCommentaryMessages(
+  dataUri: string,
+  sessionFacts: string,
+  cmdr?: string,
+): VisionMessage[] {
+  const who = cmdr ? `Commander ${cmdr}` : 'the commander';
+  return [
+    {
+      role: 'system',
+      content:
+        `You are the ship's Mission Operator looking over ${who}'s shoulder at the screen. ` +
+        `${LORE_PRIMER} ${OPERATOR_VOICE} ` +
+        'The dark "MISSION OPERATOR" panel overlaid on the screen is YOUR OWN interface — never ' +
+        'describe it or its contents; talk only about the game beneath it. ' +
+        'The JOURNAL TRUTH line in the facts states where the commander actually is and whether ' +
+        'they are docked or flying — it comes from the game itself and OVERRIDES your visual ' +
+        'guess. The screen only adds the scenery and details on top of it. ' +
+        'How to read an Elite Dangerous screen: a cockpit frame with stars, planets, rings or ' +
+        'asteroids beyond the canopy means the commander is FLYING; a full-screen flat panel of ' +
+        'orange/blue text and lists is a STATION MENU or ship panel; a starfield with orbit ' +
+        'lines and spectrum bars is the FSS SCANNER (exploration); a large map with routes is ' +
+        'the GALAXY MAP. Read visible HUD text for concrete details (contact names, pad ' +
+        'numbers, percentages, warnings like IMPACT) and use one or two of them. ' +
+        'Two to four spoken sentences, first person, addressed to the commander: what is ' +
+        'happening on screen, plus ONE tactically relevant detail if present (hostiles, low ' +
+        'fuel, cargo, landing pad). Mention a session fact ONLY when it directly matches what ' +
+        'you see — NEVER claim the commander is at a station, base or place the JOURNAL TRUTH ' +
+        'line does not put them at. If the screen is not the game, or is black or unreadable, ' +
+        `reply with exactly: NOT_IN_GAME. ${GROUNDING_RULES} No markdown, no preamble.`,
+    },
+    {
+      role: 'user',
+      content: [
+        {
+          type: 'text',
+          text: `${sessionFacts ? `Session facts:\n${sessionFacts}\n\n` : ''}Glance at the screen and talk to me about what I'm doing.`,
+        },
         { type: 'image_url', image_url: { url: dataUri } },
       ],
     },

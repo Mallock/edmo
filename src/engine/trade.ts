@@ -99,6 +99,47 @@ export class MarketMemory {
   all(): MarketRecord[] {
     return [...this.markets.values()];
   }
+
+  byId(marketId: number): MarketRecord | null {
+    return this.markets.get(marketId) ?? null;
+  }
+
+  /**
+   * The most recently recorded market, optionally narrowed to a station and/or
+   * system (case-insensitive). This is "the market in front of the commander"
+   * when docked — the live commodity list the operator should reason from.
+   */
+  latest(filter?: { system?: string; station?: string }): MarketRecord | null {
+    const sys = filter?.system?.toLowerCase();
+    const stn = filter?.station?.toLowerCase();
+    return (
+      [...this.markets.values()]
+        .filter((m) => (!sys || m.system.toLowerCase() === sys) && (!stn || m.station.toLowerCase() === stn))
+        .sort((a, b) => Date.parse(b.at) - Date.parse(a.at))[0] ?? null
+    );
+  }
+
+  /**
+   * Every remembered market that buys-from-us or sells-to-us the named
+   * commodity (case-insensitive substring), best price first. `side: 'buy'`
+   * = where the COMMANDER can buy (market sells it, has stock); `side: 'sell'`
+   * = where the commander can sell (market has demand).
+   */
+  withCommodity(commodity: string, side: 'buy' | 'sell'): Array<{ market: MarketRecord; item: MarketItem }> {
+    const q = commodity.trim().toLowerCase();
+    if (!q) return [];
+    const hits: Array<{ market: MarketRecord; item: MarketItem }> = [];
+    for (const m of this.markets.values()) {
+      for (const it of m.items) {
+        if (!it.name.toLowerCase().includes(q)) continue;
+        if (side === 'buy' && it.buy > 0 && it.stock > 0) hits.push({ market: m, item: it });
+        else if (side === 'sell' && it.sell > 0 && it.demand > 0) hits.push({ market: m, item: it });
+      }
+    }
+    return hits.sort((a, b) =>
+      side === 'buy' ? a.item.buy - b.item.buy : b.item.sell - a.item.sell,
+    );
+  }
 }
 
 export interface TradeEnd {

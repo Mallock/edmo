@@ -550,13 +550,11 @@ async fn piper_speak(
 
 // ------------------------------------------------------------- LM Studio proxy
 
-#[derive(Serialize, Deserialize, Clone)]
-struct ChatMsg {
-    role: String,
-    // Plain string for text chat, or an OpenAI content-part array for vision
-    // messages ({type:"text"}/{type:"image_url"}) — passed through verbatim.
-    content: serde_json::Value,
-}
+/// A chat message forwarded verbatim to LM Studio. Kept as raw JSON so the
+/// full OpenAI shape survives untouched: plain-string or content-part
+/// `content` (vision), plus the tool-loop additions — an assistant turn's
+/// `tool_calls` and `role:"tool"` result messages with `tool_call_id`.
+type ChatMsg = serde_json::Value;
 
 #[tauri::command]
 async fn llm_models(endpoint: String) -> Result<Vec<String>, String> {
@@ -586,6 +584,13 @@ async fn llm_models(endpoint: String) -> Result<Vec<String>, String> {
         .unwrap_or_default())
 }
 
+/// Result of one streamed completion: the prose `text` and any tool calls the
+/// model asked for (empty when it just answered).
+struct ChatTurn {
+    text: String,
+    tool_calls: Vec<serde_json::Value>,
+}
+
 async fn stream_chat(
     app: &AppHandle,
     id: &str,
@@ -595,8 +600,9 @@ async fn stream_chat(
     temperature: f32,
     max_tokens: u32,
     response_format: Option<serde_json::Value>,
+    tools: Option<serde_json::Value>,
     cancel: Arc<AtomicBool>,
-) -> Result<String, String> {
+) -> Result<ChatTurn, String> {
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(300))
@@ -612,6 +618,9 @@ async fn stream_chat(
     });
     if let Some(rf) = response_format {
         body["response_format"] = rf;
+    }
+    if let Some(t) = tools {
+        body["tools"] = t;
     }
     let resp = client
         .post(url)
@@ -634,15 +643,24 @@ async fn stream_chat(
     // We don't show it, but tracking it lets us tell "model starved by its own
     // thinking budget" apart from a genuinely empty reply.
     let mut reasoned = false;
-    fn finish(full: String, reasoned: bool) -> Result<String, String> {
-        if full.trim().is_empty() && reasoned {
+    // Tool calls arrive as deltas keyed by `index`; id/name land once, the
+    // JSON `arguments` string streams in fragments we concatenate.
+    let mut tool_accum: Vec<serde_json::Value> = Vec::new();
+    fn finish(
+        full: String,
+        reasoned: bool,
+        tool_calls: Vec<serde_json::Value>,
+    ) -> Result<ChatTurn, String> {
+        // Only a reply with neither prose NOR tool calls, after visible
+        // reasoning, means the model starved itself.
+        if full.trim().is_empty() && tool_calls.is_empty() && reasoned {
             return Err(
                 "the model spent its whole token budget on hidden reasoning — raise Max tokens \
                  or pick a non-reasoning (instruct) model"
                     .into(),
             );
         }
-        Ok(full)
+        Ok(ChatTurn { text: full, tool_calls })
     }
     while let Some(chunk) = stream.next().await {
         if cancel.load(Ordering::SeqCst) {
@@ -656,12 +674,15 @@ async fn stream_chat(
             let Some(data) = line.strip_prefix("data:") else { continue };
             let data = data.trim();
             if data == "[DONE]" {
-                return finish(full, reasoned);
+                return finish(full, reasoned, tool_accum);
             }
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
                 let delta = &v["choices"][0]["delta"];
                 if delta["reasoning_content"].as_str().is_some_and(|s| !s.is_empty()) {
                     reasoned = true;
+                }
+                if let Some(calls) = delta["tool_calls"].as_array() {
+                    accumulate_tool_calls(&mut tool_accum, calls);
                 }
                 let tok = delta["content"]
                     .as_str()
@@ -674,7 +695,36 @@ async fn stream_chat(
             }
         }
     }
-    finish(full, reasoned)
+    finish(full, reasoned, tool_accum)
+}
+
+/// Fold streamed `tool_calls` deltas into complete calls, keyed by `index`.
+/// Each complete entry is `{ id, type:"function", function:{ name, arguments } }`.
+fn accumulate_tool_calls(acc: &mut Vec<serde_json::Value>, deltas: &[serde_json::Value]) {
+    for (i, d) in deltas.iter().enumerate() {
+        // Prefer the explicit index; fall back to position within this delta.
+        let idx = d["index"].as_u64().map(|n| n as usize).unwrap_or(i);
+        while acc.len() <= idx {
+            acc.push(json!({ "id": "", "type": "function", "function": { "name": "", "arguments": "" } }));
+        }
+        let slot = &mut acc[idx];
+        if let Some(tid) = d["id"].as_str() {
+            if !tid.is_empty() {
+                slot["id"] = json!(tid);
+            }
+        }
+        if let Some(name) = d["function"]["name"].as_str() {
+            if !name.is_empty() {
+                slot["function"]["name"] = json!(name);
+            }
+        }
+        if let Some(frag) = d["function"]["arguments"].as_str() {
+            if !frag.is_empty() {
+                let cur = slot["function"]["arguments"].as_str().unwrap_or("").to_string();
+                slot["function"]["arguments"] = json!(cur + frag);
+            }
+        }
+    }
 }
 
 #[tauri::command]
@@ -688,6 +738,7 @@ async fn llm_chat(
     temperature: Option<f32>,
     max_tokens: Option<u32>,
     response_format: Option<serde_json::Value>,
+    tools: Option<serde_json::Value>,
 ) -> Result<(), String> {
     let cancel = Arc::new(AtomicBool::new(false));
     ctl.cancels.lock().unwrap().insert(id.clone(), cancel.clone());
@@ -700,13 +751,17 @@ async fn llm_chat(
         temperature.unwrap_or(0.3),
         max_tokens.unwrap_or(2048),
         response_format,
+        tools,
         cancel,
     )
     .await;
     ctl.cancels.lock().unwrap().remove(&id);
     match result {
-        Ok(text) => {
-            let _ = app.emit("llm-done", json!({ "id": id, "text": text }));
+        Ok(turn) => {
+            let _ = app.emit(
+                "llm-done",
+                json!({ "id": id, "text": turn.text, "tool_calls": turn.tool_calls }),
+            );
         }
         Err(message) => {
             let _ = app.emit("llm-error", json!({ "id": id, "message": message }));
@@ -1136,7 +1191,7 @@ fn capture_primary_bgra() -> Result<(Vec<u8>, u32, u32), String> {
     }
 }
 
-/// One glance: capture → downscale to ≤1280 px wide → JPEG q60 → data URI.
+/// One glance: capture → ≤2560 px wide (Lanczos) → JPEG q90 → data URI.
 /// The image lives only in memory and only travels to the local LM endpoint.
 #[tauri::command]
 async fn capture_screen() -> Result<String, String> {
@@ -1155,11 +1210,19 @@ async fn capture_screen() -> Result<String, String> {
             }
             let img: image::RgbImage = image::ImageBuffer::from_raw(w, h, rgb)
                 .ok_or("bad capture buffer")?;
-            let target_w = 1280u32.min(w);
-            let target_h = (h as u64 * target_w as u64 / w as u64).max(1) as u32;
-            let small = image::imageops::thumbnail(&img, target_w, target_h);
+            // Near-native quality: the endpoint is local, so bytes are free —
+            // and 1280px/q60 turned HUD text ("AUTO DOCK IN PROGRESS") into
+            // mush the VLM misread. Cap at 2560 wide (tames 4K+) with a
+            // proper Lanczos filter, JPEG q90.
+            let target_w = 2560u32.min(w);
+            let small = if target_w < w {
+                let target_h = (h as u64 * target_w as u64 / w as u64).max(1) as u32;
+                image::imageops::resize(&img, target_w, target_h, image::imageops::FilterType::Lanczos3)
+            } else {
+                img
+            };
             let mut jpeg = Vec::new();
-            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 60)
+            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 90)
                 .encode_image(&small)
                 .map_err(|e| e.to_string())?;
             Ok(format!(
@@ -1304,6 +1367,7 @@ async fn spansh_trade_route(
     capital: u64,
     max_hop_distance: u32,
     max_hops: u32,
+    requires_large_pad: bool,
 ) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
@@ -1319,8 +1383,10 @@ async fn spansh_trade_route(
         ("max_hops", max_hops.clamp(1, 4).to_string()),
         ("max_hop_distance", max_hop_distance.clamp(5, 200).to_string()),
         ("max_system_distance", "3000".into()),
-        // Booleans MUST be 0/1 — the API parses "false" as truthy.
-        ("requires_large_pad", "0".into()),
+        // Booleans MUST be 0/1 — the API parses "false" as truthy. Large-pad
+        // ships (Cutter, Corvette, Panther Clipper…) get "docking denied" at
+        // medium/small stops, so exclude those when the hull needs a large pad.
+        ("requires_large_pad", if requires_large_pad { "1" } else { "0" }.into()),
         ("allow_prohibited", "0".into()),
         ("allow_planetary", "1".into()),
         ("allow_player_owned", "0".into()),

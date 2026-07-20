@@ -121,6 +121,37 @@ export function parseLoadout(ev: JournalEvent): ShipLoadout {
   };
 }
 
+/**
+ * Hulls that can only berth at a LARGE pad — internal journal `Ship` ids,
+ * lowercased. Large ships get "docking denied — too large for this pad class"
+ * at medium/small outposts and most surface settlements, so a trade planner
+ * must be told to exclude those stops (Spansh `requires_large_pad`). This is
+ * the full large-pad roster; every other hull fits a medium (or smaller) pad.
+ */
+const LARGE_PAD_SHIPS = new Set([
+  'anaconda',
+  'federation_corvette', // Federal Corvette
+  'cutter', // Imperial Cutter
+  'type9', // Type-9 Heavy
+  'type9_military', // Type-10 Defender
+  'type7', // Type-7 Transporter
+  'empire_trader', // Imperial Clipper
+  'belugaliner', // Beluga Liner
+  'orca', // Orca
+  'panther_clipper', // Panther Clipper Mk II
+]);
+
+/**
+ * True when the hull needs a large pad, so trade/mission stops must have one.
+ * Unknown or missing ship → false (don't over-filter routes for the many
+ * medium/small hulls); `panther` is matched loosely in case the id varies.
+ */
+export function shipRequiresLargePad(ship?: string): boolean {
+  if (!ship) return false;
+  const id = ship.toLowerCase();
+  return LARGE_PAD_SHIPS.has(id) || id.includes('panther');
+}
+
 /** Cabin quality a passenger flavor demands (best-effort from PassengerType). */
 function requiredCabinClass(m: Mission): number {
   if (m.category === 'PassengerVIP') return 3; // VIPs ride First or better

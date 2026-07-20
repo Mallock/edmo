@@ -36,11 +36,20 @@ export interface LlmTokenPayload {
 export interface LlmDonePayload {
   id: string;
   text: string;
+  /** Tool calls the model requested this turn (empty when it just answered). */
+  tool_calls?: ToolCallWire[];
 }
 
 export interface LlmErrorPayload {
   id: string;
   message: string;
+}
+
+/** One tool call the model requested (OpenAI shape); `arguments` is JSON text. */
+export interface ToolCallWire {
+  id: string;
+  type?: string;
+  function: { name: string; arguments: string };
 }
 
 export interface ChatMessageWire {
@@ -52,6 +61,11 @@ export interface ChatMessageWire {
         | { type: 'text'; text: string }
         | { type: 'image_url'; image_url: { url: string } }
       >;
+  /** Assistant turn that requested tools. */
+  tool_calls?: ToolCallWire[];
+  /** Tool result message — the call it answers. */
+  tool_call_id?: string;
+  name?: string;
 }
 
 export async function defaultJournalDir(): Promise<string> {
@@ -104,6 +118,7 @@ export async function spanshTradeRoute(opts: {
   capital: number;
   maxHopDistance: number;
   maxHops: number;
+  requiresLargePad: boolean;
 }): Promise<string> {
   return invoke<string>('spansh_trade_route', {
     system: opts.system,
@@ -112,6 +127,7 @@ export async function spanshTradeRoute(opts: {
     capital: opts.capital,
     maxHopDistance: opts.maxHopDistance,
     maxHops: opts.maxHops,
+    requiresLargePad: opts.requiresLargePad,
   });
 }
 
@@ -142,6 +158,7 @@ export async function llmChat(opts: {
   temperature: number;
   maxTokens: number;
   responseFormat?: unknown; // OpenAI response_format (json_schema) passthrough
+  tools?: unknown; // OpenAI tools manifest; enables the tool loop
 }): Promise<void> {
   await invoke('llm_chat', {
     id: opts.id,
@@ -151,6 +168,7 @@ export async function llmChat(opts: {
     temperature: opts.temperature,
     maxTokens: opts.maxTokens,
     responseFormat: opts.responseFormat ?? null,
+    tools: opts.tools ?? null,
   });
 }
 

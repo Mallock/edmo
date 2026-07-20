@@ -123,6 +123,17 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
               ? `Connected — using ${snap.lm.activeModel ?? '?'}`
               : 'LM Studio unreachable — start its local server and load a model.'}
           </div>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={s.lm.tools}
+              onChange={(e) => set({ ...s, lm: { ...s.lm, tools: e.target.checked } })}
+            />
+            Let the operator use tools (reads your live market, ship, missions & plans routes on demand)
+          </label>
+          <div className="hint">
+            Needs a tool-calling model; auto-falls back to grounded answers otherwise.
+          </div>
         </section>
 
         <section>
@@ -428,11 +439,26 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
                   👁 Glance now
                 </button>
               </div>
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={s.vision.commentary}
+                  onChange={(e) =>
+                    set({ ...s, vision: { ...s.vision, commentary: e.target.checked } })
+                  }
+                />
+                Copilot commentary — the operator talks about what it sees you doing (paced with
+                chatter, never floods)
+              </label>
               <div className="hint">
-                A downscaled screenshot goes ONLY to your local LM endpoint and is never saved.
-                The operator speaks only when it sees something genuinely worth reacting to
+                A near-native screenshot goes ONLY to your local LM endpoint and is never saved.
+                Without commentary, the operator speaks only when it sees something genuinely
+                worth reacting to
                 {snap.glanceActivity ? ` — last seen: ${snap.glanceActivity}` : ''}.
               </div>
+              {snap.visionStatus && (
+                <div className="hint">👁 {snap.visionStatus}</div>
+              )}
             </>
           )}
         </section>

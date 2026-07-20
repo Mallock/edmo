@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { CommanderMemory, buildReflectionChat } from '../src/engine/memory.ts';
-import { buildGlanceMessages, parseGlanceReply } from '../src/engine/glance.ts';
+import { buildCommentaryMessages, buildGlanceMessages, parseGlanceReply } from '../src/engine/glance.ts';
 import type { JournalEvent } from '../src/engine/types.ts';
 
 const ev = (o: Record<string, unknown>): JournalEvent => o as unknown as JournalEvent;
@@ -219,4 +219,19 @@ test('glance: message structure and reply parsing', () => {
   const fenced = parseGlanceReply('```json\n{"activity":"in combat","notable":true,"remark":"Shields!"}\n```');
   assert.equal(fenced?.notable, true);
   assert.equal(parseGlanceReply('nonsense'), null);
+});
+
+test('commentary: copilot prompt carries session facts, image, and the NOT_IN_GAME escape', () => {
+  const msgs = buildCommentaryMessages(
+    'data:image/jpeg;base64,AAA',
+    'Commander is at Berman Market, Alberta (docked).\n- Delivery "Semis" → Colonia Orbital, Colonia',
+    "M'allock",
+  );
+  assert.equal(msgs.length, 2);
+  assert.match(msgs[0].content as string, /Commander M'allock/);
+  assert.match(msgs[0].content as string, /NOT_IN_GAME/);
+  assert.match(msgs[0].content as string, /STRICT grounding/);
+  const parts = msgs[1].content as Array<{ type: string; text?: string }>;
+  assert.deepEqual(parts.map((p) => p.type), ['text', 'image_url']);
+  assert.match(parts[0].text!, /Berman Market/);
 });

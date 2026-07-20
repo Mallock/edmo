@@ -102,6 +102,18 @@ function factLine(m: Mission): string {
   return `- ${bits.join('; ')}`;
 }
 
+/**
+ * Anti-repetition block from the last few stories (newest last). One stale
+ * story wasn't enough — a 2h session cycles the same three observations; the
+ * model demonstrably picks fresh topics when shown a LIST of what's used up.
+ */
+function avoidBlock(avoid?: string | string[]): string {
+  const list = (typeof avoid === 'string' ? [avoid] : (avoid ?? [])).filter(Boolean);
+  if (!list.length) return '';
+  const lines = list.slice(-4).map((s, i) => `${i + 1}. "${s.slice(0, 160)}"`);
+  return `\nYour recent stories were:\n${lines.join('\n')}\nTell something DIFFERENT: new topic, new angle — do not repeat these themes, places or comm transmissions.\n`;
+}
+
 /** Prompt for the LLM story path (use a high temperature, ~0.9).
  *  `seeds` are TRUE recent happenings (completions, BGS shifts, comms) the
  *  story may weave in — grounded callbacks land better than pure invention. */
@@ -109,13 +121,10 @@ export function buildFlavorChat(
   plan: StoryPlan,
   state: OperatorState,
   seeds: string[] = [],
-  avoid?: string,
+  avoid?: string | string[],
   comms: string[] = [],
 ): ChatMessage[] {
   const facts = plan.subjects.map(factLine).join('\n');
-  const avoidBlock = avoid
-    ? `\nYour previous story was: "${avoid.slice(0, 240)}" — tell something DIFFERENT: new topic, new angle, no repeated themes.\n`
-    : '';
   const commsBlock = comms.length
     ? `\nOverheard on local comms recently (all real transmissions):\n${comms
         .slice(-4)
@@ -135,12 +144,15 @@ export function buildFlavorChat(
       content:
         "You are the ship's Mission Operator on a private comm channel with your commander" +
         `${state.cmdr ? ` (Commander ${state.cmdr})` : ''}. ${LORE_PRIMER} ${OPERATOR_VOICE} ` +
-        'Tell one short piece of scuttlebutt from the angle given — about the passengers aboard, ' +
-        'a place on the route, or the job itself. Two to three spoken sentences, first person, ' +
-        'addressed to the commander. If ONE recent true event connects naturally to the current ' +
-        'job — cause and effect, or quiet irony, like hauling refugees right after clearing out ' +
-        'the pirates who displaced them — build on that connection briefly. You may also weave ' +
-        'in at most one overheard comm transmission as background texture. ' +
+        'Tell one piece of scuttlebutt from the angle given — about the passengers aboard, ' +
+        'a place on the route, or the job itself. Two to four spoken sentences, first person, ' +
+        'addressed to the commander. When two recent true events connect — cause and effect, or ' +
+        'quiet irony, like hauling refugees right after clearing out the pirates who displaced ' +
+        'them — build on that connection, and anchor it with one concrete number from the facts ' +
+        '(credits, tonnage, a count). You may add ONE piece of speculation, but frame it clearly ' +
+        'as dock rumor ("word is...", "they say..."). You may also weave in at most one ' +
+        'overheard comm transmission as background texture. End on a dry observation, never a ' +
+        'question. ' +
         `${GROUNDING_RULES} Never give instructions or advice, and never contradict the facts. ` +
         'No markdown, no preamble — just talk.',
     },
@@ -152,7 +164,7 @@ export function buildFlavorChat(
         (intel ? `${intel}\n` : '') +
         seedBlock +
         commsBlock +
-        avoidBlock +
+        avoidBlock(avoid) +
         `Angle: ${plan.angle}.\nTell the story now.`,
     },
   ];
@@ -281,13 +293,11 @@ export function buildAfterglowChat(
   seeds: string[],
   state: OperatorState,
   rng: () => number,
-  opts: { activity?: string | null; avoid?: string; comms?: string[] } = {},
+  opts: { activity?: string | null; avoid?: string | string[]; comms?: string[] } = {},
 ): ChatMessage[] {
   const mining = !!opts.activity && /mining/i.test(opts.activity);
   const angle = pick(mining ? MINING_ANGLES : AFTERGLOW_ANGLES, rng);
-  const avoid = opts.avoid
-    ? `\nYour previous story was: "${opts.avoid.slice(0, 240)}" — tell something DIFFERENT: new topic, new angle, no repeated themes.`
-    : '';
+  const avoid = avoidBlock(opts.avoid);
   return [
     {
       role: 'system',

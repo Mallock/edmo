@@ -35,7 +35,7 @@ import {
 } from '../engine/trade.ts';
 import { BioTracker, type BioLead } from '../engine/exobio.ts';
 import { StatusTracker, isBusyFocus, isScoopableStar, type StatusAlert } from '../engine/status.ts';
-import { ShipTracker, describeShip } from '../engine/ship.ts';
+import { ShipTracker, describeShip, shipRequiresLargePad } from '../engine/ship.ts';
 import { MaterialsTracker } from '../engine/materials.ts';
 import { ExploreTracker, type ExploreLead } from '../engine/explore.ts';
 import { parseSpanshRoute, routeSummary, type TradeRoute } from '../engine/spansh.ts';
@@ -47,10 +47,12 @@ import {
 } from '../engine/memory.ts';
 import {
   GLANCE_FORMAT,
+  buildCommentaryMessages,
   buildGlanceMessages,
   parseGlanceReply,
 } from '../engine/glance.ts';
 import { ConvoBuffer, cleanTranscript } from '../engine/convo.ts';
+import { TOOL_SCHEMAS, runTool, type ToolContext } from '../engine/tools.ts';
 import type { ChatMessage } from '../engine/lmstudio.ts';
 import type { JournalEvent, Mission, OperatorState } from '../engine/types.ts';
 import {
@@ -84,6 +86,7 @@ import {
   sttStart,
   sttStop,
   systemSpecs,
+  type ToolCallWire,
 } from './bridge.ts';
 import { classifyModel, type ModelFit, type SystemSpecs } from './modelfit.ts';
 import { loadSettings, saveSettings, type AppSettings } from './settings.ts';
@@ -161,6 +164,8 @@ export interface AppSnapshot {
   memorySummary: string;
   /** True when the active model reports vision capability (VLM). */
   visionOk: boolean;
+  /** Live one-line vision diagnostic: what the last glance did / why waiting. */
+  visionStatus: string | null;
   /** Last screen-glance activity ("supercruising"), null before any glance. */
   glanceActivity: string | null;
   /** Voice input: whisper sidecar installed / downloading / mic hot. */
@@ -174,6 +179,24 @@ const GAME_LIVE_WINDOW_MS = 90_000;
 
 function stripThink(text: string): string {
   return text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+}
+
+/** Human-readable label for a tool name, shown in the "working…" bubble. */
+function friendlyTool(name?: string): string {
+  const labels: Record<string, string> = {
+    get_current_market: 'checking the market here',
+    find_commodity: 'searching markets',
+    list_known_markets: 'listing known markets',
+    plan_trade_route: 'planning a route',
+    get_ship: 'checking the ship',
+    check_fit: 'checking cargo fit',
+    get_ship_status: 'reading ship status',
+    get_missions: 'reviewing missions',
+    get_materials: 'checking materials',
+    get_exploration: 'checking exploration',
+    get_system_intel: 'reading system intel',
+  };
+  return labels[name ?? ''] ?? (name || 'a tool');
 }
 
 export class AppCore {
@@ -213,7 +236,12 @@ export class AppCore {
   /** Feed entry the stream writes into — null for silent requests
    *  (reflection, screen glances) that must not show streaming text. */
   private currentAiEntry: FeedEntry | null = null;
-  private currentKind: 'ai' | 'story' | 'brief' | 'saga' | 'reflect' | 'glance' = 'ai';
+  private currentKind: 'ai' | 'story' | 'brief' | 'saga' | 'reflect' | 'glance' | 'commentary' =
+    'ai';
+  /** Live agentic tool-loop run for the current 'ai' question; null otherwise. */
+  private agent: { entry: FeedEntry; messages: ChatMessage[]; rounds: number; useTools: boolean } | null = null;
+  /** Cap tool rounds so a confused model can't loop forever. */
+  private static readonly MAX_TOOL_ROUNDS = 5;
   private lastStoryAt = Date.now();
 
   // ------------------------------------------------------------- memory bank
@@ -245,6 +273,9 @@ export class AppCore {
   private lastGlanceAt = 0;
   private glanceActivity: string | null = null;
   private glanceActivityAt = 0;
+  /** Last vision-pipeline outcome, timestamped — silent gates made "why is it
+   *  quiet?" undiagnosable from the outside, so every decision leaves a note. */
+  private glanceLog = '';
   private lastGlanceRemark = '';
   private lastGlanceRemarkAt = 0;
   private glanceManual = false;
@@ -280,13 +311,28 @@ export class AppCore {
   private lastMiningAt = 0;
   private lastStoryText = '';
   private seedCountAtLastStory = 0;
-  /** Interesting NPC comms overheard recently — ambient story texture. */
-  private recentComms: Array<{ text: string; at: number }> = [];
+  /** Interesting NPC comms overheard recently — ambient story texture.
+   *  `used` marks lines already woven into a story: each transmission is
+   *  offered to the LLM ONCE, or the same catchy line haunts every beat for
+   *  45 minutes (the cruise-ship-safety-demo problem). */
+  private recentComms: Array<{ text: string; at: number; used?: boolean }> = [];
+  /** Last few spoken stories/commentaries — the anti-repetition ring. */
+  private recentStories: string[] = [];
   private commsSeen = new Map<string, number>();
 
+  /** Unused fresh comms, marked consumed on take — each line rides once. */
   private freshComms(): string[] {
     const cutoff = Date.now() - 45 * 60_000;
-    return this.recentComms.filter((c) => c.at > cutoff).map((c) => c.text);
+    const fresh = this.recentComms.filter((c) => c.at > cutoff && !c.used);
+    for (const c of fresh) c.used = true;
+    return fresh.map((c) => c.text);
+  }
+
+  /** Remember a spoken story/commentary for the anti-repetition ring. */
+  private rememberStory(text: string): void {
+    if (!text) return;
+    this.recentStories.push(text);
+    if (this.recentStories.length > 4) this.recentStories = this.recentStories.slice(-4);
   }
 
   private marketMemory = (() => {
@@ -432,6 +478,7 @@ export class AppCore {
       settings: this.settings,
       memorySummary: this.memory.summaryLine(),
       visionOk: this.activeModelIsVlm(),
+      visionStatus: this.settings.vision.enabled ? this.visionStatusLine() : null,
       glanceActivity:
         this.glanceActivity && Date.now() - this.glanceActivityAt < 10 * 60_000
           ? this.glanceActivity
@@ -498,7 +545,7 @@ export class AppCore {
             : 'Click-through off.');
         }),
         onLlmToken((p) => this.onAiToken(p.id, p.token)),
-        onLlmDone((p) => this.onAiDone(p.id, p.text)),
+        onLlmDone((p) => this.onAiDone(p.id, p.text, p.tool_calls)),
         onLlmError((p) => this.onAiError(p.id, p.message)),
       ]);
 
@@ -1223,7 +1270,15 @@ export class AppCore {
     }
     this.routeBusy = true;
     this.lastRouteFetchAt = Date.now();
-    if (manual) this.pushFeed('system', `Asking Spansh for routes from ${station ?? system}… (takes up to a minute)`);
+    // Large-pad hulls (Cutter, Panther Clipper…) can't dock at medium/small
+    // stops — constrain the planner so it never routes us somewhere we'd be
+    // turned away at the pad.
+    const requiresLargePad = shipRequiresLargePad(this.ship.current?.ship);
+    if (manual)
+      this.pushFeed(
+        'system',
+        `Asking Spansh for routes from ${station ?? system}…${requiresLargePad ? ' (large-pad only)' : ''} (takes up to a minute)`,
+      );
     this.emit();
     try {
       const raw = await spanshTradeRoute({
@@ -1233,6 +1288,7 @@ export class AppCore {
         capital: Math.max(1_000_000, this.stats.startCredits + this.stats.earnedTotal()),
         maxHopDistance: this.settings.trade.routeMaxHopLy,
         maxHops: 2,
+        requiresLargePad,
       });
       const route = parseSpanshRoute(raw);
       this.route = route;
@@ -1523,6 +1579,26 @@ export class AppCore {
    * recent combat (GPU contention + wrong moment). The glance itself is
    * silent — speaking is decided in onGlanceReply under its own cooldowns.
    */
+  /** Record what the vision pipeline just did/decided, with a timestamp. */
+  private noteGlance(note: string): void {
+    this.glanceLog = `${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })} — ${note}`;
+  }
+
+  /** Live diagnostic for Settings: last outcome, or why the glance is waiting. */
+  private visionStatusLine(): string {
+    const now = Date.now();
+    const waiting: string[] = [];
+    if (!this.lmOk) waiting.push('LM Studio offline');
+    else if (!this.activeModelIsVlm()) waiting.push('active model has no vision');
+    if (now - this.lastGameActivity >= GAME_LIVE_WINDOW_MS)
+      waiting.push('game looks idle (no journal/status updates)');
+    const cool = this.settings.vision.intervalMin * 60_000 - (now - this.lastGlanceAt);
+    if (cool > 0) waiting.push(`next glance in ${Math.ceil(cool / 60_000)}m`);
+    if (now - this.lastCombatAt < 2 * 60_000) waiting.push('combat hold');
+    const state = waiting.length ? `waiting: ${waiting.join(' · ')}` : 'glance due on next tick';
+    return this.glanceLog ? `${this.glanceLog} · ${state}` : state;
+  }
+
   private maybeGlance(): void {
     if (!this.settings.vision.enabled || !isTauri) return;
     if (!this.lmOk || this.lmBusy || this.glanceInFlight) return;
@@ -1553,6 +1629,58 @@ export class AppCore {
     try {
       const dataUri = await captureScreen();
       if (this.lmBusy) return; // something else grabbed the slot mid-capture
+      // Copilot commentary: the periodic glance SPEAKS about what it sees
+      // instead of returning a silent danger verdict. The glance timer
+      // (vision.intervalMin) already caps how often this can happen, so it
+      // only needs a short GAP from the last spoken beat — requiring a full
+      // chatter interval of silence meant commentary ~never fired in active
+      // play (accept/complete stories keep resetting that clock). A manual
+      // "Glance now" always gives the rich beat when commentary is on.
+      const ambientGapMs = Math.min(3, Math.max(1, this.settings.chatter.intervalMin)) * 60_000;
+      if (
+        this.settings.vision.commentary &&
+        (manual ||
+          (this.settings.chatter.enabled && Date.now() - this.lastStoryAt >= ambientGapMs))
+      ) {
+        this.glanceManual = false; // consumed here; must not leak into the next verdict glance
+        const missions = this.sm
+          .activeMissions()
+          .slice(0, 4)
+          .map(
+            (m) =>
+              `- ${m.category} "${m.title}"${m.destination ? ` → ${m.destination.station ? `${m.destination.station}, ` : ''}${m.destination.system}` : ''}`,
+          );
+        // Curated facts, journal-truth first. Deliberately NOT contextExtras():
+        // background lines (community goals, memory recalls, trade leads) gave
+        // the model places to hallucinate the commander into — it once put the
+        // pilot "filling out paperwork at Peters Base" mid-flight because a CG
+        // line mentioned Peters Base.
+        const st = this.statusTracker.current;
+        const mode = st?.docked
+          ? `docked${this.sm.location.station ? ` at ${this.sm.location.station}` : ''}`
+          : st?.onFoot
+            ? 'on foot'
+            : st?.supercruise
+              ? 'in supercruise'
+              : 'flying in normal space';
+        const facts = [
+          `JOURNAL TRUTH: the commander is ${mode} in ${this.sm.location.system}.`,
+          ...(st?.fuelPct != null ? [`Fuel ${Math.round(st.fuelPct * 100)}%.`] : []),
+          ...(this.ship.current ? [`Loadout: ${describeShip(this.ship.current)}.`] : []),
+          ...(missions.length ? ['Active missions:', ...missions] : []),
+        ].join('\n');
+        const entry = this.pushFeed('vision', '', { streaming: true });
+        this.lastStoryAt = Date.now();
+        this.noteGlance('commentary — looking at the screen…');
+        this.startLlm(
+          entry,
+          'commentary',
+          buildCommentaryMessages(dataUri, facts, this.sm.commanderName || undefined) as unknown as ChatMessage[],
+          0.8,
+        );
+        return;
+      }
+      this.noteGlance('verdict check (commentary waits for a 3m gap after the last spoken beat)');
       const context = this.sm.location.system !== 'unknown'
         ? `Journal says the commander is in ${this.sm.location.system}${this.sm.docked ? ', docked' : ''}.`
         : '';
@@ -1567,6 +1695,7 @@ export class AppCore {
         GLANCE_FORMAT,
       );
     } catch (e) {
+      this.noteGlance(`capture failed: ${String(e).slice(0, 80)}`);
       if (manual) this.pushFeed('system', `Screen glance failed: ${String(e)}`);
       this.emit();
     } finally {
@@ -1577,7 +1706,11 @@ export class AppCore {
   /** Model verdict on a glance — deterministic no-flood gate owns the mic. */
   private onGlanceReply(raw: string): void {
     const reply = parseGlanceReply(raw);
-    if (!reply) return;
+    if (!reply) {
+      this.noteGlance('verdict reply unparseable');
+      return;
+    }
+    this.noteGlance(`saw: ${reply.activity || 'the screen'}${reply.notable ? ' — spoke up' : ' (nothing notable, stayed quiet)'}`);
     const manual = this.glanceManual;
     this.glanceManual = false;
     if (reply.activity && reply.activity !== 'not in the game') {
@@ -1643,17 +1776,8 @@ export class AppCore {
     const risk = this.stats.riskNote();
     if (risk) out.push(risk);
     // Live ship telemetry (Status.json): fuel, legal state, current mode.
-    const st = this.statusTracker.current;
-    if (st) {
-      const bits: string[] = [];
-      if (st.fuelPct != null) bits.push(`fuel ${Math.round(st.fuelPct * 100)}%`);
-      if (st.legalState && st.legalState !== 'Clean') bits.push(`legal status ${st.legalState}`);
-      if (st.docked) bits.push('docked');
-      else if (st.supercruise) bits.push('in supercruise');
-      else if (st.onFoot) bits.push('on foot');
-      if (st.silentRunning) bits.push('running silent');
-      if (bits.length) out.push(`Ship status: ${bits.join(', ')}.`);
-    }
+    const stLine = this.liveStatusLine();
+    if (stLine) out.push(stLine);
     // Ship loadout (Loadout): jump range, cargo/cabins, key fittings.
     if (this.ship.current) out.push(`Loadout: ${describeShip(this.ship.current)}.`);
     // Whether the current ship can actually carry the selected mission.
@@ -1682,6 +1806,10 @@ export class AppCore {
       );
     }
     if (this.route) out.push(`Community route data (Spansh): ${routeSummary(this.route)}`);
+    // The live market in front of the commander — grounds "what should I buy
+    // here?" so the operator never invents commodities. Also flags when a
+    // remembered Spansh route points at something no longer stocked here.
+    for (const line of this.currentMarketLines()) out.push(line);
     // Long-term memory relevant to where we are and who we're working for,
     // plus the commander profile (lifetime tallies + records).
     if (this.settings.memory.enabled) {
@@ -1701,6 +1829,99 @@ export class AppCore {
     const seen = this.currentActivity();
     if (seen?.includes('(seen on screen)')) out.push(`Right now the commander is ${seen}.`);
     return out;
+  }
+
+  /** Live ship telemetry as one line, or null when nothing is known yet. */
+  private liveStatusLine(): string | null {
+    const st = this.statusTracker.current;
+    if (!st) return null;
+    const bits: string[] = [];
+    if (st.fuelPct != null) bits.push(`fuel ${Math.round(st.fuelPct * 100)}%`);
+    if (st.legalState && st.legalState !== 'Clean') bits.push(`legal status ${st.legalState}`);
+    if (st.docked) bits.push('docked');
+    else if (st.supercruise) bits.push('in supercruise');
+    else if (st.onFoot) bits.push('on foot');
+    if (st.silentRunning) bits.push('running silent');
+    return bits.length ? `Ship status: ${bits.join(', ')}.` : null;
+  }
+
+  /**
+   * Context lines for the market the commander is docked at: a compact buy
+   * list, plus a warning when a remembered Spansh route says to buy something
+   * that isn't actually stocked here anymore (the stale-data trap).
+   */
+  private currentMarketLines(): string[] {
+    const st = this.statusTracker.current;
+    const station = this.sm.location.station;
+    if (!st?.docked || !station) return [];
+    const rec = this.marketMemory.latest({ station });
+    if (!rec) return [];
+    const out: string[] = [];
+    const buys = rec.items.filter((i) => i.buy > 0 && i.stock > 0).sort((a, b) => b.stock - a.stock);
+    if (buys.length) {
+      out.push(
+        `Live market here (${rec.station}): buys ${buys.slice(0, 10).map((i) => `${i.name} ${i.buy.toLocaleString('en-US')}cr`).join(', ')}.`,
+      );
+    } else {
+      out.push(`Live market here (${rec.station}): nothing purchasable in stock right now.`);
+    }
+    // Stale-route trap: route starts here but the commodity is gone.
+    const hop = this.route?.hops[0];
+    if (hop && hop.fromStation.toLowerCase() === rec.station.toLowerCase()) {
+      const stocked = rec.items.some(
+        (i) => i.buy > 0 && i.stock > 0 && i.name.toLowerCase().includes(hop.commodity.toLowerCase()),
+      );
+      if (!stocked) {
+        out.push(
+          `Note: the saved Spansh route says buy ${hop.commodity} here, but this market no longer stocks it — the route is stale; re-plan or pick from what's in stock.`,
+        );
+      }
+    }
+    return out;
+  }
+
+  /** Assemble the live-data context the operator's tools read from. */
+  private buildToolContext(): ToolContext {
+    const state = { ...this.sm.getState(), now: new Date().toISOString() };
+    const station = this.statusTracker.current?.docked ? this.sm.location.station ?? null : this.sm.location.station ?? null;
+    return {
+      system: this.sm.location.system,
+      station,
+      markets: this.marketMemory,
+      ship: this.ship.current,
+      shipDescription: this.ship.current ? describeShip(this.ship.current) : null,
+      liveCargo: this.ship.liveCargo,
+      statusLine: this.liveStatusLine(),
+      missions: this.sm.activeMissions(),
+      materialsLine: this.materials.contextLine(),
+      exploreLine: this.explore.contextLine(),
+      systemIntelLine: describeSystemIntel(state),
+      planRoute: async ({ maxHops, requiresLargePad }) => {
+        const raw = await spanshTradeRoute({
+          system: this.sm.location.system,
+          station,
+          maxCargo: Math.max(8, this.stats.cargoCapacity || 64),
+          capital: Math.max(1_000_000, this.stats.startCredits + this.stats.earnedTotal()),
+          maxHopDistance: this.settings.trade.routeMaxHopLy,
+          maxHops,
+          requiresLargePad,
+        });
+        const route = parseSpanshRoute(raw);
+        // Surface it in the route card too, so tool-planned routes are clickable.
+        if (route) {
+          this.route = route;
+          this.routeIdx = 0;
+        }
+        return route;
+      },
+    };
+  }
+
+  /** Whether the operator may use the tool loop for this question. */
+  private toolsActive(model: string | null): boolean {
+    if (!isTauri || !this.lmOk || !model || !this.settings.lm.tools) return false;
+    // Embedding models can't chat, let alone call tools.
+    return !/embed/i.test(this.modelTypes[model] ?? '') && !/embed/i.test(model);
   }
 
   private activeModel(): string | null {
@@ -1779,7 +2000,90 @@ export class AppCore {
       this.finishAiWithFallback(entry, mission, nowIso, 'LM Studio is offline');
       return;
     }
-    this.startLlm(entry, 'ai', messages, this.settings.lm.temperature);
+    if (this.toolsActive(model)) this.startAgentic(entry, messages);
+    else this.startLlm(entry, 'ai', messages, this.settings.lm.temperature);
+  }
+
+  // --------------------------------------------------------- agentic tool loop
+
+  /**
+   * Run an 'ai' question through the tool loop: the model may call tools to
+   * read live game state (market, ship, missions…) before answering. Rounds
+   * are bounded; on the very first round we retry once WITHOUT tools if the
+   * backend rejects them, so tool-incapable models degrade to grounded chat.
+   */
+  private startAgentic(entry: FeedEntry, messages: ChatMessage[]): void {
+    const withTools = messages.slice();
+    // Nudge the model to prefer tools over guessing (small local models won't
+    // otherwise reach for them). Appended to the existing system prompt.
+    if (withTools[0]?.role === 'system') {
+      withTools[0] = {
+        ...withTools[0],
+        content: `${withTools[0].content} You can call tools to read the commander's LIVE game data (current market, ship, missions, status, materials, exploration, and Spansh trade routes). When the answer depends on prices, stock, what to buy or sell, what's profitable here, or whether cargo fits, CALL THE RELEVANT TOOL and use its result — never guess or trust possibly-stale route data. Use get_current_market for "here". After gathering what you need, answer in 2-4 short speakable sentences with no markdown.`,
+      };
+    }
+    this.agent = { entry, messages: withTools, rounds: 0, useTools: true };
+    this.runAgentRound();
+  }
+
+  private runAgentRound(): void {
+    const a = this.agent;
+    if (!a) return;
+    this.resolveOrphan();
+    const model = this.activeModel();
+    if (!model) {
+      this.agent = null;
+      this.finishAiWithFallback(a.entry, this.selectedMission(), new Date().toISOString(), 'no model');
+      return;
+    }
+    const id = `q${this.askSeq++}`;
+    this.currentAskId = id;
+    this.currentAiEntry = a.entry;
+    this.currentKind = 'ai';
+    this.lmBusy = true;
+    a.entry.text = ''; // fresh cursor; only the final round's prose should show
+    a.entry.streaming = true;
+    this.emit();
+    llmChat({
+      id,
+      endpoint: this.settings.lm.endpoint,
+      model,
+      messages: a.messages,
+      temperature: this.settings.lm.temperature,
+      maxTokens: this.settings.lm.maxTokens,
+      tools: a.useTools ? TOOL_SCHEMAS : undefined,
+    }).catch((e) => this.onAiError(id, String(e)));
+  }
+
+  /** Handle a tool-call turn: execute each tool, append results, loop again. */
+  private async continueAgent(text: string, toolCalls: ToolCallWire[]): Promise<void> {
+    const a = this.agent;
+    if (!a) return;
+    a.rounds += 1;
+    // Record the assistant's tool request verbatim so the model sees its own call.
+    a.messages.push({ role: 'assistant', content: text ?? '', tool_calls: toolCalls });
+    // Show the operator "working" in its bubble while tools run.
+    a.entry.text = `🔧 ${toolCalls.map((c) => friendlyTool(c.function?.name)).join(', ')}…`;
+    a.entry.streaming = true;
+    this.emit();
+    const ctx = this.buildToolContext();
+    for (const call of toolCalls) {
+      const name = call.function?.name ?? '';
+      const args = call.function?.arguments ?? '';
+      let result: string;
+      try {
+        result = await runTool(name, args, ctx);
+      } catch (e) {
+        result = `Error running ${name}: ${String(e)}`;
+      }
+      a.messages.push({ role: 'tool', tool_call_id: call.id, name, content: result });
+    }
+    // A newer question (or a cancel) may have replaced this run while tools ran
+    // asynchronously — don't drive a superseded loop.
+    if (this.agent !== a) return;
+    // Past the round cap, stop offering tools so the model must answer.
+    if (a.rounds >= AppCore.MAX_TOOL_ROUNDS) a.useTools = false;
+    this.runAgentRound();
   }
 
   // ------------------------------------------------------------- voice input
@@ -1882,6 +2186,7 @@ export class AppCore {
         entry.text = afterglowFlavor(state, Math.random, activity);
         entry.streaming = false;
         this.lastStoryText = entry.text;
+        this.rememberStory(entry.text);
         this.speak(entry.text);
         this.emit();
         return;
@@ -1891,7 +2196,7 @@ export class AppCore {
         'story',
         buildAfterglowChat(this.freshSeeds(), state, Math.random, {
           activity,
-          avoid: this.lastStoryText || undefined,
+          avoid: this.recentStories,
           comms: this.freshComms(),
         }),
         0.9,
@@ -1910,7 +2215,7 @@ export class AppCore {
         plan,
         state,
         this.freshSeeds(),
-        this.lastStoryText || undefined,
+        this.recentStories,
         this.freshComms(),
       ),
       0.9,
@@ -1949,7 +2254,9 @@ export class AppCore {
         storySoFar: this.sagaEpisodes.at(-1)?.text ?? '',
       }),
       0.85,
-      Math.max(this.settings.lm.maxTokens, 3072),
+      // The nightly episode is the showcase piece — give it a big canvas.
+      // Local model, free tokens; measured ~18s at 8192 on gemma-4-e4b.
+      Math.max(this.settings.lm.maxTokens, 8192),
     );
   }
 
@@ -1987,7 +2294,7 @@ export class AppCore {
 
   private startLlm(
     entry: FeedEntry | null,
-    kind: 'ai' | 'story' | 'brief' | 'saga' | 'reflect' | 'glance',
+    kind: 'ai' | 'story' | 'brief' | 'saga' | 'reflect' | 'glance' | 'commentary',
     messages: ChatMessage[],
     temperature: number,
     maxTokens?: number,
@@ -2093,8 +2400,17 @@ export class AppCore {
     this.emit();
   }
 
-  private onAiDone(id: string, text: string): void {
+  private onAiDone(id: string, text: string, toolCalls?: ToolCallWire[]): void {
     if (id !== this.currentAskId) return;
+    // Agentic 'ai' turn: if the model asked for tools, run them and loop
+    // instead of finalizing. Keeps lmBusy set across the whole tool loop.
+    if (this.agent && this.currentKind === 'ai' && toolCalls && toolCalls.length) {
+      this.currentAskId = null;
+      void this.continueAgent(text, toolCalls);
+      return;
+    }
+    // Any final 'ai' answer ends the agentic run.
+    if (this.currentKind === 'ai') this.agent = null;
     const entry = this.currentAiEntry;
     const kind = this.currentKind;
     this.currentAskId = null;
@@ -2121,11 +2437,31 @@ export class AppCore {
     if (!entry) return;
     const finalText = stripThink(text || entry.text);
     const mission = this.selectedMission();
+    // Vision commentary: retract quietly when there's nothing worth saying
+    // (screen wasn't the game, or the model came back empty).
+    if (kind === 'commentary') {
+      if (!finalText || /NOT_IN_GAME/.test(finalText)) {
+        this.noteGlance(finalText ? 'screen was not the game — stayed quiet' : 'commentary came back empty');
+        this.feed = this.feed.filter((e) => e !== entry);
+      } else {
+        this.noteGlance('commentary spoken');
+        entry.text = `👁 ${finalText}`;
+        entry.streaming = false;
+        this.lastStoryText = finalText;
+        this.rememberStory(finalText);
+        this.speak(finalText);
+      }
+      this.emit();
+      return;
+    }
     if (finalText) {
       entry.text = finalText;
       entry.streaming = false;
       if (kind === 'saga') this.saveSagaEpisode(finalText);
-      if (kind === 'story') this.lastStoryText = finalText;
+      if (kind === 'story') {
+        this.lastStoryText = finalText;
+        this.rememberStory(finalText);
+      }
       this.speak(finalText);
       this.emit();
     } else if (kind === 'saga') {
@@ -2150,6 +2486,17 @@ export class AppCore {
 
   private onAiError(id: string, message: string): void {
     if (id !== this.currentAskId) return;
+    // Graceful tool fallback: if the backend rejects tools on the first round
+    // (model/server can't do tool calls), retry the same question once without
+    // them so the answer still comes through (grounded by context instead).
+    if (this.agent && this.currentKind === 'ai' && this.agent.useTools && this.agent.rounds === 0 && message !== 'cancelled') {
+      this.currentAskId = null;
+      this.lmBusy = false;
+      this.agent.useTools = false;
+      this.runAgentRound();
+      return;
+    }
+    if (this.currentKind === 'ai') this.agent = null;
     const entry = this.currentAiEntry;
     const kind = this.currentKind;
     const mission = this.selectedMission();
@@ -2170,6 +2517,13 @@ export class AppCore {
       return;
     }
     if (!entry) return;
+    if (kind === 'commentary') {
+      // Ambient vision talk fails silently — retract the placeholder row.
+      this.noteGlance(`commentary failed: ${message.slice(0, 80)}`);
+      this.feed = this.feed.filter((e) => e !== entry);
+      this.emit();
+      return;
+    }
     if (message === 'cancelled') {
       entry.text = '[cancelled]';
       entry.streaming = false;

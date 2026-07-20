@@ -12,6 +12,7 @@ export interface AppSettings {
     model: string | null; // null = auto-pick first non-embedding model
     temperature: number;
     maxTokens: number;
+    tools: boolean; // let the operator call tools to read live game data
   };
   voice: {
     enabled: boolean;
@@ -57,6 +58,9 @@ export interface AppSettings {
   vision: {
     enabled: boolean; // OPT-IN: periodic screen glances to the local vision model
     intervalMin: number; // minutes between glances while the game is live
+    /** Rich copilot remarks about what's on screen — not just danger verdicts.
+     *  Paced by the chatter cooldown so it can never flood the commander. */
+    commentary: boolean;
   };
   voiceInput: {
     enabled: boolean; // push-to-talk via the local whisper.cpp sidecar
@@ -69,9 +73,13 @@ export const DEFAULT_SETTINGS: AppSettings = {
     model: null,
     temperature: 0.3,
     // Reasoning models (gemma-4, qwen3.x) burn hidden "thinking" tokens before
-    // any visible answer — 512 gets fully consumed by reasoning and the reply
-    // arrives empty. 2048 leaves room to think AND answer.
-    maxTokens: 2048,
+    // any visible answer — measured on gemma-4-e4b: a 2-sentence chatter beat
+    // spends 800-1,700 chars of hidden reasoning first. The model is local, so
+    // tokens are free; 4096 buys quality and headroom, not cost.
+    maxTokens: 4096,
+    // Tool loop on by default; auto-disabled at runtime for models that don't
+    // support tool calls, and falls back to grounded context on tool errors.
+    tools: true,
   },
   voice: {
     enabled: true,
@@ -119,6 +127,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
     // but looking at the screen is something the commander should invite.
     enabled: false,
     intervalMin: 5,
+    // When vision is on, let the operator actually TALK about what it sees —
+    // the danger-only verdict wastes a capable VLM.
+    commentary: true,
   },
   voiceInput: {
     // Off by default — enabling offers the one-time whisper.cpp download.
@@ -148,9 +159,11 @@ export function loadSettings(): AppSettings {
     const raw = localStorage.getItem(KEY);
     if (!raw) return structuredClone(DEFAULT_SETTINGS);
     const s = merge(structuredClone(DEFAULT_SETTINGS), JSON.parse(raw));
-    // Migration: 512 was the old default and starves reasoning models (their
-    // hidden thinking eats the whole budget → empty answers). Upgrade it.
-    if (s.lm.maxTokens === 512) s.lm.maxTokens = DEFAULT_SETTINGS.lm.maxTokens;
+    // Migration: 512 and 2048 were earlier defaults — 512 starves reasoning
+    // models outright, 2048 leaves thinking-heavy models cramped. Users who
+    // set a custom value keep it; old defaults ride up to the new one.
+    if (s.lm.maxTokens === 512 || s.lm.maxTokens === 2048)
+      s.lm.maxTokens = DEFAULT_SETTINGS.lm.maxTokens;
     // Migration: chatter default moved 10 → 6 min ("more operator talking").
     if (s.chatter.intervalMin === 10) s.chatter.intervalMin = DEFAULT_SETTINGS.chatter.intervalMin;
     return s;

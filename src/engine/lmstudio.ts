@@ -3,9 +3,22 @@
  * Uses the global fetch (Node 18+). All calls fail soft with a timeout so the
  * mission engine keeps working when the LLM is unavailable.
  */
+/** One tool/function call the model asked us to run (OpenAI shape). */
+export interface ToolCall {
+  id: string;
+  type?: string; // always "function" in practice; kept wide for passthrough
+  function: { name: string; arguments: string }; // arguments is a JSON string
+}
+
 export interface ChatMessage {
-  role: 'system' | 'user' | 'assistant';
+  role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
+  /** Present on an assistant turn that requested tools. */
+  tool_calls?: ToolCall[];
+  /** Present on a `role: 'tool'` result message — the call it answers. */
+  tool_call_id?: string;
+  /** Optional tool name on a tool result (some backends want it). */
+  name?: string;
 }
 
 export interface LmStudioOptions {

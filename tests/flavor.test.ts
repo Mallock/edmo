@@ -79,6 +79,22 @@ test('offline templates: kill story names the target, no empty output', () => {
   assert.match(text!, /Ramtop/);
 });
 
+test('buildFlavorChat avoid-ring lists recent stories; string still accepted', () => {
+  const plan = planStory([mission(1)], mulberry32(1))!;
+  const ring = ['The dockhands at Berman Market are jumpy.', 'Word is the Council pays double.', 'Pad three again, commander.'];
+  const msgs = buildFlavorChat(plan, STATE, [], ring);
+  assert.match(msgs[1].content, /Your recent stories were:/);
+  assert.match(msgs[1].content, /1\. "The dockhands/);
+  assert.match(msgs[1].content, /3\. "Pad three/);
+  assert.match(msgs[1].content, /do not repeat these themes/);
+  // Back-compat: a single string still produces the block.
+  const single = buildFlavorChat(plan, STATE, [], 'One old story.');
+  assert.match(single[1].content, /1\. "One old story\."/);
+  // No avoid → no block.
+  const none = buildFlavorChat(plan, STATE, []);
+  assert.doesNotMatch(none[1].content, /Your recent stories/);
+});
+
 test('offline combo weaves two mission titles together', () => {
   const text = ruleBasedFlavor([mission(1), mission(2)], STATE, () => 0);
   assert.ok(text);
