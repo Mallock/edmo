@@ -1,0 +1,56 @@
+# Reproducible Linux installer build for ED Mission Operator.
+# Mirrors README "Linux": Debian bookworm + the documented apt deps, the Linux
+# Piper TTS fetch, then `npm run tauri build` (auto-merges tauri.linux.conf.json
+# → .deb + .AppImage). Builds entirely inside the container so the host's
+# Windows node_modules/target are never clobbered.
+#
+# Build + extract the installers to ./linux-dist:
+#   docker build -f Dockerfile.linux --target artifacts -o type=local,dest=./linux-dist .
+#
+# syntax=docker/dockerfile:1
+FROM debian:bookworm AS build
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Tauri v2 Linux system dependencies (README) + build tooling.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential curl wget file ca-certificates pkg-config git \
+      libssl-dev libgtk-3-dev libwebkit2gtk-4.1-dev \
+      libayatana-appindicator3-dev librsvg2-dev patchelf libasound2-dev \
+      xz-utils fuse3 libfuse2 desktop-file-utils \
+ && rm -rf /var/lib/apt/lists/*
+
+# Node 22.x (engines: >=22.6.0).
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+ && apt-get install -y --no-install-recommends nodejs \
+ && rm -rf /var/lib/apt/lists/*
+
+# Rust toolchain (app shell).
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# AppImage tooling can't FUSE-mount inside a container — extract-and-run instead.
+ENV APPIMAGE_EXTRACT_AND_RUN=1
+
+WORKDIR /app
+
+# Cache the node install on the manifests alone.
+COPY package.json package-lock.json ./
+RUN npm ci
+
+# Source (node_modules/target/site excluded via .dockerignore).
+COPY . .
+
+# Linux Piper engine + en_GB voices → src-tauri/resources/tts-linux.
+RUN bash scripts/fetch-tts.sh
+
+# Produce .deb + .AppImage (tauri auto-merges tauri.linux.conf.json on Linux).
+RUN npm run tauri build
+
+# Collect just the installers.
+RUN mkdir -p /out \
+ && cp src-tauri/target/release/bundle/deb/*.deb /out/ \
+ && cp src-tauri/target/release/bundle/appimage/*.AppImage /out/
+
+# Export stage: `-o type=local` writes only these files to the host.
+FROM scratch AS artifacts
+COPY --from=build /out/ /

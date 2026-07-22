@@ -61,6 +61,11 @@ export interface AppSettings {
     /** Rich copilot remarks about what's on screen — not just danger verdicts.
      *  Paced by the chatter cooldown so it can never flood the commander. */
     commentary: boolean;
+    /** Two-stage vision: a first pass reads the screen into a structured
+     *  description, which the operator then speaks from. Splits perception from
+     *  phrasing so small local VLMs ground better; costs one extra (fast,
+     *  text-only) inference per glance. */
+    describeFirst: boolean;
   };
   voiceInput: {
     enabled: boolean; // push-to-talk via the local whisper.cpp sidecar
@@ -130,6 +135,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
     // When vision is on, let the operator actually TALK about what it sees —
     // the danger-only verdict wastes a capable VLM.
     commentary: true,
+    // Read the screen first, then speak from that reading — grounded comments
+    // out of small local models, at the price of one extra fast inference.
+    describeFirst: true,
   },
   voiceInput: {
     // Off by default — enabling offers the one-time whisper.cpp download.

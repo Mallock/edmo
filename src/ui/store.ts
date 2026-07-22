@@ -47,9 +47,16 @@ import {
 } from '../engine/memory.ts';
 import {
   GLANCE_FORMAT,
+  SCENE_FORMAT,
   buildCommentaryMessages,
   buildGlanceMessages,
+  buildSceneDescriptionMessages,
   parseGlanceReply,
+  parseSceneDescription,
+  renderSceneForOperator,
+  suppressRoutineCoaching,
+  suppressUngroundedFuelConcern,
+  type CommentaryAngle,
 } from '../engine/glance.ts';
 import { ConvoBuffer, cleanTranscript } from '../engine/convo.ts';
 import { TOOL_SCHEMAS, runTool, type ToolContext } from '../engine/tools.ts';
@@ -118,6 +125,21 @@ export interface FeedEntry {
   severity?: NudgeSeverity;
   missionId?: number;
   streaming?: boolean;
+}
+
+/** The stage-2 vision request held while the stage-1 screen reading runs. Once
+ *  the reading arrives it is rendered to text and threaded into whichever of the
+ *  two operator passes (spoken commentary or silent danger verdict) was chosen. */
+interface PendingVision {
+  mode: 'commentary' | 'verdict';
+  dataUri: string;
+  cmdr?: string;
+  /** commentary mode */
+  facts?: string;
+  angle?: CommentaryAngle;
+  recent?: string[];
+  /** verdict mode */
+  context?: string;
 }
 
 /** Compact ship telemetry surfaced to the HUD (from Status.json). */
@@ -236,8 +258,15 @@ export class AppCore {
   /** Feed entry the stream writes into — null for silent requests
    *  (reflection, screen glances) that must not show streaming text. */
   private currentAiEntry: FeedEntry | null = null;
-  private currentKind: 'ai' | 'story' | 'brief' | 'saga' | 'reflect' | 'glance' | 'commentary' =
-    'ai';
+  private currentKind:
+    | 'ai'
+    | 'story'
+    | 'brief'
+    | 'saga'
+    | 'reflect'
+    | 'glance'
+    | 'commentary'
+    | 'describe' = 'ai';
   /** Live agentic tool-loop run for the current 'ai' question; null otherwise. */
   private agent: { entry: FeedEntry; messages: ChatMessage[]; rounds: number; useTools: boolean } | null = null;
   /** Cap tool rounds so a confused model can't loop forever. */
@@ -276,10 +305,15 @@ export class AppCore {
   /** Last vision-pipeline outcome, timestamped — silent gates made "why is it
    *  quiet?" undiagnosable from the outside, so every decision leaves a note. */
   private glanceLog = '';
+  /** Previous commentary register — rotated so beats don't repeat a mode. */
+  private lastCommentaryAngle: CommentaryAngle | null = null;
   private lastGlanceRemark = '';
   private lastGlanceRemarkAt = 0;
   private glanceManual = false;
   private glanceInFlight = false;
+  /** Stage-2 work parked while the stage-1 screen reading is in flight. Cleared
+   *  when the reading completes (consumed) or the request is superseded. */
+  private pendingVision: PendingVision | null = null;
 
   private stats = new SessionStats();
   private saga = new SagaTracker();
@@ -1629,6 +1663,7 @@ export class AppCore {
     try {
       const dataUri = await captureScreen();
       if (this.lmBusy) return; // something else grabbed the slot mid-capture
+      const cmdr = this.sm.commanderName || undefined;
       // Copilot commentary: the periodic glance SPEAKS about what it sees
       // instead of returning a silent danger verdict. The glance timer
       // (vision.intervalMin) already caps how often this can happen, so it
@@ -1637,63 +1672,106 @@ export class AppCore {
       // play (accept/complete stories keep resetting that clock). A manual
       // "Glance now" always gives the rich beat when commentary is on.
       const ambientGapMs = Math.min(3, Math.max(1, this.settings.chatter.intervalMin)) * 60_000;
-      if (
+      const wantCommentary =
         this.settings.vision.commentary &&
         (manual ||
-          (this.settings.chatter.enabled && Date.now() - this.lastStoryAt >= ambientGapMs))
-      ) {
+          (this.settings.chatter.enabled && Date.now() - this.lastStoryAt >= ambientGapMs));
+
+      // Assemble the stage-2 request (spoken commentary or silent verdict) but
+      // don't fire it yet — with describeFirst on, a stage-1 screen reading runs
+      // first and the operator then speaks from that reading.
+      let pv: PendingVision;
+      if (wantCommentary) {
         this.glanceManual = false; // consumed here; must not leak into the next verdict glance
-        const missions = this.sm
-          .activeMissions()
-          .slice(0, 4)
-          .map(
-            (m) =>
-              `- ${m.category} "${m.title}"${m.destination ? ` → ${m.destination.station ? `${m.destination.station}, ` : ''}${m.destination.system}` : ''}`,
-          );
+        const activeMissions = this.sm.activeMissions().slice(0, 4);
+        const missionLines = activeMissions.map(
+          (m) =>
+            `- ${m.category} "${m.title}"${m.destination ? ` → ${m.destination.station ? `${m.destination.station}, ` : ''}${m.destination.system}` : ''}`,
+        );
         // Curated facts, journal-truth first. Deliberately NOT contextExtras():
         // background lines (community goals, memory recalls, trade leads) gave
         // the model places to hallucinate the commander into — it once put the
         // pilot "filling out paperwork at Peters Base" mid-flight because a CG
         // line mentioned Peters Base.
         const st = this.statusTracker.current;
+        const selectedTarget = st?.supercruise ? st.destination?.name?.trim() : '';
+        const knownStationTarget = !!selectedTarget && (
+          activeMissions.some((m) => m.destination?.station?.toLowerCase() === selectedTarget.toLowerCase()) ||
+          this.sm.getState().system?.signals.some(
+            (signal) => signal.isStation && signal.name.toLowerCase() === selectedTarget.toLowerCase(),
+          )
+        );
         const mode = st?.docked
           ? `docked${this.sm.location.station ? ` at ${this.sm.location.station}` : ''}`
           : st?.onFoot
             ? 'on foot'
             : st?.supercruise
-              ? 'in supercruise'
+              ? selectedTarget
+                ? `in supercruise toward ${selectedTarget}${knownStationTarget ? ' station' : ''}`
+                : 'in supercruise'
               : 'flying in normal space';
         const facts = [
           `JOURNAL TRUTH: the commander is ${mode} in ${this.sm.location.system}.`,
-          ...(st?.fuelPct != null ? [`Fuel ${Math.round(st.fuelPct * 100)}%.`] : []),
+          ...(selectedTarget
+            ? [`Selected navigation target: ${selectedTarget}${knownStationTarget ? ' (station/outpost)' : ''}. The commander is travelling toward it, not docked there.`]
+            : []),
+          ...(st?.fuelPct != null
+            ? [
+                `AUTHORITATIVE TELEMETRY: main fuel ${Math.round(st.fuelPct * 100)}%${st.lowFuel || st.fuelPct < 0.25 ? ' (LOW FUEL).' : ' (healthy; no fuel warning or monitoring advice).'}`,
+              ]
+            : []),
           ...(this.ship.current ? [`Loadout: ${describeShip(this.ship.current)}.`] : []),
-          ...(missions.length ? ['Active missions:', ...missions] : []),
+          ...(this.navRouteJumps > 0 && this.navRouteDest
+            ? [`Plotted route: ${this.navRouteJumps} jump(s) to ${this.navRouteDest}.`]
+            : []),
+          ...(missionLines.length ? ['Active missions:', ...missionLines] : []),
         ].join('\n');
-        const entry = this.pushFeed('vision', '', { streaming: true });
-        this.lastStoryAt = Date.now();
-        this.noteGlance('commentary — looking at the screen…');
-        this.startLlm(
-          entry,
-          'commentary',
-          buildCommentaryMessages(dataUri, facts, this.sm.commanderName || undefined) as unknown as ChatMessage[],
-          0.8,
-        );
-        return;
+        // A copilot varies its register: sometimes the view, sometimes the
+        // leg of the journey, sometimes the job. Pick from what's actually
+        // happening; never repeat the previous angle when there's a choice.
+        const eligible: CommentaryAngle[] = ['view'];
+        if (st?.supercruise || this.navRouteJumps > 0) eligible.push('travel');
+        if (activeMissions.length) eligible.push('mission');
+        if (st?.docked) eligible.push('work');
+        const pool = eligible.filter((a) => a !== this.lastCommentaryAngle);
+        const angle = (pool.length ? pool : eligible)[
+          Math.floor(Math.random() * (pool.length || eligible.length))
+        ];
+        this.lastCommentaryAngle = angle;
+        pv = { mode: 'commentary', dataUri, cmdr, facts, angle, recent: this.recentStories };
+      } else {
+        const contextBits: string[] = [];
+        if (this.sm.location.system !== 'unknown')
+          contextBits.push(`Journal says the commander is in ${this.sm.location.system}${this.sm.docked ? ', docked' : ''}.`);
+        const st = this.statusTracker.current;
+        const selectedTarget = st?.supercruise ? st.destination?.name?.trim() : '';
+        if (st?.fuelPct != null)
+          contextBits.push(
+            `AUTHORITATIVE TELEMETRY: main fuel ${Math.round(st.fuelPct * 100)}%${st.lowFuel || st.fuelPct < 0.25 ? ' (LOW FUEL).' : ' (healthy; not notable).'}`,
+          );
+        if (selectedTarget)
+          contextBits.push(`Selected navigation target: ${selectedTarget}. The commander is travelling toward it in supercruise, not docked there.`);
+        pv = { mode: 'verdict', dataUri, cmdr, context: contextBits.join(' ') };
       }
-      this.noteGlance('verdict check (commentary waits for a 3m gap after the last spoken beat)');
-      const context = this.sm.location.system !== 'unknown'
-        ? `Journal says the commander is in ${this.sm.location.system}${this.sm.docked ? ', docked' : ''}.`
-        : '';
-      // Vision messages carry OpenAI content-part arrays; the Rust proxy
-      // passes content through verbatim, so the wire shape is what matters.
-      this.startLlm(
-        null,
-        'glance',
-        buildGlanceMessages(dataUri, context, this.sm.commanderName || undefined) as unknown as ChatMessage[],
-        0.3,
-        2500,
-        GLANCE_FORMAT,
-      );
+
+      // Stage 1: read the screen into a structured description, then speak from
+      // it (onSceneDescribed). With describeFirst off, hand the raw image
+      // straight to the operator — the original single-pass behaviour.
+      if (this.settings.vision.describeFirst) {
+        this.noteGlance('reading the screen…');
+        this.startLlm(
+          null,
+          'describe',
+          buildSceneDescriptionMessages(dataUri, cmdr) as unknown as ChatMessage[],
+          0.15,
+          2000, // small JSON, but reasoning models think first; truncation just falls back to the image
+          SCENE_FORMAT,
+        );
+        // Set AFTER startLlm — its resolveOrphan() clears any stale pendingVision.
+        this.pendingVision = pv;
+      } else {
+        this.fireVisionStage(pv, null);
+      }
     } catch (e) {
       this.noteGlance(`capture failed: ${String(e).slice(0, 80)}`);
       if (manual) this.pushFeed('system', `Screen glance failed: ${String(e)}`);
@@ -1703,6 +1781,63 @@ export class AppCore {
     }
   }
 
+  /** Fire the operator's stage-2 pass. `scene` is the rendered stage-1 reading
+   *  (text-only, faster) or null to hand the raw image straight to the model. */
+  private fireVisionStage(pv: PendingVision, scene: string | null): void {
+    if (pv.mode === 'commentary') {
+      const entry = this.pushFeed('vision', '', { streaming: true });
+      this.lastStoryAt = Date.now(); // reserve the chatter slot now we're speaking
+      this.noteGlance(
+        scene
+          ? `commentary (${pv.angle}) — composing from the screen reading…`
+          : `commentary (${pv.angle}) — looking at the screen…`,
+      );
+      this.startLlm(
+        entry,
+        'commentary',
+        buildCommentaryMessages(
+          pv.dataUri,
+          pv.facts ?? '',
+          pv.cmdr,
+          pv.angle,
+          pv.recent ?? [],
+          scene ?? undefined,
+        ) as unknown as ChatMessage[],
+        0.75,
+        1800,
+      );
+      return;
+    }
+    this.noteGlance(scene ? 'verdict check from the screen reading' : 'verdict check');
+    // Vision messages carry OpenAI content-part arrays; the Rust proxy passes
+    // content through verbatim, so the wire shape is what matters.
+    this.startLlm(
+      null,
+      'glance',
+      buildGlanceMessages(pv.dataUri, pv.context ?? '', pv.cmdr, scene ?? undefined) as unknown as ChatMessage[],
+      0.3,
+      2500,
+      GLANCE_FORMAT,
+    );
+  }
+
+  /** Stage-1 reading came back — render it and hand it to the operator. A
+   *  reading that won't parse falls back to the raw image, so describeFirst can
+   *  never make a glance worse than the single-pass path. */
+  private onSceneDescribed(raw: string): void {
+    const pv = this.pendingVision;
+    this.pendingVision = null;
+    if (!pv) return; // superseded mid-flight; nothing to speak
+    const scene = parseSceneDescription(raw);
+    const sceneText = scene ? renderSceneForOperator(scene) : null;
+    this.noteGlance(
+      scene
+        ? `read the screen: ${scene.summary || scene.screen}`
+        : 'screen reading unusable — using the image directly',
+    );
+    this.fireVisionStage(pv, sceneText);
+  }
+
   /** Model verdict on a glance — deterministic no-flood gate owns the mic. */
   private onGlanceReply(raw: string): void {
     const reply = parseGlanceReply(raw);
@@ -1710,7 +1845,10 @@ export class AppCore {
       this.noteGlance('verdict reply unparseable');
       return;
     }
-    this.noteGlance(`saw: ${reply.activity || 'the screen'}${reply.notable ? ' — spoke up' : ' (nothing notable, stayed quiet)'}`);
+    const st = this.statusTracker.current;
+    const remark = suppressUngroundedFuelConcern(reply.remark, st?.fuelPct, st?.lowFuel);
+    const notable = reply.notable && !!remark;
+    this.noteGlance(`saw: ${reply.activity || 'the screen'}${notable ? ' — spoke up' : ' (nothing notable, stayed quiet)'}`);
     const manual = this.glanceManual;
     this.glanceManual = false;
     if (reply.activity && reply.activity !== 'not in the game') {
@@ -1719,19 +1857,19 @@ export class AppCore {
     }
     if (manual) {
       // The commander asked — always answer, notable or not.
-      const line = reply.remark || `All quiet — looks like you're ${reply.activity || 'busy'}.`;
-      this.pushFeed('vision', `👁 I see: ${reply.activity || 'the screen'}. ${reply.remark}`.trim());
+      const line = remark || `All quiet — looks like you're ${reply.activity || 'busy'}.`;
+      this.pushFeed('vision', `👁 I see: ${reply.activity || 'the screen'}. ${remark}`.trim());
       this.speak(line);
       return;
     }
-    if (!reply.notable || !reply.remark) return;
+    if (!notable) return;
     const now = Date.now();
     if (now - this.lastGlanceRemarkAt < 10 * 60_000) return;
-    if (reply.remark === this.lastGlanceRemark) return;
-    this.lastGlanceRemark = reply.remark;
+    if (remark === this.lastGlanceRemark) return;
+    this.lastGlanceRemark = remark;
     this.lastGlanceRemarkAt = now;
-    this.pushFeed('vision', `👁 ${reply.remark}`);
-    this.speak(reply.remark);
+    this.pushFeed('vision', `👁 ${remark}`);
+    this.speak(remark);
   }
 
   private heartbeatNudges(): void {
@@ -2288,13 +2426,16 @@ export class AppCore {
       }
       entry.streaming = false;
     }
+    // A superseded stage-1 reading has no one left to speak to — drop its
+    // parked stage-2 work so it can't surface after a user ask takes the slot.
+    this.pendingVision = null;
     this.currentAskId = null;
     this.currentAiEntry = null;
   }
 
   private startLlm(
     entry: FeedEntry | null,
-    kind: 'ai' | 'story' | 'brief' | 'saga' | 'reflect' | 'glance' | 'commentary',
+    kind: 'ai' | 'story' | 'brief' | 'saga' | 'reflect' | 'glance' | 'commentary' | 'describe',
     messages: ChatMessage[],
     temperature: number,
     maxTokens?: number,
@@ -2396,6 +2537,10 @@ export class AppCore {
 
   private onAiToken(id: string, token: string): void {
     if (id !== this.currentAskId || !this.currentAiEntry) return;
+    // Hold ambient vision prose until it can be checked against authoritative
+    // telemetry. This prevents a small VLM's transient fuel nag from flashing
+    // in the feed before the final grounded version replaces it.
+    if (this.currentKind === 'commentary') return;
     this.currentAiEntry.text += token;
     this.emit();
   }
@@ -2434,22 +2579,41 @@ export class AppCore {
       this.emit();
       return;
     }
+    // Stage-1 reading done → fire the operator's stage-2 pass (which sets
+    // lmBusy/currentAskId again synchronously below).
+    if (kind === 'describe') {
+      this.onSceneDescribed(stripThink(text));
+      this.emit();
+      return;
+    }
     if (!entry) return;
     const finalText = stripThink(text || entry.text);
     const mission = this.selectedMission();
     // Vision commentary: retract quietly when there's nothing worth saying
     // (screen wasn't the game, or the model came back empty).
     if (kind === 'commentary') {
-      if (!finalText || /NOT_IN_GAME/.test(finalText)) {
-        this.noteGlance(finalText ? 'screen was not the game — stayed quiet' : 'commentary came back empty');
+      const st = this.statusTracker.current;
+      const fuelGrounded = suppressUngroundedFuelConcern(finalText, st?.fuelPct, st?.lowFuel);
+      const hasHazard = !!st && (
+        st.inDanger || st.beingInterdicted || st.overheating || st.lowFuel || st.lowOxygen || st.lowHealth
+      );
+      const groundedText = suppressRoutineCoaching(fuelGrounded, hasHazard);
+      if (!groundedText || /\b(?:NOT_IN_GAME|NO_BEAT)\b/.test(groundedText)) {
+        this.noteGlance(
+          /NO_BEAT/.test(groundedText)
+            ? 'nothing specific worth interrupting for — stayed quiet'
+            : finalText
+              ? 'screen was not the game — stayed quiet'
+              : 'commentary came back empty',
+        );
         this.feed = this.feed.filter((e) => e !== entry);
       } else {
         this.noteGlance('commentary spoken');
-        entry.text = `👁 ${finalText}`;
+        entry.text = `👁 ${groundedText}`;
         entry.streaming = false;
-        this.lastStoryText = finalText;
-        this.rememberStory(finalText);
-        this.speak(finalText);
+        this.lastStoryText = groundedText;
+        this.rememberStory(groundedText);
+        this.speak(groundedText);
       }
       this.emit();
       return;
@@ -2503,6 +2667,21 @@ export class AppCore {
     this.currentAskId = null;
     this.currentAiEntry = null;
     this.lmBusy = false;
+    // A failed stage-1 reading is recoverable: hand the raw image to the
+    // operator so describeFirst never loses a glance the single pass would have
+    // made. (A cancel is a supersede — drop it silently.)
+    if (kind === 'describe') {
+      const pv = this.pendingVision;
+      this.pendingVision = null;
+      if (pv && message !== 'cancelled') {
+        this.noteGlance(`screen reading failed (${message.slice(0, 60)}) — using the image directly`);
+        this.fireVisionStage(pv, null);
+      } else {
+        this.glanceManual = false;
+        this.emit();
+      }
+      return;
+    }
     // Silent kinds fail silently — memory/glances must never nag.
     if (kind === 'reflect' || kind === 'glance') {
       if (kind === 'reflect' && this.reflectManual) {

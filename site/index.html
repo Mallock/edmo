@@ -230,7 +230,9 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
         whether your hold and cabins can even carry a job before you fly it, and understands
         far more of the mission board (donations, scans, hacks, sabotage, smuggling and
         on-foot work). You can even <b>talk to it</b> — hold a key, speak, and it answers out
-        loud, remembering the conversation. <b>Everything runs on your machine.</b>
+        loud, remembering the conversation. Give it a <b>vision model</b> and it turns copilot,
+        reading your screen and remarking on the moment — the booking, the approach, the pad you're
+        cleared to. <b>Everything runs on your machine.</b>
       </p>
       <div class="cta-row">
         <a class="dl" href="ED-Mission-Operator-0.3.0-setup.exe" download>
@@ -318,13 +320,16 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
         knows you from day one.</p>
       </div></div>
       <div class="mi"><span class="n">H</span><div>
-        <h3>Eyes <span style="color:var(--dim);font-size:0.82em">(optional, off by default)</span></h3>
+        <h3>Eyes &amp; copilot <span style="color:var(--dim);font-size:0.82em">(optional, off by default)</span></h3>
         <p>With a vision-capable model in LM Studio, the operator can occasionally <b>glance at
         your screen</b> and understand what you're doing — even in situations the journal doesn't
         record. In <b>copilot mode</b> it talks about what it sees — your outfitting session, the
         ring you're prospecting, the pad you're lining up on — woven together with your real
-        missions, and paced so it never floods you; danger callouts stay instant. The screenshot
-        travels only to your own machine's LM endpoint and is never saved.</p>
+        missions, and paced so it never floods you; danger callouts stay instant. It now
+        <b>reads the screen into a short description first, then speaks from that</b>, so a remark
+        lands on what's actually there — the target name, the ETA, the pad number — instead of
+        guessing, and stays grounded even on <b>smaller local models</b>. The screenshot travels
+        only to your own machine's LM endpoint and is never saved.</p>
       </div></div>
       <div class="mi"><span class="n">I</span><div>
         <h3>Ears <span style="color:var(--dim);font-size:0.82em">(optional, off by default)</span></h3>
@@ -370,6 +375,12 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
   <div class="wrap">
     <div class="sec-label"><span class="idx">02</span><h2>On screen</h2><span class="tail">flight recordings — click any shot to enlarge</span></div>
     <div class="gallery">
+      <figure class="shot">
+        <a href="img/hud-copilot.png" target="_blank" rel="noopener">
+          <img src="img/hud-copilot.png" alt="The operator narrating an 80-passenger prisoner-transport run to Dove Enigma: copilot commentary about the booking and the final approach, woven with a memory recall of a past Colonia delivery and a docking-pad callout" loading="lazy">
+        </a>
+        <figcaption><b>Copilot</b> — an 80-passenger run narrated from booking to <b>pad 7</b></figcaption>
+      </figure>
       <figure class="shot">
         <a href="img/hud-operator.png" target="_blank" rel="noopener">
           <img src="img/hud-operator.png" alt="The operator feed showing heartbeat nudges about hunting grounds and a streaming AI answer" loading="lazy">

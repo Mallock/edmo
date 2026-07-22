@@ -450,6 +450,17 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
                 Copilot commentary — the operator talks about what it sees you doing (paced with
                 chatter, never floods)
               </label>
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={s.vision.describeFirst}
+                  onChange={(e) =>
+                    set({ ...s, vision: { ...s.vision, describeFirst: e.target.checked } })
+                  }
+                />
+                Read the screen first — a separate pass describes the screen, then the operator
+                speaks from that description (steadier on small models)
+              </label>
               <div className="hint">
                 A near-native screenshot goes ONLY to your local LM endpoint and is never saved.
                 Without commentary, the operator speaks only when it sees something genuinely

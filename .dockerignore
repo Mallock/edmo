@@ -1,0 +1,14 @@
+# Keep the Docker build context small and host-safe. node_modules/target are
+# rebuilt inside the container; the Windows TTS + built site never belong there.
+# NOTE: src-tauri/icons/*.png ARE needed for the bundle — do not blanket-ignore PNGs.
+.git
+node_modules
+dist
+site
+linux-dist
+src-tauri/target
+src-tauri/resources/tts
+src-tauri/resources/tts-linux
+Screenshot*.png
+*.log
+scratchpad
