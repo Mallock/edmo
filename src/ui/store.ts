@@ -58,6 +58,7 @@ import {
   suppressUngroundedFuelConcern,
   type CommentaryAngle,
 } from '../engine/glance.ts';
+import { CopilotConversation, buildCopilotSystem } from '../engine/copilot.ts';
 import { ConvoBuffer, cleanTranscript } from '../engine/convo.ts';
 import { TOOL_SCHEMAS, runTool, type ToolContext } from '../engine/tools.ts';
 import type { ChatMessage } from '../engine/lmstudio.ts';
@@ -314,6 +315,13 @@ export class AppCore {
   /** Stage-2 work parked while the stage-1 screen reading is in flight. Cleared
    *  when the reading completes (consumed) or the request is superseded. */
   private pendingVision: PendingVision | null = null;
+  /** The living copilot's running session conversation (null until the first
+   *  event/beat; reset on session restart). Fed by game events + screen
+   *  readings so the model reacts in full session context. */
+  private copilot: CopilotConversation | null = null;
+  /** True while an in-flight commentary beat came from the copilot conversation
+   *  (so its reply is recorded back as the assistant turn). */
+  private copilotBeatInFlight = false;
 
   private stats = new SessionStats();
   private saga = new SagaTracker();
@@ -649,6 +657,7 @@ export class AppCore {
     this.statusTracker = new StatusTracker();
     this.ship = new ShipTracker();
     this.lastStatusAlertAt.clear();
+    this.resetCopilot(); // fresh session → fresh conversation
     try {
       await startWatch(
         this.settings.journal.directory,
@@ -1228,6 +1237,9 @@ export class AppCore {
       this.lastStatusAlertAt.set(a.kind, now);
       this.pushFeed('combat', a.message, { severity: a.severity });
       this.speak(a.message);
+      // The deterministic layer already spoke this; record it so the living
+      // copilot has continuity (and won't re-raise it) at its next beat.
+      this.copilotEvent(`EVENT: ${a.message}`);
       if (a.kind === 'interdiction' || a.kind === 'shields-down') this.lastCombatAt = now;
     }
   }
@@ -1407,9 +1419,13 @@ export class AppCore {
       const text = arrivalNotice(arrivals);
       this.pushFeed('arrival', text, { time });
       this.speak(text);
+      this.copilotEvent(`EVENT: ${text}`);
     }
     for (const c of changes) {
-      if (c.kind === 'jump') this.onJumpForRoute();
+      if (c.kind === 'jump') {
+        this.onJumpForRoute();
+        this.copilotEvent(`EVENT: FSD jump to ${this.sm.location.system}.`);
+      }
       const m = c.mission;
       if (!m) continue;
       let kind: FeedKind | null = null;
@@ -1419,6 +1435,9 @@ export class AppCore {
           // Personal, lively briefing (LLM voice with template fallback)
           // replaces the dry form-letter line; facts live on the card.
           this.personalBriefing(m);
+          this.copilotEvent(
+            `EVENT: Accepted "${m.title}"${m.destination ? ` → ${m.destination.station ? `${m.destination.station}, ` : ''}${m.destination.system}` : ''}.`,
+          );
           break;
         case 'redirected':
           kind = 'redirect';
@@ -1455,6 +1474,9 @@ export class AppCore {
       if (kind && text) {
         this.pushFeed(kind, text, { time, missionId: m.id });
         if (kind !== 'cargo' || /loaded|delivered/i.test(text)) this.speak(text);
+        // Feed the living copilot the notable lifecycle beats (skip noisy cargo
+        // ticks) so it can react to hand-ins and setbacks in context.
+        if (kind !== 'cargo') this.copilotEvent(`EVENT: ${text}`);
       }
       // BGS consequences arrive on the completion event (StateChange detail).
       if (c.kind === 'completed') {
@@ -1781,17 +1803,75 @@ export class AppCore {
     }
   }
 
+  // ------------------------------------------------------- living copilot
+  /** Lazily create the session conversation with the current commander's name. */
+  private ensureCopilot(): void {
+    if (!this.copilot)
+      this.copilot = new CopilotConversation(buildCopilotSystem(this.sm.commanderName || undefined));
+  }
+
+  /** Drop the running conversation (new session / journal restart). */
+  private resetCopilot(): void {
+    this.copilot = null;
+    this.copilotBeatInFlight = false;
+  }
+
+  /** Record a game event into the living copilot's session context. Only kept
+   *  while copilot commentary is on — that's the feature's on-switch. */
+  private copilotEvent(line: string): void {
+    if (!this.settings.vision.commentary) return;
+    this.ensureCopilot();
+    this.copilot?.recordEvent(line);
+  }
+
+  /** Compact authoritative "current state" line sent with each copilot beat so
+   *  the model is always anchored to NOW, not just accumulated history. */
+  private copilotNowLine(): string {
+    const st = this.statusTracker.current;
+    const target = st?.supercruise ? st.destination?.name?.trim() : '';
+    const mode = st?.docked
+      ? `docked${this.sm.location.station ? ` at ${this.sm.location.station}` : ''}`
+      : st?.onFoot
+        ? 'on foot'
+        : st?.supercruise
+          ? target
+            ? `in supercruise toward ${target}`
+            : 'in supercruise'
+          : 'flying in normal space';
+    const bits = [`${mode} in ${this.sm.location.system}`];
+    if (st?.fuelPct != null)
+      bits.push(`fuel ${Math.round(st.fuelPct * 100)}%${st.lowFuel || st.fuelPct < 0.25 ? ' (LOW)' : ''}`);
+    return `${bits.join(', ')}.`;
+  }
+
   /** Fire the operator's stage-2 pass. `scene` is the rendered stage-1 reading
    *  (text-only, faster) or null to hand the raw image straight to the model. */
   private fireVisionStage(pv: PendingVision, scene: string | null): void {
     if (pv.mode === 'commentary') {
       const entry = this.pushFeed('vision', '', { streaming: true });
       this.lastStoryAt = Date.now(); // reserve the chatter slot now we're speaking
-      this.noteGlance(
-        scene
-          ? `commentary (${pv.angle}) — composing from the screen reading…`
-          : `commentary (${pv.angle}) — looking at the screen…`,
-      );
+      // Living copilot: when we have a screen reading, the beat comes from the
+      // running session conversation (events + NOW + this reading) so the model
+      // reacts in full context. Without a reading (describeFirst off / failed)
+      // fall back to the stateless single-shot commentary over the raw image.
+      if (scene) {
+        this.ensureCopilot();
+        const cp = this.copilot!;
+        // Seed the conversation once with the full curated facts as the opener.
+        if (!cp.hasHistory() && pv.facts) cp.recordEvent(`SESSION STATE:\n${pv.facts}`);
+        this.copilotBeatInFlight = true;
+        this.noteGlance('copilot — reacting in the running session…');
+        this.startLlm(
+          entry,
+          'commentary',
+          cp.messagesForBeat(this.copilotNowLine(), scene) as unknown as ChatMessage[],
+          0.7,
+          1800,
+        );
+        return;
+      }
+      this.copilotBeatInFlight = false;
+      this.noteGlance(`commentary (${pv.angle}) — looking at the screen…`);
       this.startLlm(
         entry,
         'commentary',
@@ -1801,7 +1881,6 @@ export class AppCore {
           pv.cmdr,
           pv.angle,
           pv.recent ?? [],
-          scene ?? undefined,
         ) as unknown as ChatMessage[],
         0.75,
         1800,
@@ -2598,6 +2677,8 @@ export class AppCore {
         st.inDanger || st.beingInterdicted || st.overheating || st.lowFuel || st.lowOxygen || st.lowHealth
       );
       const groundedText = suppressRoutineCoaching(fuelGrounded, hasHazard);
+      const fromCopilot = this.copilotBeatInFlight;
+      this.copilotBeatInFlight = false;
       if (!groundedText || /\b(?:NOT_IN_GAME|NO_BEAT)\b/.test(groundedText)) {
         this.noteGlance(
           /NO_BEAT/.test(groundedText)
@@ -2606,9 +2687,13 @@ export class AppCore {
               ? 'screen was not the game — stayed quiet'
               : 'commentary came back empty',
         );
+        if (fromCopilot) this.copilot?.recordSilent();
         this.feed = this.feed.filter((e) => e !== entry);
       } else {
         this.noteGlance('commentary spoken');
+        // The copilot conversation should carry the operator's OWN words, not
+        // the suppressor-filtered surface, so continuity reads naturally.
+        if (fromCopilot) this.copilot?.recordSpoken(finalText);
         entry.text = `👁 ${groundedText}`;
         entry.streaming = false;
         this.lastStoryText = groundedText;
@@ -2699,6 +2784,9 @@ export class AppCore {
     if (kind === 'commentary') {
       // Ambient vision talk fails silently — retract the placeholder row.
       this.noteGlance(`commentary failed: ${message.slice(0, 80)}`);
+      // Close the dangling copilot user turn so the transcript stays alternating.
+      if (this.copilotBeatInFlight) this.copilot?.recordSilent();
+      this.copilotBeatInFlight = false;
       this.feed = this.feed.filter((e) => e !== entry);
       this.emit();
       return;

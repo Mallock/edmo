@@ -447,8 +447,8 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
                     set({ ...s, vision: { ...s.vision, commentary: e.target.checked } })
                   }
                 />
-                Copilot commentary — the operator talks about what it sees you doing (paced with
-                chatter, never floods)
+                Copilot commentary — the operator follows your whole session (events + screen) and
+                reacts in context, like a crewmate riding along (paced with chatter, never floods)
               </label>
               <label className="check">
                 <input
