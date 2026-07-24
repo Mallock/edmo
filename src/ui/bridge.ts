@@ -159,6 +159,8 @@ export async function llmChat(opts: {
   maxTokens: number;
   responseFormat?: unknown; // OpenAI response_format (json_schema) passthrough
   tools?: unknown; // OpenAI tools manifest; enables the tool loop
+  presencePenalty?: number; // discourage repeated topics (copilot anti-looping)
+  frequencyPenalty?: number; // discourage repeated tokens (copilot anti-looping)
 }): Promise<void> {
   await invoke('llm_chat', {
     id: opts.id,
@@ -169,6 +171,8 @@ export async function llmChat(opts: {
     maxTokens: opts.maxTokens,
     responseFormat: opts.responseFormat ?? null,
     tools: opts.tools ?? null,
+    presencePenalty: opts.presencePenalty ?? null,
+    frequencyPenalty: opts.frequencyPenalty ?? null,
   });
 }
 

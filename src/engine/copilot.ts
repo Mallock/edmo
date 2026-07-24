@@ -28,50 +28,83 @@ export interface CopilotTurn {
 export function buildCopilotSystem(cmdr?: string): string {
   const who = cmdr ? `Commander ${cmdr}` : 'the commander';
   return (
-    `You are the ship's Mission Operator, riding alongside ${who} in real time on a private comm ` +
-    `channel. ${LORE_PRIMER} ${OPERATOR_VOICE} ` +
-    'This is ONE continuous conversation across the whole session. Each user message is authoritative ' +
-    'ground truth from the ship: game EVENTS from the journal, a NOW line with the current location and ' +
-    'telemetry, and sometimes a SCREEN reading of what is on the canopy. Treat all of it as fact — never ' +
-    'contradict it and never invent anything it does not state. ' +
-    'After each user message reply with EITHER one short spoken beat OR, when nothing is worth ' +
-    'interrupting for, exactly: NO_BEAT. ' +
-    'A beat is one or two sentences, 35 words maximum, present tense, in the voice above. Speak as crew ' +
-    '(we, our, us); do not narrate the commander in the third person. Lead with the specific point — never ' +
-    'open with "Looks like", "It looks like", "Commander, we have" or "Take a look". No coaching or filler ' +
-    '("keep it steady", "keep an eye", "nice work", "all systems nominal", "plenty of time"), no rhetorical ' +
-    'questions, no "hopefully", no predictions or speculation about what passengers feel or what happens ' +
-    'next. A dry aside is welcome only when it grows from a stated fact. ' +
-    'Routine undocking, ordinary supercruise, menus and normal flight are NO_BEAT. Visible danger, ' +
-    'arrivals, mission hand-ins, a striking view and genuinely notable turns are worth a beat. Never repeat ' +
-    'a beat you already gave earlier in this conversation. ' +
-    'The NOW line and telemetry are authoritative and override anything you think you see: only mention ' +
-    'fuel when it is explicitly LOW or below 25%. If a SCREEN reading says the screen is not the game, ' +
-    `reply NO_BEAT. ${GROUNDING_RULES} No markdown, no preamble.`
+    `You are the ship's Mission Operator — a specific person on the far end of ${who}'s private comm ` +
+    `channel: a dry, unhurried veteran of this frontier with opinions and a sense of humor. ` +
+    `${LORE_PRIMER} ${OPERATOR_VOICE} ` +
+    'You are the operator on the comm, NOT flying the ship. Speak in your OWN voice, straight to the ' +
+    'commander: address them as "you", and say "I" when you mean yourself. NEVER use "we", "our" or "us" — ' +
+    'that collective narration is what turns you into a play-by-play commentator instead of a person with a ' +
+    'point of view. So not "we\'re docked at Kirk Dock, services nominal" but your own first-person read of ' +
+    'the place, spoken to "you" — and never a stock line; find fresh words for this exact moment. ' +
+    'This is one ongoing conversation. Each user message is authoritative ground truth from the ship: game ' +
+    'EVENTS from the journal, a NOW line with the current location and telemetry, and sometimes a SCREEN ' +
+    'reading of the canopy. Treat all of it as fact — never contradict it and never invent anything it does ' +
+    'not state. ' +
+    'The commander can see their own screen and already knows where they are, so do not just tell them what ' +
+    'they are doing ("you are docked at…", "you have jumped to…"). Give your TAKE on it instead: a dry ' +
+    'remark, an opinion, a tie-in to the current job or a past run, a real heads-up — a point of view, not ' +
+    'a description. ' +
+    'Be as colourful, dry and characterful as you like — that voice is the whole point. But your colour must ' +
+    'hang on REAL facts from the ship\'s logs: the mission and who posted it, the payout, the passengers or ' +
+    'cargo, the destination and the deadline, the actual numbers, readings and events in front of you. Find ' +
+    'the wry angle in THOSE. ' +
+    'What you must never do is invent colour out of nothing — a station\'s or system\'s reputation, history ' +
+    'or mood, how its docks, pads or halls look, smell or feel beyond what the SCREEN reading states, or the ' +
+    'commander\'s habits: if the events, the NOW line and the SCREEN reading do not state it, you do not ' +
+    'know it, so do not dress it up. And no empty generalities ("docking always…", "these stations always…", ' +
+    '"out here you…", "you always…"). ' +
+    'For example, a VIP job — 1.5M cr, six tourists, a three-hour clock: GOOD (colour, every word grounded) ' +
+    '"A million and a half for six tourists and a three-hour clock; the Colonial Corps knows how to build a ' +
+    'deadline into a payday." BAD (invented) "Asura always felt like a place built by necessity" or "pad ' +
+    'seven smells of synth-coffee". (Examples show STYLE only — never reuse their wording.) ' +
+    'When the logs hand you a real detail to riff on, take it and make it sing. Reply exactly NO_BEAT only ' +
+    'when there is genuinely no real detail to hang a line on. ' +
+    'When you speak: one or two sentences, 30 words maximum, present tense, in character. Start with the ' +
+    'thing itself — never open with "Looks like", "It looks like", "Seems like" or "Sounds like". No ' +
+    'coaching or filler ("keep an eye out", "stay safe", "nice work", "all systems nominal"), no rhetorical ' +
+    'questions, no predictions about what happens next. ' +
+    'Do not repeat a line or an observation you already made — but every NEW event is a fresh moment that ' +
+    'earns its own reaction: a second hand-in, a return to a system you passed earlier, another job. A new ' +
+    'payout is a new payout. Stay present as the run goes on; the history above is material to build on and ' +
+    'call back to ("second run through Asura today"), never a reason to fall silent. ' +
+    'Danger, a mission hand-in and a genuinely striking view are always worth a word. The NOW line and ' +
+    'telemetry are authoritative and override anything you think you see: only mention fuel when it is ' +
+    'explicitly LOW or below 25%. If a SCREEN reading says the screen is not the game, reply NO_BEAT. ' +
+    `${GROUNDING_RULES} No markdown, no preamble.`
   );
 }
 
 /**
- * A bounded, strictly alternating user/assistant transcript. Events accumulate
- * in a pending buffer and are flushed into a single user turn each time a beat
- * is requested, which guarantees alternation regardless of how often events
- * arrive between beats.
+ * The session transcript. `turns` holds only the exchanges the operator ACTUALLY
+ * SPOKE — a user turn of the events that prompted it, then the operator's beat.
+ * Silent moments leave NO trace: their events stay in `pending` and carry forward
+ * to the next beat. This matters a lot on a small local model — writing "NO_BEAT"
+ * turns into the history taught the model in-context that silence was the house
+ * style, and it spiralled into never speaking as the session grew. Keeping the
+ * transcript pure "here's what happened → here's the remark" avoids that, keeps
+ * strict user/assistant alternation, and lets full-session history accumulate
+ * (it's only a few thousand tokens even over hours — trivial against a 128K
+ * window) so the operator can genuinely call back to earlier in the run.
  */
 export class CopilotConversation {
   private turns: CopilotTurn[] = [];
   private pending: string[] = [];
+  /** User content to commit IF the operator speaks this beat (set by
+   *  messagesForBeat, consumed by recordSpoken). Null between beats. */
+  private proposed: string | null = null;
   private readonly system: string;
-  /** maxTurns is kept even so the trim seam always lands on a user turn. */
+  /** Full-session by default — kept even so the trim seam lands on a user turn.
+   *  Only bites in a marathon session; ordinary play never reaches it. */
   private readonly maxTurns: number;
 
-  constructor(system: string, maxTurns = 60) {
+  constructor(system: string, maxTurns = 400) {
     this.system = system;
     this.maxTurns = maxTurns;
   }
 
   /** Append a game event; delivered to the model at the next beat request.
-   *  Bounded so events can't pile up unboundedly if beats never fire (e.g.
-   *  describeFirst off) — the freshest ones matter most. */
+   *  Bounded so events can't pile up unboundedly across long silent stretches —
+   *  the freshest ones matter most. */
   recordEvent(line: string): void {
     const s = line.trim();
     if (!s) return;
@@ -87,41 +120,50 @@ export class CopilotConversation {
     return this.turns.length > 0;
   }
 
+  /** Nothing seeded or spoken yet — used to seed the session opener exactly once. */
+  isEmpty(): boolean {
+    return this.turns.length === 0 && this.pending.length === 0;
+  }
+
   /**
-   * Build the request for a beat: flush pending events (+ the NOW line and any
-   * SCREEN reading) into a committed user turn, then return the whole
-   * conversation. The model answers with a beat or NO_BEAT, recorded next.
+   * Build a beat request WITHOUT committing anything: the whole spoken history
+   * so far, plus one ephemeral user turn of the pending events + NOW + SCREEN.
+   * recordSpoken/recordSilent then decide whether it becomes history.
    */
   messagesForBeat(now: string, screenReading: string | null): VisionMessage[] {
-    const lines: string[] = [];
-    // A previous request that was never answered (superseded mid-flight) leaves
-    // a dangling user turn — fold it back in so events aren't lost and the
-    // transcript keeps alternating.
-    if (this.turns.length && this.turns[this.turns.length - 1].role === 'user') {
-      lines.push(this.turns.pop()!.content);
-    }
-    lines.push(...this.pending);
-    this.pending = [];
-    if (now.trim()) lines.push(`NOW: ${now.trim()}`);
-    if (screenReading && screenReading.trim()) lines.push(screenReading.trim());
-    this.turns.push({ role: 'user', content: lines.join('\n') });
-    this.trim();
-    return [{ role: 'system', content: this.system }, ...this.turns];
+    const events = [...this.pending];
+    const parts = [...events];
+    if (now.trim()) parts.push(`NOW: ${now.trim()}`);
+    if (screenReading && screenReading.trim()) parts.push(screenReading.trim());
+    // On speak we keep the durable facts (the events), or a short location note
+    // for a pure glance — never the transient NOW/SCREEN, which would bloat and
+    // date the history.
+    this.proposed = events.length ? events.join('\n') : now.trim() ? `NOW: ${now.trim()}` : '(a quiet stretch)';
+    return [
+      { role: 'system', content: this.system },
+      ...this.turns,
+      { role: 'user', content: parts.join('\n') },
+    ];
   }
 
-  /** Record a spoken beat as the operator's turn. */
+  /** The operator spoke: commit the prompting events + the beat as one exchange. */
   recordSpoken(beat: string): void {
-    const s = beat.trim();
-    if (s) this.turns.push({ role: 'assistant', content: s });
+    const b = beat.trim();
+    if (!b) {
+      this.recordSilent();
+      return;
+    }
+    if (this.proposed !== null) this.turns.push({ role: 'user', content: this.proposed });
+    this.turns.push({ role: 'assistant', content: b });
+    this.pending = [];
+    this.proposed = null;
     this.trim();
   }
 
-  /** Record that the operator stayed quiet — keeps the transcript alternating
-   *  and lets the model see how often it held the mic. */
+  /** The operator stayed quiet: commit nothing, keep the events pending so they
+   *  carry into the next beat. Silence leaves no trace in the transcript. */
   recordSilent(): void {
-    if (this.turns.length && this.turns[this.turns.length - 1].role === 'user') {
-      this.turns.push({ role: 'assistant', content: 'NO_BEAT' });
-    }
+    this.proposed = null;
   }
 
   /** Snapshot for debugging/tests. */
@@ -129,8 +171,8 @@ export class CopilotConversation {
     return this.turns.slice();
   }
 
-  /** Keep the session opener (the first user/assistant pair) as an anchor and
-   *  drop the oldest middle turns once the window is full. */
+  /** Keep the session opener (the first spoken exchange) as an anchor and drop
+   *  the oldest middle turns once the window is full. */
   private trim(): void {
     if (this.turns.length <= this.maxTurns) return;
     const head = this.turns.slice(0, 2);

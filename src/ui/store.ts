@@ -1841,7 +1841,20 @@ export class AppCore {
     const bits = [`${mode} in ${this.sm.location.system}`];
     if (st?.fuelPct != null)
       bits.push(`fuel ${Math.round(st.fuelPct * 100)}%${st.lowFuel || st.fuelPct < 0.25 ? ' (LOW)' : ''}`);
-    return `${bits.join(', ')}.`;
+    // Attach the live job(s) to every beat so the operator always has REAL log
+    // facts to be colourful about (payout, destination) — grounding beats
+    // inventing atmosphere on thin moments, and survives history trimming.
+    const jobs = this.sm
+      .activeMissions()
+      .slice(0, 3)
+      .map((m) => {
+        const dest = m.destination
+          ? ` → ${m.destination.station ? `${m.destination.station}, ` : ''}${m.destination.system}`
+          : '';
+        return `${m.category} "${m.title}"${dest}${m.reward ? `, ${m.reward.toLocaleString('en-US')} cr` : ''}`;
+      });
+    const base = `${bits.join(', ')}.`;
+    return jobs.length ? `${base} Current job(s): ${jobs.join('; ')}.` : base;
   }
 
   /** Fire the operator's stage-2 pass. `scene` is the rendered stage-1 reading
@@ -1857,8 +1870,9 @@ export class AppCore {
       if (scene) {
         this.ensureCopilot();
         const cp = this.copilot!;
-        // Seed the conversation once with the full curated facts as the opener.
-        if (!cp.hasHistory() && pv.facts) cp.recordEvent(`SESSION STATE:\n${pv.facts}`);
+        // Seed the conversation once with the full curated facts as the opener
+        // (isEmpty, not hasHistory — a silent first beat commits nothing).
+        if (cp.isEmpty() && pv.facts) cp.recordEvent(`SESSION STATE:\n${pv.facts}`);
         this.copilotBeatInFlight = true;
         this.noteGlance('copilot — reacting in the running session…');
         this.startLlm(
@@ -1867,6 +1881,11 @@ export class AppCore {
           cp.messagesForBeat(this.copilotNowLine(), scene) as unknown as ChatMessage[],
           0.7,
           1800,
+          undefined,
+          // The full-session history feeds prior beats back to the model;
+          // repetition-prone locals (Qwen-VL) will otherwise echo a phrase beat
+          // after beat. A modest penalty breaks the loop without flattening voice.
+          { presence: 0.5, frequency: 0.3 },
         );
         return;
       }
@@ -2519,6 +2538,7 @@ export class AppCore {
     temperature: number,
     maxTokens?: number,
     responseFormat?: unknown,
+    penalties?: { presence: number; frequency: number },
   ): void {
     this.resolveOrphan();
     const model = this.activeModel()!;
@@ -2536,6 +2556,8 @@ export class AppCore {
       temperature,
       maxTokens: maxTokens ?? this.settings.lm.maxTokens,
       responseFormat,
+      presencePenalty: penalties?.presence,
+      frequencyPenalty: penalties?.frequency,
     }).catch((e) => this.onAiError(id, String(e)));
   }
 

@@ -139,7 +139,10 @@ function questionFor(m: Mission): string {
 
 async function aiSection(state: MissionStateManager): Promise<void> {
   // Generous timeout: local models may cold-load on the first request.
-  const client = new LmStudioClient({ maxTokens: 300, timeoutMs: 120000 });
+  // Reasoning-heavy local models can spend most of a tiny budget on hidden
+  // thinking and return empty visible content; give the demo enough headroom
+  // to produce an actual spoken answer.
+  const client = new LmStudioClient({ maxTokens: 2048, timeoutMs: 120000 });
   console.log('');
   console.log('═'.repeat(78));
   console.log('  AI OPERATOR — live guidance via LM Studio');

@@ -601,6 +601,8 @@ async fn stream_chat(
     max_tokens: u32,
     response_format: Option<serde_json::Value>,
     tools: Option<serde_json::Value>,
+    presence_penalty: Option<f32>,
+    frequency_penalty: Option<f32>,
     cancel: Arc<AtomicBool>,
 ) -> Result<ChatTurn, String> {
     let client = reqwest::Client::builder()
@@ -621,6 +623,14 @@ async fn stream_chat(
     }
     if let Some(t) = tools {
         body["tools"] = t;
+    }
+    // Discourage degenerate repetition (some local models latch onto a phrase
+    // and echo it beat after beat once it's in the conversation history).
+    if let Some(pp) = presence_penalty {
+        body["presence_penalty"] = json!(pp);
+    }
+    if let Some(fp) = frequency_penalty {
+        body["frequency_penalty"] = json!(fp);
     }
     let resp = client
         .post(url)
@@ -739,6 +749,8 @@ async fn llm_chat(
     max_tokens: Option<u32>,
     response_format: Option<serde_json::Value>,
     tools: Option<serde_json::Value>,
+    presence_penalty: Option<f32>,
+    frequency_penalty: Option<f32>,
 ) -> Result<(), String> {
     let cancel = Arc::new(AtomicBool::new(false));
     ctl.cancels.lock().unwrap().insert(id.clone(), cancel.clone());
@@ -752,6 +764,8 @@ async fn llm_chat(
         max_tokens.unwrap_or(2048),
         response_format,
         tools,
+        presence_penalty,
+        frequency_penalty,
         cancel,
     )
     .await;

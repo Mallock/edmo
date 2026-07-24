@@ -70,7 +70,7 @@ if (process.argv.includes('--story')) {
   console.log(ruleBasedFlavor(st.activeMissions, live, Math.random) ?? '(no missions)');
   if (plan) {
     console.log('\n--- Operator chatter (LM Studio) ---');
-    const answer = await new LmStudioClient({ timeoutMs: 120_000, temperature: 0.9 }).chat(
+    const answer = await new LmStudioClient({ timeoutMs: 120_000, temperature: 0.9, maxTokens: 4096 }).chat(
       buildFlavorChat(plan, live),
     );
     console.log(answer ?? '(LM Studio unavailable or empty reply)');
@@ -87,6 +87,6 @@ if (askIdx >= 0) {
   }
   const messages = buildChat(target, { ...st, now: new Date().toISOString() }, question);
   console.log(`\n--- Asking LM Studio: "${question}" ---`);
-  const answer = await new LmStudioClient({ timeoutMs: 120_000 }).chat(messages);
+  const answer = await new LmStudioClient({ timeoutMs: 120_000, maxTokens: 4096 }).chat(messages);
   console.log(answer ?? '(LM Studio unavailable or empty reply)');
 }

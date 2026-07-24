@@ -111,7 +111,7 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
               <input
                 type="number"
                 min={64}
-                max={4096}
+                max={8192}
                 step={64}
                 value={s.lm.maxTokens}
                 onChange={(e) => set({ ...s, lm: { ...s.lm, maxTokens: Number(e.target.value) } })}
