@@ -37,7 +37,8 @@ import { BioTracker, type BioLead } from '../engine/exobio.ts';
 import { StatusTracker, isBusyFocus, isScoopableStar, type StatusAlert } from '../engine/status.ts';
 import { ShipTracker, describeShip, shipRequiresLargePad } from '../engine/ship.ts';
 import { MaterialsTracker } from '../engine/materials.ts';
-import { ExploreTracker, type ExploreLead } from '../engine/explore.ts';
+import { ExploreTracker, classifyBody, type ExploreLead } from '../engine/explore.ts';
+import { parseProspectTarget, matchesProspect, type ProspectTarget } from '../engine/mining.ts';
 import { parseSpanshRoute, routeSummary, type TradeRoute } from '../engine/spansh.ts';
 import {
   CommanderMemory,
@@ -54,11 +55,18 @@ import {
   parseGlanceReply,
   parseSceneDescription,
   renderSceneForOperator,
+  stripFillerTics,
   suppressRoutineCoaching,
   suppressUngroundedFuelConcern,
   type CommentaryAngle,
 } from '../engine/glance.ts';
-import { CopilotConversation, buildCopilotSystem } from '../engine/copilot.ts';
+import {
+  CopilotConversation,
+  buildCopilotSystem,
+  copilotReactsTo,
+  copilotReactionGapMs,
+  type ReactionTier,
+} from '../engine/copilot.ts';
 import { ConvoBuffer, cleanTranscript } from '../engine/convo.ts';
 import { TOOL_SCHEMAS, runTool, type ToolContext } from '../engine/tools.ts';
 import type { ChatMessage } from '../engine/lmstudio.ts';
@@ -322,6 +330,15 @@ export class AppCore {
   /** True while an in-flight commentary beat came from the copilot conversation
    *  (so its reply is recorded back as the assistant turn). */
   private copilotBeatInFlight = false;
+  /** Last time the copilot actually fired a beat (glance OR event reaction) —
+   *  the shared cadence clock that keeps involvement from flooding. */
+  private lastCopilotBeatAt = 0;
+  /** Valuable worlds the copilot has already reacted to this session (by body
+   *  name) — so a scan and its later DSS map each fire at most once. */
+  private copilotSeenBodies = new Set<string>();
+  /** What the commander told the operator to watch for while mining ("looking
+   *  for tritium at 20%"), or null. Set from the ask box; cleared on restart. */
+  private prospectTarget: ProspectTarget | null = null;
 
   private stats = new SessionStats();
   private saga = new SagaTracker();
@@ -658,6 +675,8 @@ export class AppCore {
     this.ship = new ShipTracker();
     this.lastStatusAlertAt.clear();
     this.resetCopilot(); // fresh session → fresh conversation
+    this.copilotSeenBodies.clear();
+    this.prospectTarget = null;
     try {
       await startWatch(
         this.settings.journal.directory,
@@ -907,6 +926,8 @@ export class AppCore {
         const text = `Docking granted — pad ${pad}, commander.`;
         this.pushFeed('system', `🛬 ${text} (${station})`);
         this.speak(text);
+        this.copilotEvent(`EVENT: Docking granted — pad ${pad} at ${station}.`);
+        this.copilotReact('arrival', 'copilot — reacting to docking clearance…');
         break;
       }
       case 'DockingDenied': {
@@ -950,7 +971,40 @@ export class AppCore {
         // New game session — the mining acknowledgements start fresh.
         this.sessionOreAnnounced.clear();
         this.oreMilestonesDone.clear();
+        this.copilotSeenBodies.clear();
         break;
+      case 'Scan': {
+        // A notable WORLD found — the copilot pipes up for the ones that make
+        // an explorer sit forward (not every auto-scanned rock), once each.
+        const { tier, terraformable } = classifyBody(ev);
+        if (!['earthlike', 'water', 'ammonia', 'terraformable'].includes(tier)) break;
+        const body = typeof ev.BodyName === 'string' ? ev.BodyName : 'a body';
+        if (this.copilotSeenBodies.has(body)) break;
+        this.copilotSeenBodies.add(body);
+        const pc = typeof ev.PlanetClass === 'string' ? ev.PlanetClass : tier;
+        this.copilotEvent(
+          `EVENT: Scanned ${body} — ${pc}${terraformable && !/terraform/i.test(pc) ? ', terraformable' : ''}.`,
+        );
+        this.copilotReact('discovery', 'copilot — reacting to a notable world…');
+        break;
+      }
+      case 'SAAScanComplete': {
+        // DSS surface map finished — the payoff moment. React only for the
+        // valuable worlds we already flagged, so mapping filler bodies is quiet.
+        const body = typeof ev.BodyName === 'string' ? ev.BodyName : 'that body';
+        if (!this.copilotSeenBodies.has(body)) break;
+        this.copilotEvent(`EVENT: Finished surface-mapping ${body}.`);
+        this.copilotReact('discovery', 'copilot — reacting to a completed map…');
+        break;
+      }
+      case 'FSSAllBodiesFound': {
+        // Every body in the system charted — a tidy milestone for an explorer.
+        const sys = typeof ev.SystemName === 'string' ? ev.SystemName : this.sm.location.system;
+        const count = typeof ev.Count === 'number' ? ev.Count : null;
+        this.copilotEvent(`EVENT: Fully scanned ${sys}${count ? ` — all ${count} bodies charted` : ''}.`);
+        this.copilotReact('discovery', 'copilot — reacting to a charted system…');
+        break;
+      }
       case 'SupercruiseExit': {
         // Dropping onto a ring is the start of a shift — greet it, once.
         if (ev.BodyType !== 'PlanetaryRing') return;
@@ -966,6 +1020,9 @@ export class AppCore {
         this.pushFeed('system', `⛏ ${text}`);
         this.speak(text);
         this.lastMiningSpokeAt = now;
+        // Context only (no beat) — the copilot now knows a mining shift started
+        // and can weave it into later beats and callbacks.
+        this.copilotEvent(`EVENT: Dropped onto the ring at ${body} — a mining shift begins.`);
         break;
       }
       case 'MiningRefined': {
@@ -982,6 +1039,9 @@ export class AppCore {
             this.speak(text);
             this.lastMiningSpokeAt = now;
             this.addSeed(`Passed the ${m}-tonne refined mark mining${mix ? ` (${mix})` : ''}`);
+            // Context for callbacks ("that's more than the last ring") — the
+            // deterministic line above is the spoken one; no doubled beat.
+            this.copilotEvent(`EVENT: ${m} tonnes refined this shift${mix ? `, mostly ${mix}` : ''}.`);
             return;
           }
         }
@@ -1015,6 +1075,10 @@ export class AppCore {
           const text = `Motherlode: ${lode} — crack this one.`;
           this.pushFeed('system', `⛏ ${text}`);
           this.speak(text);
+          // A core is the standout of a shift — let the copilot add its take
+          // (the quick mechanical call above stays, like docking's pad number).
+          this.copilotEvent(`EVENT: Prospected a ${lode} core asteroid — worth cracking.`);
+          this.copilotReact('discovery', 'copilot — reacting to a core find…');
           return;
         }
         // Call out rocks rich in an ore a mission needs — or, with no mining
@@ -1023,6 +1087,26 @@ export class AppCore {
         const mats = Array.isArray(ev.Materials)
           ? (ev.Materials as Array<{ Name?: string; Name_Localised?: string; Proportion?: number }>)
           : [];
+        // Highest priority: a rock matching what the COMMANDER asked us to watch
+        // for ("looking for tritium at 20%"). Their explicit goal outranks the
+        // generic ore calls, and the copilot chimes in with its own take.
+        if (this.prospectTarget) {
+          for (const mat of mats) {
+            const name = mat.Name_Localised ?? mat.Name ?? '';
+            const pct = typeof mat.Proportion === 'number' ? mat.Proportion : 0;
+            if (matchesProspect(name, pct, this.prospectTarget)) {
+              if (now - this.lastProspectAt < 20_000) return;
+              this.lastProspectAt = now;
+              this.lastMiningSpokeAt = now;
+              const text = `There's your ${this.prospectTarget.commodity} — ${Math.round(pct)}%.`;
+              this.pushFeed('system', `⛏ ${text}`);
+              this.speak(text);
+              this.copilotEvent(`EVENT: Prospected ${Math.round(pct)}% ${name} — the ${this.prospectTarget.commodity} the commander is hunting.`);
+              this.copilotReact('discovery', 'copilot — reacting to a target rock…');
+              return;
+            }
+          }
+        }
         const wanted = this.sm
           .activeMissions()
           .filter((m) => m.category === 'Mining' && m.commodity)
@@ -1420,11 +1504,13 @@ export class AppCore {
       this.pushFeed('arrival', text, { time });
       this.speak(text);
       this.copilotEvent(`EVENT: ${text}`);
+      this.copilotReact('arrival', 'copilot — reacting to arrival…');
     }
     for (const c of changes) {
       if (c.kind === 'jump') {
         this.onJumpForRoute();
         this.copilotEvent(`EVENT: FSD jump to ${this.sm.location.system}.`);
+        this.copilotReact('travel', 'copilot — reacting to the jump…');
       }
       const m = c.mission;
       if (!m) continue;
@@ -1438,6 +1524,7 @@ export class AppCore {
           this.copilotEvent(
             `EVENT: Accepted "${m.title}"${m.destination ? ` → ${m.destination.station ? `${m.destination.station}, ` : ''}${m.destination.system}` : ''}.`,
           );
+          this.copilotReact('mission', 'copilot — reacting to a new job…');
           break;
         case 'redirected':
           kind = 'redirect';
@@ -1476,7 +1563,10 @@ export class AppCore {
         if (kind !== 'cargo' || /loaded|delivered/i.test(text)) this.speak(text);
         // Feed the living copilot the notable lifecycle beats (skip noisy cargo
         // ticks) so it can react to hand-ins and setbacks in context.
-        if (kind !== 'cargo') this.copilotEvent(`EVENT: ${text}`);
+        if (kind !== 'cargo') {
+          this.copilotEvent(`EVENT: ${text}`);
+          this.copilotReact('mission', `copilot — reacting to ${kind}…`);
+        }
       }
       // BGS consequences arrive on the completion event (StateChange detail).
       if (c.kind === 'completed') {
@@ -1705,55 +1795,13 @@ export class AppCore {
       let pv: PendingVision;
       if (wantCommentary) {
         this.glanceManual = false; // consumed here; must not leak into the next verdict glance
-        const activeMissions = this.sm.activeMissions().slice(0, 4);
-        const missionLines = activeMissions.map(
-          (m) =>
-            `- ${m.category} "${m.title}"${m.destination ? ` → ${m.destination.station ? `${m.destination.station}, ` : ''}${m.destination.system}` : ''}`,
-        );
-        // Curated facts, journal-truth first. Deliberately NOT contextExtras():
-        // background lines (community goals, memory recalls, trade leads) gave
-        // the model places to hallucinate the commander into — it once put the
-        // pilot "filling out paperwork at Peters Base" mid-flight because a CG
-        // line mentioned Peters Base.
+        const facts = this.buildCopilotFacts();
+        // Register angle is used only by the describeFirst-off stateless
+        // fallback; the living copilot conversation ignores it.
         const st = this.statusTracker.current;
-        const selectedTarget = st?.supercruise ? st.destination?.name?.trim() : '';
-        const knownStationTarget = !!selectedTarget && (
-          activeMissions.some((m) => m.destination?.station?.toLowerCase() === selectedTarget.toLowerCase()) ||
-          this.sm.getState().system?.signals.some(
-            (signal) => signal.isStation && signal.name.toLowerCase() === selectedTarget.toLowerCase(),
-          )
-        );
-        const mode = st?.docked
-          ? `docked${this.sm.location.station ? ` at ${this.sm.location.station}` : ''}`
-          : st?.onFoot
-            ? 'on foot'
-            : st?.supercruise
-              ? selectedTarget
-                ? `in supercruise toward ${selectedTarget}${knownStationTarget ? ' station' : ''}`
-                : 'in supercruise'
-              : 'flying in normal space';
-        const facts = [
-          `JOURNAL TRUTH: the commander is ${mode} in ${this.sm.location.system}.`,
-          ...(selectedTarget
-            ? [`Selected navigation target: ${selectedTarget}${knownStationTarget ? ' (station/outpost)' : ''}. The commander is travelling toward it, not docked there.`]
-            : []),
-          ...(st?.fuelPct != null
-            ? [
-                `AUTHORITATIVE TELEMETRY: main fuel ${Math.round(st.fuelPct * 100)}%${st.lowFuel || st.fuelPct < 0.25 ? ' (LOW FUEL).' : ' (healthy; no fuel warning or monitoring advice).'}`,
-              ]
-            : []),
-          ...(this.ship.current ? [`Loadout: ${describeShip(this.ship.current)}.`] : []),
-          ...(this.navRouteJumps > 0 && this.navRouteDest
-            ? [`Plotted route: ${this.navRouteJumps} jump(s) to ${this.navRouteDest}.`]
-            : []),
-          ...(missionLines.length ? ['Active missions:', ...missionLines] : []),
-        ].join('\n');
-        // A copilot varies its register: sometimes the view, sometimes the
-        // leg of the journey, sometimes the job. Pick from what's actually
-        // happening; never repeat the previous angle when there's a choice.
         const eligible: CommentaryAngle[] = ['view'];
         if (st?.supercruise || this.navRouteJumps > 0) eligible.push('travel');
-        if (activeMissions.length) eligible.push('mission');
+        if (this.sm.activeMissions().length) eligible.push('mission');
         if (st?.docked) eligible.push('work');
         const pool = eligible.filter((a) => a !== this.lastCommentaryAngle);
         const angle = (pool.length ? pool : eligible)[
@@ -1858,41 +1906,109 @@ export class AppCore {
         return `${m.category} "${m.title}"${dest}${m.reward ? `, ${money(m.reward)}` : ''}`;
       });
     const base = `${bits.join(', ')}.`;
-    return jobs.length ? `${base} Current job(s): ${jobs.join('; ')}.` : base;
+    const withJobs = jobs.length ? `${base} Current job(s): ${jobs.join('; ')}.` : base;
+    // Standing spoken goal stays in view so the copilot keeps it in mind.
+    return this.prospectTarget
+      ? `${withJobs} Commander is hunting ${this.prospectTarget.commodity} at ${this.prospectTarget.minPct}%+.`
+      : withJobs;
+  }
+
+  /** Curated, journal-truth-first session facts that seed the copilot's opener.
+   *  Deliberately NOT contextExtras() — background lines (CGs, trade leads) once
+   *  gave the model places to hallucinate the commander into. */
+  private buildCopilotFacts(): string {
+    const activeMissions = this.sm.activeMissions().slice(0, 4);
+    const missionLines = activeMissions.map(
+      (m) =>
+        `- ${m.category} "${m.title}"${m.destination ? ` → ${m.destination.station ? `${m.destination.station}, ` : ''}${m.destination.system}` : ''}`,
+    );
+    const st = this.statusTracker.current;
+    const selectedTarget = st?.supercruise ? st.destination?.name?.trim() : '';
+    const knownStationTarget = !!selectedTarget && (
+      activeMissions.some((m) => m.destination?.station?.toLowerCase() === selectedTarget.toLowerCase()) ||
+      this.sm.getState().system?.signals.some(
+        (signal) => signal.isStation && signal.name.toLowerCase() === selectedTarget.toLowerCase(),
+      )
+    );
+    const mode = st?.docked
+      ? `docked${this.sm.location.station ? ` at ${this.sm.location.station}` : ''}`
+      : st?.onFoot
+        ? 'on foot'
+        : st?.supercruise
+          ? selectedTarget
+            ? `in supercruise toward ${selectedTarget}${knownStationTarget ? ' station' : ''}`
+            : 'in supercruise'
+          : 'flying in normal space';
+    return [
+      `JOURNAL TRUTH: the commander is ${mode} in ${this.sm.location.system}.`,
+      ...(selectedTarget
+        ? [`Selected navigation target: ${selectedTarget}${knownStationTarget ? ' (station/outpost)' : ''}. The commander is travelling toward it, not docked there.`]
+        : []),
+      ...(st?.fuelPct != null
+        ? [`AUTHORITATIVE TELEMETRY: main fuel ${Math.round(st.fuelPct * 100)}%${st.lowFuel || st.fuelPct < 0.25 ? ' (LOW FUEL).' : ' (healthy; no fuel warning or monitoring advice).'}`]
+        : []),
+      ...(this.ship.current ? [`Loadout: ${describeShip(this.ship.current)}.`] : []),
+      ...(this.navRouteJumps > 0 && this.navRouteDest
+        ? [`Plotted route: ${this.navRouteJumps} jump(s) to ${this.navRouteDest}.`]
+        : []),
+      ...(missionLines.length ? ['Active missions:', ...missionLines] : []),
+    ].join('\n');
+  }
+
+  /** Fire one copilot beat into the running conversation — the shared path for
+   *  both a screen glance (scene = the reading) and an event reaction (scene =
+   *  null, text-only, no screenshot). Seeds the opener on first use. */
+  private fireCopilotBeat(scene: string | null): void {
+    this.ensureCopilot();
+    const cp = this.copilot!;
+    if (cp.isEmpty()) cp.recordEvent(`SESSION STATE:\n${this.buildCopilotFacts()}`);
+    const entry = this.pushFeed('vision', '', { streaming: true });
+    this.lastStoryAt = Date.now(); // reserve the chatter slot
+    this.lastCopilotBeatAt = Date.now();
+    this.copilotBeatInFlight = true;
+    this.startLlm(
+      entry,
+      'commentary',
+      cp.messagesForBeat(this.copilotNowLine(), scene) as unknown as ChatMessage[],
+      0.7,
+      1800,
+      undefined,
+      // Full-session history feeds prior beats back; a modest penalty stops
+      // repetition-prone locals echoing a phrase beat after beat.
+      { presence: 0.5, frequency: 0.3 },
+    );
+  }
+
+  /** A game event happened — let the copilot react in-conversation (text-only,
+   *  no screenshot) if the player's involvement level and cadence allow. This is
+   *  what makes the copilot feel present between screen glances. */
+  private copilotReact(tier: ReactionTier, note: string): void {
+    if (!this.settings.vision.commentary || !isTauri) return;
+    if (!this.lmOk || this.lmBusy || this.glanceInFlight) return;
+    if (Date.now() - this.lastGameActivity >= GAME_LIVE_WINDOW_MS) return;
+    if (Date.now() - this.lastCombatAt < 60_000) return; // don't cut into a fight
+    const inv = this.settings.vision.involvement;
+    if (!copilotReactsTo(inv, tier)) return;
+    if (Date.now() - this.lastCopilotBeatAt < copilotReactionGapMs(inv)) return;
+    this.noteGlance(note);
+    this.fireCopilotBeat(null);
   }
 
   /** Fire the operator's stage-2 pass. `scene` is the rendered stage-1 reading
    *  (text-only, faster) or null to hand the raw image straight to the model. */
   private fireVisionStage(pv: PendingVision, scene: string | null): void {
     if (pv.mode === 'commentary') {
-      const entry = this.pushFeed('vision', '', { streaming: true });
-      this.lastStoryAt = Date.now(); // reserve the chatter slot now we're speaking
-      // Living copilot: when we have a screen reading, the beat comes from the
-      // running session conversation (events + NOW + this reading) so the model
-      // reacts in full context. Without a reading (describeFirst off / failed)
-      // fall back to the stateless single-shot commentary over the raw image.
+      // Living copilot: with a screen reading, the beat comes from the running
+      // session conversation — fireCopilotBeat owns the feed entry, seeding and
+      // flags (shared with event reactions).
       if (scene) {
-        this.ensureCopilot();
-        const cp = this.copilot!;
-        // Seed the conversation once with the full curated facts as the opener
-        // (isEmpty, not hasHistory — a silent first beat commits nothing).
-        if (cp.isEmpty() && pv.facts) cp.recordEvent(`SESSION STATE:\n${pv.facts}`);
-        this.copilotBeatInFlight = true;
-        this.noteGlance('copilot — reacting in the running session…');
-        this.startLlm(
-          entry,
-          'commentary',
-          cp.messagesForBeat(this.copilotNowLine(), scene) as unknown as ChatMessage[],
-          0.7,
-          1800,
-          undefined,
-          // The full-session history feeds prior beats back to the model;
-          // repetition-prone locals (Qwen-VL) will otherwise echo a phrase beat
-          // after beat. A modest penalty breaks the loop without flattening voice.
-          { presence: 0.5, frequency: 0.3 },
-        );
+        this.noteGlance('copilot — looking at the screen…');
+        this.fireCopilotBeat(scene);
         return;
       }
+      // describeFirst off / reading failed → stateless single-shot over the image.
+      const entry = this.pushFeed('vision', '', { streaming: true });
+      this.lastStoryAt = Date.now(); // reserve the chatter slot now we're speaking
       this.copilotBeatInFlight = false;
       this.noteGlance(`commentary (${pv.angle}) — looking at the screen…`);
       this.startLlm(
@@ -2203,6 +2319,16 @@ export class AppCore {
     // prompt so follow-ups ("and how far is that?") resolve naturally.
     const history = this.convo.recent(Date.now());
     this.convo.push('user', q, Date.now());
+    // The living copilot hears the commander too — record what they said so its
+    // ambient beats take it on board (goals, preferences, whatever it is).
+    this.copilotEvent(`COMMANDER SAID: ${q}`);
+    // A spoken prospecting goal ("looking for tritium at 20%") becomes a target
+    // the operator watches for as they mine.
+    const target = parseProspectTarget(q);
+    if (target) {
+      this.prospectTarget = target;
+      this.pushFeed('system', `⛏ Watching for ${target.commodity} at ${target.minPct}%+ — I'll flag the rocks.`);
+    }
 
     let messages: ChatMessage[];
     if (mission) {
@@ -2702,7 +2828,7 @@ export class AppCore {
       const hasHazard = !!st && (
         st.inDanger || st.beingInterdicted || st.overheating || st.lowFuel || st.lowOxygen || st.lowHealth
       );
-      const groundedText = suppressRoutineCoaching(fuelGrounded, hasHazard);
+      const groundedText = stripFillerTics(suppressRoutineCoaching(fuelGrounded, hasHazard));
       const fromCopilot = this.copilotBeatInFlight;
       this.copilotBeatInFlight = false;
       if (!groundedText || /\b(?:NOT_IN_GAME|NO_BEAT)\b/.test(groundedText)) {

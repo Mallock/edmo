@@ -23,6 +23,32 @@ export interface CopilotTurn {
   content: string;
 }
 
+/** How reactive the copilot is to game events, tuned by the player. */
+export type CopilotInvolvement = 'low' | 'medium' | 'high';
+
+/** The kind of moment that can prompt an event reaction:
+ *  - mission:   a contract accepted or handed in
+ *  - arrival:   a destination reached, docking granted, dropping at a station
+ *  - discovery: a notable find — a valuable world scanned, a planet mapped, a
+ *               system fully charted
+ *  - travel:    an FSD jump, an undock — the routine legs of a run */
+export type ReactionTier = 'mission' | 'arrival' | 'discovery' | 'travel';
+
+/** Minimum gap (ms) between spoken copilot beats at each involvement level —
+ *  higher involvement lets it pipe up more often. */
+export function copilotReactionGapMs(inv: CopilotInvolvement): number {
+  return inv === 'high' ? 45_000 : inv === 'low' ? 240_000 : 120_000;
+}
+
+/** Whether an event of this tier should prompt a reaction at this involvement:
+ *  mission moments always land; arrivals and notable discoveries from 'medium'
+ *  up; the routine travel legs only when the player wants a chatty copilot. */
+export function copilotReactsTo(inv: CopilotInvolvement, tier: ReactionTier): boolean {
+  if (tier === 'mission') return true;
+  if (tier === 'arrival' || tier === 'discovery') return inv !== 'low';
+  return inv === 'high';
+}
+
 /** The persistent system prompt: persona + the event-stream contract. Carries
  *  the same grounding/voice guardrails as the stateless commentary prompt. */
 export function buildCopilotSystem(cmdr?: string): string {
@@ -40,6 +66,9 @@ export function buildCopilotSystem(cmdr?: string): string {
     'EVENTS from the journal, a NOW line with the current location and telemetry, and sometimes a SCREEN ' +
     'reading of the canopy. Treat all of it as fact — never contradict it and never invent anything it does ' +
     'not state. ' +
+    'A line beginning "COMMANDER SAID" is the commander speaking to you directly — take it on board and let ' +
+    'it steer what you notice and mention (if they say they are hunting tritium, keep an eye out for it and ' +
+    'react when it turns up). Do not answer them as a question here; just factor it in. ' +
     'The commander can see their own screen and already knows where they are, so do not just tell them what ' +
     'they are doing ("you are docked at…", "you have jumped to…"). Give your TAKE on it instead: a dry ' +
     'remark, an opinion, a tie-in to the current job or a past run, a real heads-up — a point of view, not ' +
@@ -67,9 +96,12 @@ export function buildCopilotSystem(cmdr?: string): string {
     'Talk like a person, not an analyst: NEVER explain what something "means", "suggests" or "tells you" — ' +
     'kill the "[observation] means/suggests [inference]" shape ("the starfield means you\'re close", ' +
     '"auto-docking means you\'re not wasting time"), and never narrate the display ("the screen shows…"). ' +
-    'The scenery is only context: lead with the JOB and its numbers far more often than the view. Vary your ' +
-    'rhythm and openings across beats — if two of your lines share a shape, you have fallen into a formula; ' +
-    'break it. Do not lean on the same frame turn after turn ("[faction] certainly knows how to…"). ' +
+    'React to the FRESHEST thing in front of you — the newest event, a change, a new number — over the ' +
+    'scenery; once you have named the job, do NOT re-recite it every beat, react to what just happened (a ' +
+    'jump, a docking, a hand-in). Vary your rhythm and openings — if two of your lines share a shape you ' +
+    'have fallen into a formula; break it. NEVER use the crutch word "certainly", and never reuse a frame ' +
+    'from an earlier beat ("[X] certainly knows how to…", "knows how to build a deadline into a payday") — ' +
+    'fresh words every time. ' +
     'No coaching or filler ("keep an eye out", "stay safe", "nice work", "all systems nominal"), no ' +
     'rhetorical questions, no predictions about what happens next. ' +
     'Do not repeat a line or an observation you already made — but every NEW event is a fresh moment that ' +

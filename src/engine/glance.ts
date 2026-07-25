@@ -239,6 +239,18 @@ export function suppressRoutineCoaching(text: string, allowSafetyAdvice = false)
     .trim();
 }
 
+/** Strip crutch words a small local model overuses beat after beat despite the
+ *  prompt banning them ("certainly" especially). Removal is grammatically safe —
+ *  "the Council certainly knows how to…" reads fine as "the Council knows how
+ *  to…" — and cheaper than fighting a stubborn 4B tic with more prompt text. */
+export function stripFillerTics(text: string): string {
+  return text
+    .replace(/\bcertainly\b/gi, '')
+    .replace(/\s+([.,;:!?])/g, '$1')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
 /** Response_format enforcing the glance JSON (LM Studio structured output). */
 export const GLANCE_FORMAT = {
   type: 'json_schema',

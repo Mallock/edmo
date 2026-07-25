@@ -66,6 +66,10 @@ export interface AppSettings {
      *  phrasing so small local VLMs ground better; costs one extra (fast,
      *  text-only) inference per glance. */
     describeFirst: boolean;
+    /** How reactive the living copilot is to game events (jumps, arrivals,
+     *  docking, hand-ins) on top of the periodic screen glance. 'low' = mission
+     *  moments only, 'high' = chatty (reacts to travel too). */
+    involvement: 'low' | 'medium' | 'high';
   };
   voiceInput: {
     enabled: boolean; // push-to-talk via the local whisper.cpp sidecar
@@ -138,6 +142,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
     // Read the screen first, then speak from that reading — grounded comments
     // out of small local models, at the price of one extra fast inference.
     describeFirst: true,
+    // Balanced by default: the copilot reacts to arrivals, docking and mission
+    // moments, not every jump — a good middle ground of company.
+    involvement: 'medium',
   },
   voiceInput: {
     // Off by default — enabling offers the one-time whisper.cpp download.

@@ -450,6 +450,29 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
                 Copilot commentary — the operator follows your whole session (events + screen) and
                 reacts in context, like a crewmate riding along (paced with chatter, never floods)
               </label>
+              {s.vision.commentary && (
+                <div className="row">
+                  <label>
+                    Copilot involvement
+                    <select
+                      value={s.vision.involvement}
+                      onChange={(e) =>
+                        set({
+                          ...s,
+                          vision: {
+                            ...s.vision,
+                            involvement: e.target.value as 'low' | 'medium' | 'high',
+                          },
+                        })
+                      }
+                    >
+                      <option value="low">Reserved — mission moments only</option>
+                      <option value="medium">Balanced — arrivals, docking &amp; discoveries too</option>
+                      <option value="high">Chatty — reacts to jumps as well</option>
+                    </select>
+                  </label>
+                </div>
+              )}
               <label className="check">
                 <input
                   type="checkbox"
