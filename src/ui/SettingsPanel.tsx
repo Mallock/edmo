@@ -46,6 +46,101 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
       </div>
       <div className="settings-body">
         <section>
+          <h3>AI engine</h3>
+          <div className="row">
+            <label>
+              Run the AI with
+              <select
+                value={s.lm.engine}
+                onChange={(e) => {
+                  const engine = e.target.value as 'bundled' | 'lmstudio';
+                  set({ ...s, lm: { ...s.lm, engine } });
+                  if (engine === 'lmstudio') void core.engineShutdown();
+                }}
+              >
+                <option value="bundled">This app (no other software needed)</option>
+                <option value="lmstudio">LM Studio (run it yourself)</option>
+              </select>
+            </label>
+          </div>
+          {s.lm.engine === 'bundled' && (
+            <>
+              {snap.engineProgress ? (
+                <>
+                  <div className="hint">
+                    ⬇ {snap.engineProgress.phase}
+                    {snap.engineProgress.total > 0
+                      ? ` — ${Math.round((snap.engineProgress.received / snap.engineProgress.total) * 100)}%` +
+                        ` (${(snap.engineProgress.received / 1e9).toFixed(2)} / ${(snap.engineProgress.total / 1e9).toFixed(2)} GB)`
+                      : ` — ${(snap.engineProgress.received / 1e9).toFixed(2)} GB`}
+                  </div>
+                  <button className="btn" onClick={() => void core.engineCancel()}>
+                    Cancel download
+                  </button>
+                </>
+              ) : snap.engine?.running ? (
+                <>
+                  <div className="hint">
+                    ✅ Running locally on port {snap.engine.port} — {snap.engine.running_model}.
+                    Nothing else to install.
+                  </div>
+                  <button className="btn" onClick={() => void core.engineShutdown()}>
+                    Stop the engine
+                  </button>
+                </>
+              ) : (
+                <>
+                  {(snap.engine?.models ?? []).map((m) => (
+                    <div className="row" key={m.id}>
+                      <span style={{ flex: 1 }}>
+                        {m.label} · {(m.bytes / 1e9).toFixed(1)} GB
+                        {m.installed
+                          ? ' · installed'
+                          : m.partial_bytes > 0
+                            ? ` · ${(m.partial_bytes / 1e9).toFixed(2)} GB downloaded — paused`
+                            : ''}
+                      </span>
+                      <button
+                        className="btn"
+                        onClick={() =>
+                          void core.engineSetup(
+                            snap.engine?.runtime_backend ?? snap.engine?.recommended_backend ?? 'vulkan',
+                            m.id,
+                          )
+                        }
+                      >
+                        {m.installed
+                          ? 'Start'
+                          : m.partial_bytes > 0
+                            ? 'Resume download'
+                            : 'Download & start'}
+                      </button>
+                      {!m.installed && m.partial_bytes > 0 && (
+                        <button
+                          className="btn"
+                          title="Discard the partial download and free the disk space"
+                          onClick={() => void core.engineDiscardPartial(m.id)}
+                        >
+                          Discard
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  <div className="hint">
+                    One-time download of a small inference runtime
+                    {snap.engine?.recommended_backend
+                      ? ` (${snap.engine.recommended_backend} — picked for your hardware)`
+                      : ''}{' '}
+                    plus the model. It runs entirely on this machine; nothing is sent anywhere.
+                    Models are published under their own licence terms.
+                  </div>
+                </>
+              )}
+            </>
+          )}
+        </section>
+
+        <section style={{ display: s.lm.engine === 'lmstudio' ? undefined : 'none' }}>
           <h3>AI operator — LM Studio</h3>
           <label>
             Endpoint

@@ -80,6 +80,17 @@ import {
   llmChat,
   llmModels,
   llmModelTypes,
+  engineStatus,
+  engineDownloadRuntime,
+  engineDownloadModel,
+  engineCancelDownload,
+  engineDiscardPartial,
+  engineStart,
+  engineStop,
+  engineAlive,
+  onEngineProgress,
+  type EngineStatus,
+  type EngineProgress,
   memoryLoad,
   memorySave,
   onClickThrough,
@@ -106,7 +117,7 @@ import {
   systemSpecs,
   type ToolCallWire,
 } from './bridge.ts';
-import { classifyModel, type ModelFit, type SystemSpecs } from './modelfit.ts';
+import { classifyModel, gpuBudgetGb, type ModelFit, type SystemSpecs } from './modelfit.ts';
 import { loadSettings, saveSettings, type AppSettings } from './settings.ts';
 import { Speaker } from './tts.ts';
 
@@ -178,6 +189,13 @@ export interface AppSnapshot {
   journal: { ok: boolean; dir: string; file: string | null; error: string | null; gameLive: boolean };
   lm: { ok: boolean; models: string[]; activeModel: string | null; busy: boolean; activeFit: ModelFit };
   specs: SystemSpecs | null;
+  /** Bundled AI engine state (null when unknown / not in the shell). */
+  engine: EngineStatus | null;
+  /** Live download progress for the engine setup, or null when idle. */
+  engineProgress: EngineProgress | null;
+  /** First-run prompt: the recommended tier to offer, or null when the AI is
+   *  already set up, unavailable, or the commander said "not now". */
+  aiSetupOffer: { modelId: string; label: string; gb: string; backend: string } | null;
   trade: TradeOpportunity | null;
   bio: BioLead | null;
   /** Live ship telemetry from Status.json, or null before any snapshot. */
@@ -540,6 +558,9 @@ export class AppCore {
         })(),
       },
       specs: this.specs,
+      engine: this.engine,
+      engineProgress: this.engineProgress,
+      aiSetupOffer: this.aiSetupOffer(),
       trade: this.tradeOpp,
       bio: this.bioLead,
       shipStatus: this.hudShipStatus(),
@@ -588,12 +609,141 @@ export class AppCore {
   }
 
   /** VLM per LM Studio's REST API; unknown (older LM Studio) counts as capable
-   *  — a failed glance is silent, so optimism costs nothing. */
+   *  — a failed glance is silent, so optimism costs nothing. On the bundled
+   *  engine vision is known by construction: every shipped model has an mmproj
+   *  (T7.5.2), so the "no vision" warning can never fire spuriously. */
   private activeModelIsVlm(): boolean {
+    if (this.settings.lm.engine === 'bundled') return this.engine?.running ?? false;
     const m = this.activeModel();
     if (!m) return false;
     const ty = this.modelTypes[m];
     return ty === undefined ? true : ty === 'vlm';
+  }
+
+  // ------------------------------------------------------- bundled AI engine
+  /** Last known state of the app's own llama.cpp engine (null until polled). */
+  private engine: EngineStatus | null = null;
+  private engineProgress: EngineProgress | null = null;
+
+  /** Where chat requests actually go, and the key they need. The bundled engine
+   *  serves OpenAI-compatible endpoints on a random loopback port behind a
+   *  per-session token; LM Studio needs no auth. */
+  private lmTarget(): { endpoint: string; apiKey: string | null } {
+    if (this.settings.lm.engine === 'bundled' && this.engine?.running && this.engine.port) {
+      return { endpoint: `http://127.0.0.1:${this.engine.port}`, apiKey: this.engine.api_key };
+    }
+    return { endpoint: this.settings.lm.endpoint, apiKey: null };
+  }
+
+  /** Refresh engine status (installed runtime, models, whether it's serving). */
+  async refreshEngine(): Promise<void> {
+    if (!isTauri) return;
+    try {
+      this.engine = await engineStatus(this.specs?.gpus.map((g) => g.name) ?? []);
+    } catch {
+      this.engine = null;
+    }
+    this.emit();
+  }
+
+  async engineSetup(backend: string, modelId: string): Promise<void> {
+    if (!isTauri) return;
+    try {
+      if (!this.engine?.runtime_installed) {
+        this.pushFeed('system', `⬇ Downloading the inference runtime (${backend})…`);
+        await engineDownloadRuntime(backend);
+      }
+      const model = this.engine?.models.find((m) => m.id === modelId);
+      if (!modelId.startsWith('local:') && !model?.installed) {
+        this.pushFeed('system', `⬇ Downloading ${model?.label ?? modelId} — this is the big one.`);
+        await engineDownloadModel(modelId);
+      }
+      await this.refreshEngine();
+      await this.engineStartModel(modelId);
+    } catch (e) {
+      this.pushFeed('system', `AI setup failed: ${String(e)}`);
+      this.emit();
+    }
+  }
+
+  async engineStartModel(modelId: string): Promise<void> {
+    if (!isTauri) return;
+    this.pushFeed('system', '⚙ Starting the local AI engine…');
+    try {
+      this.engine = await engineStart(modelId);
+      this.settings = { ...this.settings, lm: { ...this.settings.lm, engine: 'bundled', bundledModel: modelId } };
+      saveSettings(this.settings);
+      this.pushFeed('system', '✅ Local AI engine ready — no LM Studio needed.');
+      await this.pollLm();
+    } catch (e) {
+      this.pushFeed('system', `The AI engine could not start: ${String(e)}`);
+    }
+    this.emit();
+  }
+
+  async engineShutdown(): Promise<void> {
+    if (!isTauri) return;
+    try {
+      await engineStop();
+    } catch {
+      /* already gone */
+    }
+    await this.refreshEngine();
+  }
+
+  /** Has the commander waved the first-run AI offer away this install? */
+  private aiSetupDismissed = localStorage.getItem('edmo.ai.setup.dismissed') === '1';
+
+  /**
+   * The first-run offer: shown only when there is genuinely nothing to talk to
+   * — no bundled engine running, no LM Studio answering — and we have a tier
+   * that fits. Everything else in the app works without it, so this is an
+   * invitation, never a wall.
+   */
+  private aiSetupOffer(): { modelId: string; label: string; gb: string; backend: string } | null {
+    if (!isTauri || this.aiSetupDismissed) return null;
+    if (this.lmOk || this.engine?.running) return null;
+    const e = this.engine;
+    if (!e || e.models.some((m) => m.installed)) return null;
+    // Pick the biggest tier that still fits beside the game, else the smallest.
+    const budget = this.specs ? gpuBudgetGb(this.specs, true) : 0;
+    const fits = e.models.filter((m) => m.needs_gb <= budget);
+    const pick = (fits.length ? fits : e.models).reduce((a, b) => (a.needs_gb > b.needs_gb ? a : b));
+    const runtimeGb = e.runtime_installed ? 0 : 0.1;
+    return {
+      modelId: pick.id,
+      label: pick.label,
+      gb: (pick.bytes / 1e9 + runtimeGb).toFixed(1),
+      backend: e.runtime_backend ?? e.recommended_backend,
+    };
+  }
+
+  /** One-button first-run setup: runtime (if needed) + model + start. */
+  async startAiSetup(): Promise<void> {
+    const offer = this.aiSetupOffer();
+    if (!offer) return;
+    await this.engineSetup(offer.backend, offer.modelId);
+  }
+
+  dismissAiSetup(): void {
+    this.aiSetupDismissed = true;
+    try {
+      localStorage.setItem('edmo.ai.setup.dismissed', '1');
+    } catch {
+      /* the offer simply returns next launch */
+    }
+    this.emit();
+  }
+
+  /** Discard a paused download's partial file, then refresh the list. */
+  async engineDiscardPartial(modelId: string): Promise<void> {
+    if (!isTauri) return;
+    await engineDiscardPartial(modelId).catch(() => undefined);
+    await this.refreshEngine();
+  }
+
+  async engineCancel(): Promise<void> {
+    if (isTauri) await engineCancelDownload().catch(() => undefined);
   }
 
   // ------------------------------------------------------------------ setup
@@ -624,6 +774,11 @@ export class AppCore {
         onLlmToken((p) => this.onAiToken(p.id, p.token)),
         onLlmDone((p) => this.onAiDone(p.id, p.text, p.tool_calls)),
         onLlmError((p) => this.onAiError(p.id, p.message)),
+        onEngineProgress((p) => {
+          // 'phase-done' markers clear the bar; everything else drives it.
+          this.engineProgress = /-done$/.test(p.phase) ? null : p;
+          this.emit();
+        }),
       ]);
 
       systemSpecs()
@@ -664,7 +819,23 @@ export class AppCore {
       void this.restartWatch();
       if (this.settings.hud.clickThrough) void setClickThrough(true).catch(() => undefined);
 
-      void this.pollLm();
+      void this.refreshEngine().then(() => {
+        // Auto-resume the bundled engine the user last chose, so the copilot is
+        // ready without a visit to Settings.
+        const { engine, bundledModel } = this.settings.lm;
+        // Only resume a model that is actually still on disk — a remembered id
+        // whose files were removed must fall through to the setup offer quietly,
+        // not greet the commander with a start failure.
+        const stillInstalled =
+          !!bundledModel &&
+          (bundledModel.startsWith('local:') ||
+            (this.engine?.models.some((m) => m.id === bundledModel && m.installed) ?? false));
+        if (engine === 'bundled' && stillInstalled && !this.engine?.running) {
+          void this.engineStartModel(bundledModel!);
+        } else {
+          void this.pollLm();
+        }
+      });
       setInterval(() => void this.pollLm(), 20_000);
     }
 
@@ -2447,14 +2618,26 @@ export class AppCore {
   }
 
   private async pollLm(): Promise<void> {
+    // The bundled engine can die under us (driver crash, OOM) — notice it here
+    // so the HUD's LM dot tells the truth instead of every request timing out.
+    if (this.settings.lm.engine === 'bundled' && this.engine?.running && isTauri) {
+      const alive = await engineAlive().catch(() => false);
+      if (!alive) {
+        this.engine = { ...this.engine, running: false, port: null, api_key: null };
+        this.pushFeed('system', 'The local AI engine stopped — restart it in Settings, or switch to LM Studio.');
+      }
+    }
+    const { endpoint, apiKey } = this.lmTarget();
     try {
-      this.lmModels = await llmModels(this.settings.lm.endpoint);
+      this.lmModels = await llmModels(endpoint, apiKey);
       this.lmOk = this.lmModels.length > 0;
     } catch {
       this.lmModels = [];
       this.lmOk = false;
     }
-    if (this.lmOk) {
+    // The capability map is an LM Studio REST extra; the bundled engine knows
+    // its own models are vision-capable by construction.
+    if (this.lmOk && this.settings.lm.engine !== 'bundled') {
       try {
         this.modelTypes = await llmModelTypes(this.settings.lm.endpoint);
       } catch {
@@ -2573,7 +2756,7 @@ export class AppCore {
     this.emit();
     llmChat({
       id,
-      endpoint: this.settings.lm.endpoint,
+      ...this.lmTarget(),
       model,
       messages: a.messages,
       temperature: this.settings.lm.temperature,
@@ -2841,7 +3024,7 @@ export class AppCore {
     this.emit();
     llmChat({
       id,
-      endpoint: this.settings.lm.endpoint,
+      ...this.lmTarget(),
       model,
       messages,
       temperature,

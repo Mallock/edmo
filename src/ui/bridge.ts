@@ -140,8 +140,8 @@ export async function piperSpeak(
   return invoke<ArrayBuffer>('piper_speak', { text, lengthScale, voice });
 }
 
-export async function llmModels(endpoint: string): Promise<string[]> {
-  return invoke<string[]>('llm_models', { endpoint });
+export async function llmModels(endpoint: string, apiKey?: string | null): Promise<string[]> {
+  return invoke<string[]>('llm_models', { endpoint, apiKey: apiKey ?? null });
 }
 
 /** Model id → type ("vlm" | "llm" | "embeddings") from LM Studio's REST API.
@@ -161,6 +161,7 @@ export async function llmChat(opts: {
   tools?: unknown; // OpenAI tools manifest; enables the tool loop
   presencePenalty?: number; // discourage repeated topics (copilot anti-looping)
   frequencyPenalty?: number; // discourage repeated tokens (copilot anti-looping)
+  apiKey?: string | null; // bundled engine's per-session key; null for LM Studio
 }): Promise<void> {
   await invoke('llm_chat', {
     id: opts.id,
@@ -173,7 +174,89 @@ export async function llmChat(opts: {
     tools: opts.tools ?? null,
     presencePenalty: opts.presencePenalty ?? null,
     frequencyPenalty: opts.frequencyPenalty ?? null,
+    apiKey: opts.apiKey ?? null,
   });
+}
+
+// ------------------------------------------------------------ bundled engine
+// The app can fetch its own llama.cpp runtime + model so LM Studio is optional
+// (TASKS-1.0.md). Everything still speaks the OpenAI API on 127.0.0.1, so the
+// chat path above is unchanged — only the endpoint and key differ.
+
+export interface EngineModelInfo {
+  id: string;
+  label: string;
+  bytes: number;
+  installed: boolean;
+  /** Bytes already fetched into a `.part` — >0 means a download can resume. */
+  partial_bytes: number;
+  /** Set for models found outside our own dir (e.g. an LM Studio download). */
+  external_path: string | null;
+  needs_gb: number;
+  licence: string;
+}
+
+export interface EngineStatus {
+  runtime_installed: boolean;
+  runtime_backend: string | null;
+  recommended_backend: string;
+  models: EngineModelInfo[];
+  running: boolean;
+  port: number | null;
+  api_key: string | null;
+  running_model: string | null;
+}
+
+export interface EngineProgress {
+  phase: string;
+  received: number;
+  total: number;
+}
+
+export async function engineStatus(gpus: string[]): Promise<EngineStatus> {
+  return invoke<EngineStatus>('engine_status', { gpus });
+}
+
+/** GGUF+mmproj pairs already on disk (LM Studio), reusable without a big pull. */
+export async function engineScanLocalModels(): Promise<EngineModelInfo[]> {
+  return invoke<EngineModelInfo[]>('engine_scan_local_models');
+}
+
+export async function engineDownloadRuntime(backend: string): Promise<void> {
+  await invoke('engine_download_runtime', { backend });
+}
+
+export async function engineDownloadModel(modelId: string): Promise<void> {
+  await invoke('engine_download_model', { modelId });
+}
+
+export async function engineRemoveModel(modelId: string): Promise<void> {
+  await invoke('engine_remove_model', { modelId });
+}
+
+/** Drop an interrupted transfer and reclaim the disk. */
+export async function engineDiscardPartial(modelId: string): Promise<void> {
+  await invoke('engine_discard_partial', { modelId });
+}
+
+export async function engineCancelDownload(): Promise<void> {
+  await invoke('engine_cancel_download');
+}
+
+export async function engineStart(modelId: string): Promise<EngineStatus> {
+  return invoke<EngineStatus>('engine_start', { modelId });
+}
+
+export async function engineStop(): Promise<void> {
+  await invoke('engine_stop');
+}
+
+export async function engineAlive(): Promise<boolean> {
+  return invoke<boolean>('engine_alive');
+}
+
+export function onEngineProgress(cb: Cb<EngineProgress>): Promise<UnlistenFn> {
+  return sub('engine-progress', cb);
 }
 
 /** Load the persistent commander memory bank (app-data memory.json). */

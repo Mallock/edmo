@@ -1,6 +1,6 @@
 [package]
 name = "ed-mission-operator"
-version = "0.3.0"
+version = "1.0.0"
 description = "Elite Dangerous Mission Operator — always-on-top HUD with journal ingestion, LM Studio AI operator, and local Piper TTS"
 authors = ["Mika Leiman"]
 edition = "2021"
@@ -19,6 +19,8 @@ futures-util = "0.3"
 tokio = { version = "1", features = ["time"] }
 cpal = "0.15"
 hound = "3"
+# Integrity checking for the large bundled-engine downloads (runtime + model).
+sha2 = "0.10"
 
 [target."cfg(windows)".dependencies]
 # Screen glances (GDI capture) and the zip-packaged whisper build are

@@ -11,6 +11,8 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod engine;
+
 use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -557,15 +559,18 @@ async fn piper_speak(
 type ChatMsg = serde_json::Value;
 
 #[tauri::command]
-async fn llm_models(endpoint: String) -> Result<Vec<String>, String> {
+async fn llm_models(endpoint: String, api_key: Option<String>) -> Result<Vec<String>, String> {
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(3))
         .timeout(Duration::from_secs(6))
         .build()
         .map_err(|e| e.to_string())?;
     let url = format!("{}/v1/models", endpoint.trim_end_matches('/'));
-    let v: serde_json::Value = client
-        .get(url)
+    let mut req = client.get(url);
+    if let Some(key) = api_key.filter(|k| !k.is_empty()) {
+        req = req.bearer_auth(key);
+    }
+    let v: serde_json::Value = req
         .send()
         .await
         .map_err(|e| e.to_string())?
@@ -574,14 +579,23 @@ async fn llm_models(endpoint: String) -> Result<Vec<String>, String> {
         .json()
         .await
         .map_err(|e| e.to_string())?;
-    Ok(v["data"]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .filter_map(|m| m["id"].as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default())
+    // LM Studio answers OpenAI-style (`data[].id`); llama-server also exposes an
+    // Ollama-compatible shape (`models[].name`). Accept either so the bundled
+    // engine and LM Studio look the same to the frontend.
+    let from = |key: &str, field: &str| -> Vec<String> {
+        v[key]
+            .as_array()
+            .map(|a| a.iter().filter_map(|m| m[field].as_str().map(String::from)).collect())
+            .unwrap_or_default()
+    };
+    let mut ids = from("data", "id");
+    if ids.is_empty() {
+        ids = from("models", "model");
+    }
+    if ids.is_empty() {
+        ids = from("models", "name");
+    }
+    Ok(ids)
 }
 
 /// Result of one streamed completion: the prose `text` and any tool calls the
@@ -603,6 +617,7 @@ async fn stream_chat(
     tools: Option<serde_json::Value>,
     presence_penalty: Option<f32>,
     frequency_penalty: Option<f32>,
+    api_key: Option<String>,
     cancel: Arc<AtomicBool>,
 ) -> Result<ChatTurn, String> {
     let client = reqwest::Client::builder()
@@ -632,9 +647,13 @@ async fn stream_chat(
     if let Some(fp) = frequency_penalty {
         body["frequency_penalty"] = json!(fp);
     }
-    let resp = client
-        .post(url)
-        .json(&body)
+    let mut req = client.post(url).json(&body);
+    // The bundled engine is started with its own per-session key (see engine.rs);
+    // LM Studio needs no auth and passes None.
+    if let Some(key) = api_key.filter(|k| !k.is_empty()) {
+        req = req.bearer_auth(key);
+    }
+    let resp = req
         .send()
         .await
         .map_err(|e| format!("LM Studio unreachable: {e}"))?;
@@ -751,6 +770,7 @@ async fn llm_chat(
     tools: Option<serde_json::Value>,
     presence_penalty: Option<f32>,
     frequency_penalty: Option<f32>,
+    api_key: Option<String>,
 ) -> Result<(), String> {
     let cancel = Arc::new(AtomicBool::new(false));
     ctl.cancels.lock().unwrap().insert(id.clone(), cancel.clone());
@@ -766,6 +786,7 @@ async fn llm_chat(
         tools,
         presence_penalty,
         frequency_penalty,
+        api_key,
         cancel,
     )
     .await;
@@ -1467,6 +1488,8 @@ fn copy_text(app: AppHandle, text: String) -> Result<(), String> {
 #[tauri::command]
 fn close_app(app: AppHandle) {
     save_geometry(&app);
+    // Never leave the inference engine running after the app is gone (T7.4.3).
+    engine::stop_engine(&app.state::<engine::EngineCtl>());
     app.exit(0);
 }
 
@@ -1555,6 +1578,7 @@ fn main() {
         .manage(WatchCtl { generation: Arc::new(AtomicU64::new(0)) })
         .manage(LlmCtl { cancels: Mutex::new(HashMap::new()) })
         .manage(SttCtl { rec: Mutex::new(None) })
+        .manage(engine::EngineCtl::default())
         .manage(ClickThrough(AtomicBool::new(false)))
         .manage(GeomState {
             cur: Mutex::new(None),
@@ -1583,9 +1607,23 @@ fn main() {
             copy_text,
             llm_cancel,
             set_click_through,
-            close_app
+            close_app,
+            engine::engine_status,
+            engine::engine_scan_local_models,
+            engine::engine_download_runtime,
+            engine::engine_download_model,
+            engine::engine_remove_model,
+            engine::engine_discard_partial,
+            engine::engine_hash_model,
+            engine::engine_cancel_download,
+            engine::engine_start,
+            engine::engine_stop,
+            engine::engine_alive
         ])
         .setup(move |app| {
+            // A previous run that was force-killed (Task Manager, crash) cannot
+            // have cleaned up its engine — do it now, before anything starts.
+            engine::reap_orphan_engine(&app.handle().clone());
             // Restore persisted window geometry (T5.2) before the user sees it.
             let handle = app.handle().clone();
             if let (Some(path), Some(win)) = (geom_path(&handle), app.get_webview_window("main")) {
@@ -1637,6 +1675,9 @@ fn main() {
                 }
                 tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed => {
                     save_geometry(app);
+                    // Closing the window must also take the engine with it —
+                    // the X button is a more common exit than the menu (T7.4.3).
+                    engine::stop_engine(&app.state::<engine::EngineCtl>());
                     return;
                 }
                 _ => return,

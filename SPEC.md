@@ -535,6 +535,29 @@ screen-reader labels on all interactive elements.
 
 ## 6. Integration Details
 
+### 6.0 Inference engine (1.0)
+
+The app talks OpenAI-compatible HTTP to **either** of two local backends, chosen by
+`settings.lm.engine`:
+
+| | **Bundled** (`bundled`, the 1.0 default offer) | **LM Studio** (`lmstudio`) |
+|---|---|---|
+| Process | the app downloads and supervises `llama-server` | the user runs it |
+| Endpoint | `127.0.0.1:<random free port>` | `127.0.0.1:1234` (configurable) |
+| Auth | per-session `--api-key`, sent as `Authorization: Bearer` | none |
+| Vision | guaranteed — every shipped tier ships an `mmproj` | probed via LM Studio's REST types |
+
+Artifacts are pinned in one manifest (`src-tauri/src/engine.rs`): a llama.cpp release build
+(Vulkan by default — ~30 MB and vendor-neutral; CUDA optional at ~509 MB with its runtime pack) and
+a Gemma GGUF + `mmproj` from an **ungated** mirror (Google's own repos are licence-gated and will
+`403` an unattended download). Downloads stream to disk with progress, resume via HTTP `Range`, and
+can be cancelled or discarded.
+
+Lifecycle: spawned with a scrubbed environment (ambient `LLAMA_*`/`OPENAI_*` are removed — an
+inherited `LLAMA_API_KEY` otherwise makes the server `401` every chat call while `/v1/models` still
+answers), readiness-polled on `/v1/models`, stopped on both exit paths, and — because a force-kill
+bypasses those — reaped at next startup from a recorded PID file.
+
 ### 6.1 LM Studio API
 
 **Health / model list**

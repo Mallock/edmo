@@ -8,6 +8,11 @@ export type TtsEngine = 'piper' | 'system';
 
 export interface AppSettings {
   lm: {
+    /** 'bundled' = the app's own llama.cpp engine (no LM Studio needed);
+     *  'lmstudio' = talk to a user-run LM Studio at `endpoint`. */
+    engine: 'bundled' | 'lmstudio';
+    /** Model id the bundled engine should serve (see engine.rs manifest). */
+    bundledModel: string | null;
     endpoint: string;
     model: string | null; // null = auto-pick first non-embedding model
     temperature: number;
@@ -78,6 +83,10 @@ export interface AppSettings {
 
 export const DEFAULT_SETTINGS: AppSettings = {
   lm: {
+    // Existing installs keep talking to LM Studio; the bundled engine is opted
+    // into from Settings (or the first-run flow) once it has been downloaded.
+    engine: 'lmstudio',
+    bundledModel: null,
     endpoint: 'http://127.0.0.1:1234',
     model: null,
     temperature: 0.3,

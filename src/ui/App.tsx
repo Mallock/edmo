@@ -133,6 +133,33 @@ export function App() {
             <MissionCard mission={selected} nowMs={nowMs} warnMin={s.journal.expiryWarningMin} />
           ) : (
             <div className="no-mission">
+              {/* First run: the AI is the one thing that still needs a choice.
+                  Offer it as a single button with an honest size, and let the
+                  commander dismiss it — everything else works without it. */}
+              {snap.aiSetupOffer && (
+                <div className="empty-actions" style={{ display: 'block', marginBottom: 10 }}>
+                  <div style={{ marginBottom: 6 }}>
+                    <b>Set up the AI operator?</b> It talks, tells stories and watches your screen —
+                    all on this machine, nothing else to install.
+                  </div>
+                  <button onClick={() => void core.startAiSetup()} disabled={snap.engineProgress != null}>
+                    ⬇ Set up the AI ({snap.aiSetupOffer.gb} GB, one time)
+                  </button>
+                  <button onClick={() => core.dismissAiSetup()}>Not now</button>
+                  {snap.engineProgress && (
+                    <div className="empty-hint">
+                      {snap.engineProgress.phase} —{' '}
+                      {snap.engineProgress.total > 0
+                        ? `${Math.round((snap.engineProgress.received / snap.engineProgress.total) * 100)}%`
+                        : `${(snap.engineProgress.received / 1e9).toFixed(2)} GB`}
+                    </div>
+                  )}
+                  <div className="empty-hint">
+                    Downloads a small runtime plus a model from their official sources. Mission
+                    tracking and voice already work without it.
+                  </div>
+                </div>
+              )}
               {snap.journal.ok ? (
                 <>
                   <div>No active missions — accept one in-game and it appears here.</div>

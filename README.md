@@ -2,7 +2,8 @@
 
 An **always-on-top HUD** companion for Elite Dangerous. It reads your **active missions** live from
 the Player Journal, shows them as cards with synthesized objective checklists and countdown timers,
-gives **AI operator guidance** via a local LLM (LM Studio), speaks with a **bundled local neural
+gives **AI operator guidance** via a local LLM (its own bundled llama.cpp engine, or LM Studio if you
+prefer), speaks with a **bundled local neural
 voice** (Piper), and runs a **proactive heartbeat** that nudges you when you stall.
 
 Everything runs on your machine. No cloud, no telemetry, no account.
@@ -35,7 +36,9 @@ Grab **`ED Mission Operator_0.1.0_x64-setup.exe`** (built via `npm run tauri bui
 `src-tauri/target/release/bundle/nsis/`), double-click it, done. It installs per-user (no admin),
 including the offline voice, and starts the HUD. Optional extras:
 
-1. **LM Studio** (for AI guidance): start the local server at `http://127.0.0.1:1234` and load any
+1. **AI engine** — either let the app install its own (Settings → AI engine → *This app*: it fetches a
+   llama.cpp runtime + a Gemma GGUF with vision, ~4–6 GB one time, resumable), **or** use
+   **LM Studio**: start the local server at `http://127.0.0.1:1234` and load any
    chat model. The HUD auto-detects it — the `LM` pill goes green. Not sure which model your rig
    can handle? Open **Settings → AI operator**: the app reads your **RAM, CPU and GPU VRAM** and
    annotates every model in the selector (`✓ fits GPU` / `◐ CPU only (slow)` / `⚠ TOO BIG`), with a
@@ -190,7 +193,11 @@ global shortcuts (incl. push-to-talk key) need X11 — on Wayland use the HUD's 
 ## Privacy invariants
 
 - The ED journal directory is opened **read-only**; the app never writes there (X.3).
-- With the default settings the only network traffic is `127.0.0.1:1234` (LM Studio) (X.2).
+- **Inference is always local.** With the bundled engine, chat traffic goes to `127.0.0.1` on a
+  random loopback port, behind a per-session API key; with LM Studio it is `127.0.0.1:1234` (X.2).
+- **Downloads are explicit and pinned.** The inference runtime (llama.cpp releases) and the model
+  (an ungated GGUF mirror) are fetched only on a click, from URLs pinned in one manifest
+  (`src-tauri/src/engine.rs`). Nothing is fetched in the background.
 - TTS is local by default (bundled Piper); cloud voices require an explicit opt-in and are labelled.
 - No telemetry, no analytics, no cloud sync.
 
