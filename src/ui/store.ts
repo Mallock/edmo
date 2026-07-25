@@ -1844,6 +1844,10 @@ export class AppCore {
     // Attach the live job(s) to every beat so the operator always has REAL log
     // facts to be colourful about (payout, destination) — grounding beats
     // inventing atmosphere on thin moments, and survives history trimming.
+    // Rounded, speakable credits — a small local model garbles exact figures
+    // ("2,424,592" → "twenty-four point two million"), stating wrong numbers.
+    const money = (n: number): string =>
+      n >= 1e6 ? `~${(n / 1e6).toFixed(n >= 1e7 ? 0 : 1)}M cr` : n >= 1e4 ? `~${Math.round(n / 1e3)}k cr` : `${n} cr`;
     const jobs = this.sm
       .activeMissions()
       .slice(0, 3)
@@ -1851,7 +1855,7 @@ export class AppCore {
         const dest = m.destination
           ? ` → ${m.destination.station ? `${m.destination.station}, ` : ''}${m.destination.system}`
           : '';
-        return `${m.category} "${m.title}"${dest}${m.reward ? `, ${m.reward.toLocaleString('en-US')} cr` : ''}`;
+        return `${m.category} "${m.title}"${dest}${m.reward ? `, ${money(m.reward)}` : ''}`;
       });
     const base = `${bits.join(', ')}.`;
     return jobs.length ? `${base} Current job(s): ${jobs.join('; ')}.` : base;
