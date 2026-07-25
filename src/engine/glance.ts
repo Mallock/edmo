@@ -244,11 +244,19 @@ export function suppressRoutineCoaching(text: string, allowSafetyAdvice = false)
  *  "the Council certainly knows how to…" reads fine as "the Council knows how
  *  to…" — and cheaper than fighting a stubborn 4B tic with more prompt text. */
 export function stripFillerTics(text: string): string {
-  return text
-    .replace(/\bcertainly\b/gi, '')
-    .replace(/\s+([.,;:!?])/g, '$1')
-    .replace(/\s{2,}/g, ' ')
-    .trim();
+  return (
+    text
+      .replace(/\bcertainly\b/gi, '')
+      // Hedging openers the prompt bans but a small model still reaches for.
+      // Dropping the lead-in leaves a clean declarative ("Looks like Kirk Dock
+      // is ready" → "Kirk Dock is ready") — the flat voice we actually want.
+      .replace(/^(?:it\s+)?(?:looks|seems|sounds)\s+like\s+/i, '')
+      .replace(/\s+([.,;:!?])/g, '$1')
+      .replace(/\s{2,}/g, ' ')
+      .trim()
+      // Re-capitalise if stripping the opener exposed a lower-case word.
+      .replace(/^([a-z])/, (c) => c.toUpperCase())
+  );
 }
 
 /** Response_format enforcing the glance JSON (LM Studio structured output). */

@@ -7,21 +7,26 @@ import {
   buildCopilotSystem,
   copilotReactsTo,
   copilotReactionGapMs,
+  copilotDensityGapMs,
+  copilotSilenceGapMs,
 } from '../src/engine/copilot.ts';
 import { stripFillerTics } from '../src/engine/glance.ts';
 import { parseProspectTarget, matchesProspect } from '../src/engine/mining.ts';
+import { extractPlaces, findFabricatedPlace } from '../src/engine/factcheck.ts';
 
 test('copilot system prompt carries the persona and the event-stream contract', () => {
   const sys = buildCopilotSystem("M'allock");
   assert.match(sys, /Commander M'allock/);
   assert.match(sys, /NO_BEAT/);
-  assert.match(sys, /30 words/);
+  assert.match(sys, /brevity is the default/); // length distribution — short by default
+  assert.match(sys, /Look FORWARD, not back/); // anti-echo: don't restate resolved events
   assert.match(sys, /authoritative ground truth|authoritative/);
   assert.match(sys, /STRICT grounding/); // from GROUNDING_RULES
   assert.match(sys, /only mention\s+fuel when it is explicitly LOW or below 25%/);
-  // Own-perspective voice + colour-grounded-in-logs + stay-present are the core.
-  assert.match(sys, /NEVER use "we", "our" or "us"/);
-  assert.match(sys, /OWN voice/);
+  // Partnership-not-narration voice + colour-grounded-in-logs + stay-present.
+  assert.match(sys, /What you must NEVER do is NARRATE/);
+  assert.match(sys, /Narration in ANY pronoun/);
+  assert.match(sys, /never what you talk about/); // the screen-narration ban
   assert.match(sys, /colour must\s+hang on REAL facts/);
   assert.match(sys, /never a reason to fall silent/);
 });
@@ -97,6 +102,12 @@ test('stripFillerTics removes the "certainly" crutch grammatically', () => {
   assert.equal(stripFillerTics('You certainly make the most of every run.'), 'You make the most of every run.');
   assert.equal(stripFillerTics('That is certainly one way to start.'), 'That is one way to start.');
   assert.equal(stripFillerTics('Nothing to strip here.'), 'Nothing to strip here.');
+  // Hedging openers the prompt bans but the model still emits.
+  assert.equal(stripFillerTics('Looks like Marigold City is ready for us.'), 'Marigold City is ready for us.');
+  assert.equal(stripFillerTics('It seems like the rock is dry.'), 'The rock is dry.');
+  assert.equal(stripFillerTics('Sounds like a light payday.'), 'A light payday.');
+  // Mid-sentence "like" is untouched — only the opener is a tic.
+  assert.equal(stripFillerTics('Feels like home, this ring.'), 'Feels like home, this ring.');
 });
 
 test('parseProspectTarget reads a spoken mining goal; matchesProspect flags rocks', () => {
@@ -113,6 +124,49 @@ test('parseProspectTarget reads a spoken mining goal; matchesProspect flags rock
   assert.equal(matchesProspect('Tritium', 24, t!), true);
   assert.equal(matchesProspect('Tritium', 12, t!), false); // below the floor
   assert.equal(matchesProspect('Painite', 90, t!), false); // wrong commodity
+});
+
+test('density is not a metronome: tense runs speak closer, idle runs stretch out', () => {
+  for (const inv of ['low', 'medium', 'high'] as const) {
+    const idle = copilotDensityGapMs(inv, 0);
+    const mid = copilotDensityGapMs(inv, 0.5);
+    const tense = copilotDensityGapMs(inv, 1);
+    assert.ok(tense < mid && mid < idle, `${inv}: gap must shrink as pressure rises`);
+    // Idle stretches past the base cadence; full pressure collapses well under it.
+    assert.ok(idle > copilotReactionGapMs(inv));
+    assert.ok(tense < copilotReactionGapMs(inv) / 2);
+  }
+  // Out-of-range pressure is clamped, never inverted.
+  assert.equal(copilotDensityGapMs('medium', 5), copilotDensityGapMs('medium', 1));
+  assert.equal(copilotDensityGapMs('medium', -3), copilotDensityGapMs('medium', 0));
+});
+
+test('silence gap: a quiet stretch is minutes of nothing, tuned by involvement', () => {
+  assert.ok(copilotSilenceGapMs('high') < copilotSilenceGapMs('medium'));
+  assert.ok(copilotSilenceGapMs('medium') < copilotSilenceGapMs('low'));
+  // Long enough that it never competes with ordinary event reactions.
+  for (const inv of ['low', 'medium', 'high'] as const)
+    assert.ok(copilotSilenceGapMs(inv) > copilotDensityGapMs(inv, 0));
+});
+
+test('the prompt licenses speaking into a quiet stretch', () => {
+  const sys = buildCopilotSystem("M'allock");
+  assert.match(sys, /QUIET STRETCH/);
+  assert.match(sys, /needs no event behind it/);
+});
+
+test('fact fence: catches an invented station, passes ones it was told about', () => {
+  assert.deepEqual(extractPlaces('Pad eight at Marigold City, then Colonia Hub after.'), ['Marigold City', 'Colonia Hub']);
+  const allowed = ['Marigold City', 'Juniper', 'Colonia Hub', 'Whirling Station'];
+  // Legit — every place is in the allowed set (callbacks included).
+  assert.equal(findFabricatedPlace('Eighty souls into Marigold City.', allowed), null);
+  assert.equal(findFabricatedPlace('Those tourists are still waiting at Whirling Station.', allowed), null);
+  // No place named at all → nothing to check.
+  assert.equal(findFabricatedPlace("That's our best haul yet.", allowed), null);
+  // Confident fiction — a station that was never in the facts.
+  assert.equal(findFabricatedPlace('They short you on fuel over at Kirk Dock.', allowed), 'Kirk Dock');
+  // Loose match both ways — "Colonia" allowed covers "Colonia Hub" mention and vice versa.
+  assert.equal(findFabricatedPlace('Docking at Colonia Hub.', ['Colonia']), null);
 });
 
 test('involvement tunes which events react and the cadence between beats', () => {

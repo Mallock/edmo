@@ -39,6 +39,7 @@ import { ShipTracker, describeShip, shipRequiresLargePad } from '../engine/ship.
 import { MaterialsTracker } from '../engine/materials.ts';
 import { ExploreTracker, classifyBody, type ExploreLead } from '../engine/explore.ts';
 import { parseProspectTarget, matchesProspect, type ProspectTarget } from '../engine/mining.ts';
+import { extractPlaces, findFabricatedPlace } from '../engine/factcheck.ts';
 import { parseSpanshRoute, routeSummary, type TradeRoute } from '../engine/spansh.ts';
 import {
   CommanderMemory,
@@ -64,7 +65,8 @@ import {
   CopilotConversation,
   buildCopilotSystem,
   copilotReactsTo,
-  copilotReactionGapMs,
+  copilotDensityGapMs,
+  copilotSilenceGapMs,
   type ReactionTier,
 } from '../engine/copilot.ts';
 import { ConvoBuffer, cleanTranscript } from '../engine/convo.ts';
@@ -330,12 +332,28 @@ export class AppCore {
   /** True while an in-flight commentary beat came from the copilot conversation
    *  (so its reply is recorded back as the assistant turn). */
   private copilotBeatInFlight = false;
+  /** The exact messages of the in-flight copilot beat, kept so a beat that
+   *  invents a place can be resampled once before we give up on it. */
+  private copilotRetryMsgs: ChatMessage[] | null = null;
+  private copilotRetried = false;
+  /** Places the copilot is allowed to name this beat (built at fire time). */
+  private copilotAllowedPlaces = new Set<string>();
   /** Last time the copilot actually fired a beat (glance OR event reaction) —
    *  the shared cadence clock that keeps involvement from flooding. */
   private lastCopilotBeatAt = 0;
   /** Valuable worlds the copilot has already reacted to this session (by body
    *  name) — so a scan and its later DSS map each fire at most once. */
   private copilotSeenBodies = new Set<string>();
+  // --- the copilot's read on how the run is GOING (state, not events) ---
+  /** When live play started — fatigue is a long shift, not a long app uptime. */
+  private sessionStartAt = 0;
+  /** Jumps since the last time we were docked — the grind of a long haul. */
+  private jumpsSinceDock = 0;
+  /** Consecutive mission wins / losses — mood, reset by the other outcome. */
+  private winStreak = 0;
+  private lossStreak = 0;
+  /** How many times we've docked at each station this session (route repeat). */
+  private dockVisits = new Map<string, number>();
   /** What the commander told the operator to watch for while mining ("looking
    *  for tritium at 20%"), or null. Set from the ask box; cleared on restart. */
   private prospectTarget: ProspectTarget | null = null;
@@ -677,6 +695,11 @@ export class AppCore {
     this.resetCopilot(); // fresh session → fresh conversation
     this.copilotSeenBodies.clear();
     this.prospectTarget = null;
+    this.sessionStartAt = 0;
+    this.jumpsSinceDock = 0;
+    this.winStreak = 0;
+    this.lossStreak = 0;
+    this.dockVisits.clear();
     try {
       await startWatch(
         this.settings.journal.directory,
@@ -730,6 +753,10 @@ export class AppCore {
           this.reflectManual = false;
         }
         if (ev.event === 'Docked') {
+          // Fatigue resets in a docking bay; note how often we've been here.
+          this.jumpsSinceDock = 0;
+          const where = typeof ev.StationName === 'string' ? ev.StationName : this.sm.location.station;
+          if (where) this.dockVisits.set(where, (this.dockVisits.get(where) ?? 0) + 1);
           this.maybeLedger();
           // Opt-in online route search: at most twice an hour, on docking.
           if (
@@ -746,6 +773,7 @@ export class AppCore {
       }
     }
     if (live) {
+      if (!this.sessionStartAt) this.sessionStartAt = Date.now(); // fatigue clock
       this.lastGameActivity = Date.now();
       this.maybeAnnounceCg();
       if (this.bioTracker.dirty) this.recomputeBio(true);
@@ -1508,6 +1536,7 @@ export class AppCore {
     }
     for (const c of changes) {
       if (c.kind === 'jump') {
+        this.jumpsSinceDock += 1;
         this.onJumpForRoute();
         this.copilotEvent(`EVENT: FSD jump to ${this.sm.location.system}.`);
         this.copilotReact('travel', 'copilot — reacting to the jump…');
@@ -1567,6 +1596,14 @@ export class AppCore {
           this.copilotEvent(`EVENT: ${text}`);
           this.copilotReact('mission', `copilot — reacting to ${kind}…`);
         }
+      }
+      // Mood: a run of clean hand-ins reads differently from a run of losses.
+      if (c.kind === 'completed') {
+        this.winStreak += 1;
+        this.lossStreak = 0;
+      } else if (c.kind === 'failed' || c.kind === 'abandoned') {
+        this.lossStreak += 1;
+        this.winStreak = 0;
       }
       // BGS consequences arrive on the completion event (StateChange detail).
       if (c.kind === 'completed') {
@@ -1648,6 +1685,7 @@ export class AppCore {
     this.maybeChatter();
     this.maybeReflect();
     this.maybeGlance();
+    this.maybeCopilotIdle();
     this.speakMemoryEvents();
     if (this.memory.dirty) this.persistMemory();
     // Watchdog: any entry still "streaming" that no active request owns is an
@@ -1913,6 +1951,74 @@ export class AppCore {
       : withJobs;
   }
 
+  /** A per-beat length target, sampled short — real speech is mostly a few
+   *  words, so most beats should be too; the model matches this hint. */
+  private copilotLengthHint(): string {
+    const r = Math.random();
+    if (r < 0.5) return 'LENGTH: a few words, six at most.';
+    if (r < 0.85) return 'LENGTH: one short sentence.';
+    return 'LENGTH: up to two sentences, only if it earns them.';
+  }
+
+  /** A compact STATE line so the same event reads differently under different
+   *  conditions — how the session has gone, and the pressure of the run ahead.
+   *  Gives the model something to be a person ABOUT, not just an event to echo. */
+  private copilotStateLine(): string {
+    const s = this.stats;
+    const money = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : `${n}`);
+    const parts: string[] = [];
+    if (s.missionsCompleted || s.earnedTotal() > 0 || s.refinedOre > 0)
+      parts.push(
+        `${s.missionsCompleted} job(s) done, ${money(s.earnedTotal())} cr banked` +
+          `${s.refinedOre ? `, ${s.refinedOre} t refined` : ''}, ${s.jumps} jump(s)`,
+      );
+    // Fatigue — a long shift, and a long haul between docking bays.
+    const hours = this.sessionStartAt ? (Date.now() - this.sessionStartAt) / 3_600_000 : 0;
+    if (hours >= 2) parts.push(`${Math.floor(hours)}+ hours into this shift`);
+    if (this.jumpsSinceDock >= 5) parts.push(`${this.jumpsSinceDock} jumps since the last dock`);
+    // Mood — a run of clean hand-ins, or a run of setbacks.
+    if (this.winStreak >= 3) parts.push(`${this.winStreak} clean hand-ins in a row`);
+    if (this.lossStreak >= 2) parts.push(`${this.lossStreak} jobs lost in a row`);
+    // Pressure — the legs still to fly, and the tightest clock on the board.
+    if (this.navRouteJumps > 0 && this.navRouteDest)
+      parts.push(`${this.navRouteJumps} jump(s) still to run to ${this.navRouteDest}`);
+    const soonest = this.sm
+      .activeMissions()
+      .map((m) => (m.expiry ? Date.parse(m.expiry) - Date.now() : NaN))
+      .filter((ms) => Number.isFinite(ms) && ms > 0)
+      .sort((a, b) => a - b)[0];
+    if (soonest !== undefined && soonest < 30 * 60_000)
+      parts.push(`tightest deadline in ${Math.max(1, Math.round(soonest / 60_000))} min — pressure on`);
+    // The ship's own condition, when it is worth caring about.
+    if (s.hullHealth < 0.9) parts.push(`hull at ${Math.round(s.hullHealth * 100)}%`);
+    // Route repeat — the same bay, over and over.
+    const here = this.sm.location.station;
+    const visits = here ? (this.dockVisits.get(here) ?? 0) : 0;
+    if (visits >= 3) parts.push(`this is visit ${visits} to ${here} today`);
+    return parts.length ? `STATE — ${parts.join('; ')}.` : '';
+  }
+
+  /** The places the copilot may legitimately name this beat, gathered
+   *  generously: current location, mission destinations, the plotted route,
+   *  in-system stations, and every place it was already told about (its
+   *  transcript) — so callbacks pass and only true inventions get caught. */
+  private buildAllowedPlaces(): Set<string> {
+    const s = new Set<string>();
+    const add = (v?: string | null) => { if (v && v !== 'unknown') s.add(v); };
+    add(this.sm.location.system);
+    add(this.sm.location.station);
+    add(this.navRouteDest);
+    for (const m of this.sm.activeMissions()) {
+      add(m.destination?.system);
+      add(m.destination?.station);
+    }
+    for (const sig of this.sm.getState().system?.signals ?? []) if (sig.isStation) add(sig.name);
+    if (this.copilot)
+      for (const turn of this.copilot.transcript())
+        if (turn.role === 'user') for (const p of extractPlaces(turn.content)) s.add(p);
+    return s;
+  }
+
   /** Curated, journal-truth-first session facts that seed the copilot's opener.
    *  Deliberately NOT contextExtras() — background lines (CGs, trade leads) once
    *  gave the model places to hallucinate the commander into. */
@@ -1958,7 +2064,7 @@ export class AppCore {
   /** Fire one copilot beat into the running conversation — the shared path for
    *  both a screen glance (scene = the reading) and an event reaction (scene =
    *  null, text-only, no screenshot). Seeds the opener on first use. */
-  private fireCopilotBeat(scene: string | null): void {
+  private fireCopilotBeat(scene: string | null, note?: string): void {
     this.ensureCopilot();
     const cp = this.copilot!;
     if (cp.isEmpty()) cp.recordEvent(`SESSION STATE:\n${this.buildCopilotFacts()}`);
@@ -1966,10 +2072,22 @@ export class AppCore {
     this.lastStoryAt = Date.now(); // reserve the chatter slot
     this.lastCopilotBeatAt = Date.now();
     this.copilotBeatInFlight = true;
+    // Compose the beat context: current NOW + a STATE line + a length target
+    // (+ an optional framing note, e.g. a quiet stretch with no event behind it).
+    // These ride in the ephemeral turn (only events are committed to history).
+    const ctx = [note, this.copilotNowLine(), this.copilotStateLine(), this.copilotLengthHint()]
+      .filter(Boolean)
+      .join('\n');
+    // Keep the exact messages + the places it may name, so a beat that invents
+    // a station can be resampled once (validated in onAiDone).
+    const msgs = cp.messagesForBeat(ctx, scene) as unknown as ChatMessage[];
+    this.copilotRetryMsgs = msgs;
+    this.copilotRetried = false;
+    this.copilotAllowedPlaces = this.buildAllowedPlaces();
     this.startLlm(
       entry,
       'commentary',
-      cp.messagesForBeat(this.copilotNowLine(), scene) as unknown as ChatMessage[],
+      msgs,
       0.7,
       1800,
       undefined,
@@ -1977,6 +2095,48 @@ export class AppCore {
       // repetition-prone locals echoing a phrase beat after beat.
       { presence: 0.5, frequency: 0.3 },
     );
+  }
+
+  /**
+   * How tense the run is right now, 0 (drifting) .. 1 (on the edge). Drives the
+   * beat density: silent through the boring middle, close together when a clock
+   * is running down or the ship is in trouble.
+   */
+  private copilotPressure(): number {
+    let p = 0;
+    const st = this.statusTracker.current;
+    // A deadline inside the half hour is the strongest source of tension.
+    const soonest = this.sm
+      .activeMissions()
+      .map((m) => (m.expiry ? Date.parse(m.expiry) - Date.now() : NaN))
+      .filter((ms) => Number.isFinite(ms) && ms > 0)
+      .sort((a, b) => a - b)[0];
+    if (soonest !== undefined && soonest < 30 * 60_000) p += 0.5 * (1 - soonest / (30 * 60_000));
+    if (this.navRouteJumps > 0) p += Math.min(0.15, this.navRouteJumps * 0.05);
+    if (st?.lowFuel || (st?.fuelPct != null && st.fuelPct < 0.25)) p += 0.3;
+    if (this.stats.hullHealth < 0.8) p += 0.2;
+    if (Date.now() - this.lastCombatAt < 5 * 60_000) p += 0.3;
+    if (st?.beingInterdicted || st?.inDanger || st?.overheating) p += 0.4;
+    return Math.max(0, Math.min(1, p));
+  }
+
+  /**
+   * Nothing has happened for a long while — speak into the silence anyway, the
+   * way a crewmate on a long haul does. No event, no screenshot: the operator
+   * opens something from the session state, or stays quiet.
+   */
+  private maybeCopilotIdle(): void {
+    if (!this.settings.vision.commentary || !isTauri) return;
+    if (!this.lmOk || this.lmBusy || this.glanceInFlight) return;
+    if (Date.now() - this.lastGameActivity >= GAME_LIVE_WINDOW_MS) return;
+    if (Date.now() - this.lastCombatAt < 60_000) return;
+    // Only once the session has something to be about, and only after a genuine
+    // stretch of quiet (measured from the last beat OR any spoken line).
+    if (!this.copilot?.hasHistory()) return;
+    const quiet = Math.max(this.lastCopilotBeatAt, this.lastStoryAt);
+    if (Date.now() - quiet < copilotSilenceGapMs(this.settings.vision.involvement)) return;
+    this.noteGlance('copilot — speaking into a quiet stretch…');
+    this.fireCopilotBeat(null, 'QUIET STRETCH: nothing has happened for a while.');
   }
 
   /** A game event happened — let the copilot react in-conversation (text-only,
@@ -1989,7 +2149,8 @@ export class AppCore {
     if (Date.now() - this.lastCombatAt < 60_000) return; // don't cut into a fight
     const inv = this.settings.vision.involvement;
     if (!copilotReactsTo(inv, tier)) return;
-    if (Date.now() - this.lastCopilotBeatAt < copilotReactionGapMs(inv)) return;
+    // Density, not a metronome: the tenser the run, the closer the beats.
+    if (Date.now() - this.lastCopilotBeatAt < copilotDensityGapMs(inv, this.copilotPressure())) return;
     this.noteGlance(note);
     this.fireCopilotBeat(null);
   }
@@ -2831,6 +2992,27 @@ export class AppCore {
       const groundedText = stripFillerTics(suppressRoutineCoaching(fuelGrounded, hasHazard));
       const fromCopilot = this.copilotBeatInFlight;
       this.copilotBeatInFlight = false;
+      // Fact fence: a copilot beat that names a station it was never told about
+      // is confident fiction. Resample once, then drop to NO_BEAT rather than
+      // let it through — trust matters more than a beat.
+      const speakable = !!groundedText && !/\b(?:NOT_IN_GAME|NO_BEAT)\b/.test(groundedText);
+      if (speakable && fromCopilot) {
+        const invented = findFabricatedPlace(groundedText, this.copilotAllowedPlaces);
+        if (invented && !this.copilotRetried && this.copilotRetryMsgs) {
+          this.copilotRetried = true;
+          this.copilotBeatInFlight = true; // the resample is still a copilot beat
+          this.noteGlance(`resampling — invented place "${invented}"`);
+          this.startLlm(entry, 'commentary', this.copilotRetryMsgs, 0.85, 1800, undefined, { presence: 0.7, frequency: 0.5 });
+          return;
+        }
+        if (invented) {
+          this.noteGlance(`dropped a beat — invented place "${invented}"`);
+          this.copilot?.recordSilent();
+          this.feed = this.feed.filter((e) => e !== entry);
+          this.emit();
+          return;
+        }
+      }
       if (!groundedText || /\b(?:NOT_IN_GAME|NO_BEAT)\b/.test(groundedText)) {
         this.noteGlance(
           /NO_BEAT/.test(groundedText)
