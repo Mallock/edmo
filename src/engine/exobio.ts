@@ -19,6 +19,9 @@ export interface BioBody {
   sampled: string[]; // genus names with a completed Analyse here
   landable?: boolean;
   distanceLs?: number;
+  /** Nobody has scanned this body before — a first log pays five times, which
+   *  is the whole reason to detour for one. */
+  untouched?: boolean;
   lastSeen: string;
 }
 
@@ -103,6 +106,9 @@ export class BioTracker {
         const b = this.bodies.get(`${addr}|${bodyId}`);
         if (!b) break;
         if (typeof ev.Landable === 'boolean') b.landable = ev.Landable;
+        // WasDiscovered=false means virgin territory: a strong hint that a
+        // sample here will be a first log (5x payout).
+        if (typeof ev.WasDiscovered === 'boolean') b.untouched = !ev.WasDiscovered;
         const dist = num(ev.DistanceFromArrivalLS);
         if (dist != null) b.distanceLs = Math.round(dist);
         this.dirty = true;

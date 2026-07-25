@@ -9,6 +9,7 @@ import {
   copilotReactionGapMs,
   copilotDensityGapMs,
   copilotSilenceGapMs,
+  isNearDuplicate,
 } from '../src/engine/copilot.ts';
 import { stripFillerTics } from '../src/engine/glance.ts';
 import { parseProspectTarget, matchesProspect } from '../src/engine/mining.ts';
@@ -195,4 +196,24 @@ test('trim keeps the session opener as an anchor and preserves alternation', () 
   assert.match(t[0].content, /EVENT: 0/); // opener survives
   assert.equal(t[t.length - 1].content, 'beat 9'); // latest survives
   assert.deepEqual(t.map((x) => x.role), ['user', 'assistant', 'user', 'assistant', 'user', 'assistant']);
+});
+
+test('near-duplicate gate catches the same fact re-served in fresh words', () => {
+  const spoken = [
+    'Eight runs and over thirteen million credits banked. We are making good time.',
+    'A mining shift, eh — let us see what this rock has for us.',
+  ];
+  // The exact failure from a live session: three beats, one fact.
+  assert.equal(
+    isNearDuplicate('Eight runs and over thirteen million credits stacked up. A smooth streak of hand-ins.', spoken),
+    true,
+  );
+  assert.equal(
+    isNearDuplicate('Eight hand-ins and over thirteen million credits banked. We are running a perfect haul.', spoken),
+    true,
+  );
+  // A genuinely different observation still gets through.
+  assert.equal(isNearDuplicate('Bio signals on that moon — Vista pays for those.', spoken), false);
+  assert.equal(isNearDuplicate('Pad nine. Big berth for a crowd this size.', spoken), false);
+  assert.equal(isNearDuplicate('anything', []), false);
 });

@@ -39,6 +39,7 @@ import { ShipTracker, describeShip, shipRequiresLargePad } from '../engine/ship.
 import { MaterialsTracker } from '../engine/materials.ts';
 import { ExploreTracker, classifyBody, type ExploreLead } from '../engine/explore.ts';
 import { parseProspectTarget, matchesProspect, type ProspectTarget } from '../engine/mining.ts';
+import { SampleRangeTracker, describeBioHaul } from '../engine/exobiorange.ts';
 import { extractPlaces, findFabricatedPlace } from '../engine/factcheck.ts';
 import { parseSpanshRoute, routeSummary, type TradeRoute } from '../engine/spansh.ts';
 import {
@@ -66,6 +67,7 @@ import {
   buildCopilotSystem,
   copilotReactsTo,
   copilotDensityGapMs,
+  isNearDuplicate,
   copilotSilenceGapMs,
   type ReactionTier,
 } from '../engine/copilot.ts';
@@ -362,6 +364,11 @@ export class AppCore {
   /** Valuable worlds the copilot has already reacted to this session (by body
    *  name) — so a scan and its later DSS map each fire at most once. */
   private copilotSeenBodies = new Set<string>();
+  /** The session tally last shown to the copilot; repeated verbatim it becomes
+   *  the thing it talks about instead of what is actually happening. */
+  private lastStateTally = '';
+  /** "Move 500 m before the next sample" — Odyssey's clonal colony radius. */
+  private sampleRange = new SampleRangeTracker();
   // --- the copilot's read on how the run is GOING (state, not events) ---
   /** When live play started — fatigue is a long shift, not a long app uptime. */
   private sessionStartAt = 0;
@@ -1022,6 +1029,10 @@ export class AppCore {
     this.lastMemoryRemarkAt = now;
     this.pushFeed('memory', `🧠 ${best.ev.text}`);
     this.speak(best.ev.text);
+    // Records and returns are session milestones — a personal-best jump means
+    // the commander is out exploring. Context only: the memory line above is
+    // the spoken one, so the copilot never doubles it.
+    this.copilotEvent(`EVENT: ${best.ev.text}`);
     this.addSeed(`Operator recalled: ${best.ev.text.slice(0, 120)}`);
     this.persistMemory();
   }
@@ -1074,9 +1085,19 @@ export class AppCore {
       this.lastBioKeyAnnounced = this.bioLead.key;
       const b = this.bioLead;
       const genus = b.genuses.length ? ` (${b.genuses.slice(0, 3).join(', ')})` : '';
-      const text = `Bio signals on ${b.body}: ${b.remaining} uncollected${genus}. Vista Genomics pays for those, commander.`;
+      // Once DSS mapping names the genera we can turn "there is life here" into
+      // the decision the commander actually faces: worth landing, and how much
+      // walking. Before that, all we honestly have is a signal count.
+      const haul = b.genuses.length ? describeBioHaul(b.genuses, b.untouched) : null;
+      const text = haul
+        ? `Bio on ${b.body}. ${haul.text}`
+        : `Bio signals on ${b.body}: ${b.remaining} uncollected${genus}. Vista Genomics pays for those, commander.`;
       this.pushFeed('system', `🧬 ${text}`);
       this.speak(text);
+      // Exploration is a change of activity, not a footnote — tell the copilot,
+      // or it keeps talking about hand-ins while the commander is out scanning.
+      this.copilotEvent(`EVENT: Bio signals found on ${b.body} — ${b.remaining} uncollected${genus}.`);
+      this.copilotReact('discovery', 'copilot — reacting to bio signals…');
     }
   }
 
@@ -1208,6 +1229,53 @@ export class AppCore {
         if (!this.copilotSeenBodies.has(body)) break;
         this.copilotEvent(`EVENT: Finished surface-mapping ${body}.`);
         this.copilotReact('discovery', 'copilot — reacting to a completed map…');
+        break;
+      }
+      case 'FSSDiscoveryScan': {
+        // The honk: the moment a commander starts working a system. This is the
+        // clearest signal that the run has turned to exploration, so the copilot
+        // stops talking about finished hand-ins.
+        const sys = typeof ev.SystemName === 'string' ? ev.SystemName : this.sm.location.system;
+        const bodies = typeof ev.BodyCount === 'number' ? ev.BodyCount : null;
+        this.copilotEvent(
+          `EVENT: Discovery scan of ${sys}${bodies ? ` — ${bodies} bodies detected` : ''}. The commander is exploring.`,
+        );
+        this.copilotReact('discovery', 'copilot — reacting to a discovery scan…');
+        break;
+      }
+      case 'ScanOrganic': {
+        const genus = (ev.Genus_Localised as string) ?? (ev.Genus as string) ?? 'an organism';
+        const species = (ev.Species_Localised as string) ?? genus;
+        const st = this.statusTracker.current;
+        // Odyssey needs three samples of a species, each taken outside the
+        // previous one's clonal colony radius. Missing that distance rejects the
+        // sample, so call the number the moment the sample lands.
+        if (ev.ScanType === 'Log' || ev.ScanType === 'Sample') {
+          const taken = ev.ScanType === 'Log' ? 1 : 2;
+          if (st?.latitude != null && st.longitude != null && st.planetRadius) {
+            const fix = this.sampleRange.sample(species, st.latitude, st.longitude, st.planetRadius, taken);
+            const text = `Sample ${taken} of 3 — ${species}. Move at least ${fix.requiredM} m before the next one.`;
+            this.pushFeed('system', `🧬 ${text}`);
+            this.speak(text);
+            this.copilotEvent(`EVENT: Took sample ${taken}/3 of ${species}; needs ${fix.requiredM} m before the next.`);
+          }
+          break;
+        }
+        if (ev.ScanType !== 'Analyse') break;
+        // Third sample done — the species is complete, stop ranging.
+        this.sampleRange.clear();
+        this.copilotEvent(`EVENT: Completed the ${species} sample set — three of three.`);
+        this.copilotReact('discovery', 'copilot — reacting to a completed sample set…');
+        break;
+      }
+      case 'MultiSellExplorationData':
+      case 'SellExplorationData': {
+        const earned = typeof ev.TotalEarnings === 'number' ? ev.TotalEarnings : null;
+        if (!earned) break;
+        this.copilotEvent(
+          `EVENT: Sold cartographic data for ${Math.round(earned).toLocaleString('en-US')} cr.`,
+        );
+        this.copilotReact('discovery', 'copilot — reacting to a data sale…');
         break;
       }
       case 'FSSAllBodiesFound': {
@@ -1506,6 +1574,7 @@ export class AppCore {
           // first snapshot anyway).
           if (this.bootstrapped && Date.now() - this.lastGameActivity < GAME_LIVE_WINDOW_MS) {
             this.handleStatusAlerts(alerts);
+            this.checkSampleRange();
           }
         }
       } catch {
@@ -2152,11 +2221,19 @@ export class AppCore {
     const s = this.stats;
     const money = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : `${n}`);
     const parts: string[] = [];
-    if (s.missionsCompleted || s.earnedTotal() > 0 || s.refinedOre > 0)
-      parts.push(
-        `${s.missionsCompleted} job(s) done, ${money(s.earnedTotal())} cr banked` +
-          `${s.refinedOre ? `, ${s.refinedOre} t refined` : ''}, ${s.jumps} jump(s)`,
-      );
+    // The running tally is background, and it is the ONLY hard number present on
+    // a quiet beat — so a model told to hang its colour on real facts will recite
+    // it forever ("eight runs, thirteen million" three beats running). Include it
+    // only when it has actually moved since the last beat; otherwise it is not news.
+    const tally =
+      s.missionsCompleted || s.earnedTotal() > 0 || s.refinedOre > 0
+        ? `${s.missionsCompleted} job(s) done, ${money(s.earnedTotal())} cr banked` +
+          `${s.refinedOre ? `, ${s.refinedOre} t refined` : ''}, ${s.jumps} jump(s)`
+        : '';
+    if (tally && tally !== this.lastStateTally) {
+      this.lastStateTally = tally;
+      parts.push(tally);
+    }
     // Fatigue — a long shift, and a long haul between docking bays.
     const hours = this.sessionStartAt ? (Date.now() - this.sessionStartAt) / 3_600_000 : 0;
     if (hours >= 2) parts.push(`${Math.floor(hours)}+ hours into this shift`);
@@ -2322,6 +2399,22 @@ export class AppCore {
     if (Date.now() - quiet < copilotSilenceGapMs(this.settings.vision.involvement)) return;
     this.noteGlance('copilot — speaking into a quiet stretch…');
     this.fireCopilotBeat(null, 'QUIET STRETCH: nothing has happened for a while.');
+  }
+
+  /**
+   * Walking away from a bio sample: say when the clonal colony radius has been
+   * cleared, once, so the commander knows the next sample will count. Status.json
+   * updates continuously on foot, so this is effectively live.
+   */
+  private checkSampleRange(): void {
+    const st = this.statusTracker.current;
+    if (!st?.latitude || st.longitude == null) return;
+    const u = this.sampleRange.update(st.latitude, st.longitude);
+    if (!u || u.kind !== 'ready') return;
+    const text = `Far enough — ${Math.round(u.distanceM)} m out. The next ${u.species} sample will count.`;
+    this.pushFeed('system', `🧬 ${text}`);
+    this.speak(text);
+    this.copilotEvent(`EVENT: Cleared the ${u.species} colony radius — ${Math.round(u.distanceM)} m from the last sample.`);
   }
 
   /** A game event happened — let the copilot react in-conversation (text-only,
@@ -3206,6 +3299,15 @@ export class AppCore {
       // let it through — trust matters more than a beat.
       const speakable = !!groundedText && !/\b(?:NOT_IN_GAME|NO_BEAT)\b/.test(groundedText);
       if (speakable && fromCopilot) {
+        // Say-it-again gate: the model re-serves the same fact in fresh words
+        // when nothing new has happened. Dropping is better than repeating.
+        if (isNearDuplicate(groundedText, this.recentStories)) {
+          this.noteGlance('dropped a beat — too close to one just spoken');
+          this.copilot?.recordSilent();
+          this.feed = this.feed.filter((e) => e !== entry);
+          this.emit();
+          return;
+        }
         const invented = findFabricatedPlace(groundedText, this.copilotAllowedPlaces);
         if (invented && !this.copilotRetried && this.copilotRetryMsgs) {
           this.copilotRetried = true;

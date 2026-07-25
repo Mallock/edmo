@@ -134,6 +134,13 @@ export interface ShipStatus {
   body?: string;
   /** Selected nav destination (Status.json `Destination`), when set. */
   destination?: { system?: string; body?: string; name?: string };
+  /** Surface position when near/on a body — drives the exobiology sampling
+   *  range ("move 500 m before the next sample"). */
+  latitude?: number;
+  longitude?: number;
+  altitude?: number;
+  /** Body radius in metres, so surface distance is measured on this world. */
+  planetRadius?: number;
   /** On-foot life support / environment readouts, 0..1. */
   oxygen?: number;
   health?: number;
@@ -188,6 +195,10 @@ export function parseStatus(ev: JournalEvent): ShipStatus | null {
     legalState: str(ev.LegalState),
     balance: num(ev.Balance),
     body: str(ev.BodyName),
+    latitude: num(ev.Latitude),
+    longitude: num(ev.Longitude),
+    altitude: num(ev.Altitude),
+    planetRadius: num(ev.PlanetRadius),
     destination:
       dest && (dest.Name || dest.System)
         ? { system: dest.System != null ? String(dest.System) : undefined, body: dest.Body != null ? String(dest.Body) : undefined, name: str(dest.Name) }

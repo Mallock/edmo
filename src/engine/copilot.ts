@@ -70,6 +70,39 @@ export function copilotReactsTo(inv: CopilotInvolvement, tier: ReactionTier): bo
   return inv === 'high';
 }
 
+/**
+ * Is this beat effectively something the operator just said? A small local model
+ * asked for a grounded line will happily re-serve the same fact in new words
+ * ("eight runs, thirteen million banked" three beats running). The prompt asks
+ * it not to; this enforces it, the way the fact fence enforces grounding.
+ *
+ * Compares significant words (Jaccard); above the threshold the beat is dropped
+ * rather than spoken.
+ */
+// Calibrated on a real session: beats that re-served the same fact scored
+// 0.43–0.50, genuinely different observations 0.00–0.11. 0.30 sits in the gap.
+export function isNearDuplicate(beat: string, recent: readonly string[], threshold = 0.3): boolean {
+  const words = (s: string) =>
+    new Set(
+      s
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .split(/\s+/)
+        .filter((w) => w.length > 3),
+    );
+  const w = words(beat);
+  if (w.size === 0) return false;
+  for (const prev of recent) {
+    const p = words(prev);
+    if (p.size === 0) continue;
+    let shared = 0;
+    for (const x of w) if (p.has(x)) shared += 1;
+    const union = new Set([...w, ...p]).size;
+    if (union > 0 && shared / union >= threshold) return true;
+  }
+  return false;
+}
+
 /** The persistent system prompt: persona + the event-stream contract. Carries
  *  the same grounding/voice guardrails as the stateless commentary prompt. */
 export function buildCopilotSystem(cmdr?: string): string {
@@ -132,6 +165,10 @@ export function buildCopilotSystem(cmdr?: string): string {
     '"the readouts suggest…", "that maintenance screen is detailed"). The screen is only HOW you see; it is ' +
     'never what you talk about. A bare menu, board, map or panel with nothing happening beyond it is a ' +
     'NO_BEAT — you do not narrate the UI. ' +
+    'The STATE line is BACKGROUND, not a subject. Never make the running totals — jobs done, credits ' +
+    'banked, tonnage — the point of a beat, and never two beats running; a scoreboard is not news. Follow ' +
+    'what the commander is doing NOW: when the run turns to mining, exploring, scanning or a fight, THAT ' +
+    'is the subject and finished contracts are behind you. ' +
     'Look FORWARD, not back — a copilot\'s worth is anticipating, not narrating. Do NOT react to a resolved ' +
     'event by restating it: a hand-in is NEVER the payout read back, a scan is NEVER the number recited, a ' +
     'docking is NEVER "you docked". React to what it means for the run AHEAD — the next leg, the clock, the ' +
