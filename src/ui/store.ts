@@ -666,11 +666,25 @@ export class AppCore {
     }
   }
 
+  /**
+   * Context window to give the engine. 8K was leaving very little headroom: a
+   * screen-reading call is text + 1–2.5k image tokens + up to 2k generated
+   * (plus gemma's hidden reasoning), and the living copilot keeps a whole
+   * session. Measured on a 16 GB card, 32K loads as fast as 8K, so scale it to
+   * the GPU budget the game leaves us rather than hardcoding the floor.
+   */
+  private engineCtxSize(): number {
+    const budget = this.specs ? gpuBudgetGb(this.specs, true) : 0;
+    if (budget >= 8) return 32768;
+    if (budget >= 5) return 16384;
+    return 8192;
+  }
+
   async engineStartModel(modelId: string): Promise<void> {
     if (!isTauri) return;
     this.pushFeed('system', '⚙ Starting the local AI engine…');
     try {
-      this.engine = await engineStart(modelId);
+      this.engine = await engineStart(modelId, this.engineCtxSize());
       this.settings = { ...this.settings, lm: { ...this.settings.lm, engine: 'bundled', bundledModel: modelId } };
       saveSettings(this.settings);
       this.pushFeed('system', '✅ Local AI engine ready — no LM Studio needed.');
@@ -2674,6 +2688,17 @@ export class AppCore {
       this.pushFeed('system', `⛏ Watching for ${target.commodity} at ${target.minPct}%+ — I'll flag the rocks.`);
     }
 
+    // One session, one view of it. The copilot's event stream is what the
+    // operator has actually been living through, so the assistant the commander
+    // TALKS to gets it too — otherwise a bare "what?" lands in a prompt full of
+    // commodity prices and gets answered about the market.
+    const events = this.copilot?.recentEvents(20) ?? [];
+    const happening = events.length
+      ? `What has just been happening (newest last):\n${events
+          .map((e) => `- ${e.replace(/^EVENT: /, '')}`)
+          .join('\n')}\n\n`
+      : '';
+
     let messages: ChatMessage[];
     if (mission) {
       messages = buildChat(mission, state, q);
@@ -2681,6 +2706,7 @@ export class AppCore {
         messages[1].content += `\n(Plotted route: ${this.navRouteJumps} jump(s) to ${this.navRouteDest}.)`;
       }
       for (const line of this.contextExtras()) messages[1].content += `\n(${line})`;
+      if (happening) messages[1].content = `${happening}${messages[1].content}`;
     } else {
       messages = [
         {
@@ -2691,7 +2717,7 @@ export class AppCore {
         },
         {
           role: 'user',
-          content: `Current location: ${state.location.station ? `${state.location.station}, ` : ''}${state.location.system}${state.docked ? ' (docked)' : ''}.${(() => {
+          content: `${happening}Current location: ${state.location.station ? `${state.location.station}, ` : ''}${state.location.system}${state.docked ? ' (docked)' : ''}.${(() => {
             const intel = describeSystemIntel(state);
             return intel ? `\n${intel}` : '';
           })()}${this.contextExtras()

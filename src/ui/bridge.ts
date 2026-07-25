@@ -243,8 +243,8 @@ export async function engineCancelDownload(): Promise<void> {
   await invoke('engine_cancel_download');
 }
 
-export async function engineStart(modelId: string): Promise<EngineStatus> {
-  return invoke<EngineStatus>('engine_start', { modelId });
+export async function engineStart(modelId: string, ctxSize?: number): Promise<EngineStatus> {
+  return invoke<EngineStatus>('engine_start', { modelId, ctxSize: ctxSize ?? null });
 }
 
 export async function engineStop(): Promise<void> {

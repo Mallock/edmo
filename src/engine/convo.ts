@@ -15,9 +15,11 @@ export interface ConvoTurn {
   at: number; // ms epoch
 }
 
-const MAX_TURNS = 10;
+const MAX_TURNS = 16;
 const FRESH_MS = 15 * 60_000; // a lull longer than this starts a new thread
 const MAX_ASSISTANT_CHARS = 300; // stories are long — recall the gist, not the prose
+/** A burst of operator lines between questions is kept, but bounded. */
+const MAX_MERGED_CHARS = 600;
 
 export class ConvoBuffer {
   turns: ConvoTurn[] = [];
@@ -25,11 +27,15 @@ export class ConvoBuffer {
   push(role: 'user' | 'assistant', content: string, at: number): void {
     const text = content.trim();
     if (!text) return;
-    // Collapse consecutive assistant lines (operator said several things in a
-    // row) into the newest one — the thread stays question/answer shaped.
+    // Merge consecutive assistant lines so the thread stays question/answer
+    // shaped for the chat API. They are JOINED, not replaced: in live play the
+    // operator says many things between questions (hazard calls, mission
+    // notices, copilot beats), and overwriting meant a follow-up like "what?"
+    // could only ever see the very last one.
     const last = this.turns.at(-1);
     if (role === 'assistant' && last?.role === 'assistant') {
-      last.content = text;
+      const merged = `${last.content} ${text}`.trim();
+      last.content = merged.length > MAX_MERGED_CHARS ? merged.slice(-MAX_MERGED_CHARS) : merged;
       last.at = at;
       return;
     }
@@ -42,7 +48,7 @@ export class ConvoBuffer {
    * the system prompt and the new user message. Stale turns are dropped;
    * assistant turns are trimmed to their gist.
    */
-  recent(nowMs: number, max = 6): ChatMessage[] {
+  recent(nowMs: number, max = 10): ChatMessage[] {
     return this.turns
       .filter((t) => nowMs - t.at < FRESH_MS)
       .slice(-max)
@@ -50,7 +56,9 @@ export class ConvoBuffer {
         role: t.role,
         content:
           t.role === 'assistant' && t.content.length > MAX_ASSISTANT_CHARS
-            ? `${t.content.slice(0, MAX_ASSISTANT_CHARS)}…`
+            ? // Keep the END: merged assistant turns run oldest→newest, and a
+              // follow-up ("what?", "how far?") refers to the LAST thing said.
+              `…${t.content.slice(-MAX_ASSISTANT_CHARS)}`
             : t.content,
       }));
   }

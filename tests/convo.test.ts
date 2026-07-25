@@ -33,7 +33,25 @@ test('stale turns fall out; long stories are recalled as a gist', () => {
   const msgs = c.recent(17 * M);
   assert.equal(msgs.length, 1, 'the 17-min-old user turn is gone');
   assert.ok(msgs[0].content.length <= 301);
-  assert.match(msgs[0].content, /…$/);
+  // The gist keeps the END, not the start: a merged assistant turn runs
+  // oldest→newest, and a follow-up ("what?") refers to the last thing said.
+  assert.match(msgs[0].content, /^…/);
+});
+
+test('consecutive operator lines merge instead of overwriting each other', () => {
+  // In live play the operator says several things between questions (hazard
+  // calls, mission notices, copilot beats). Overwriting meant a follow-up could
+  // only ever see the last one.
+  const c = new ConvoBuffer();
+  c.push('user', 'anything happening?', 0);
+  c.push('assistant', 'Taking fire — watch your shields.', 1);
+  c.push('assistant', 'Shields are down.', 2);
+  const recalled = c.recent(1000).at(-1)!.content;
+  assert.match(recalled, /Taking fire/);
+  assert.match(recalled, /Shields are down/);
+  // …but a long burst stays bounded rather than growing without limit.
+  for (let i = 0; i < 50; i++) c.push('assistant', `line ${i} ${'y'.repeat(40)}`, 3 + i);
+  assert.ok(c.turns.at(-1)!.content.length <= 600);
 });
 
 test('empty pushes are ignored and the buffer is bounded', () => {
@@ -44,7 +62,7 @@ test('empty pushes are ignored and the buffer is bounded', () => {
     c.push('user', `q${i}`, i * 2);
     c.push('assistant', `a${i}`, i * 2 + 1);
   }
-  assert.ok(c.turns.length <= 10);
+  assert.ok(c.turns.length <= 16, 'the buffer stays bounded');
   assert.equal(c.turns.at(-1)?.content, 'a29');
 });
 

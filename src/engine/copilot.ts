@@ -251,6 +251,31 @@ export class CopilotConversation {
     return this.turns.slice();
   }
 
+  /**
+   * A compact "what just happened" digest of the live session — the newest
+   * EVENT lines, oldest first, including ones still pending a beat.
+   *
+   * This exists so the operator the commander TALKS to shares the copilot's
+   * view of the run. Without it the two halves drift apart: the copilot knows
+   * the shields just dropped while a question like "what?" reaches an assistant
+   * whose prompt is full of commodity prices, and it answers about the market.
+   */
+  recentEvents(max = 20): string[] {
+    const lines: string[] = [];
+    for (const t of this.turns) {
+      if (t.role !== 'user') continue;
+      for (const l of t.content.split('\n')) {
+        const s = l.trim();
+        if (s.startsWith('EVENT:') || s.startsWith('COMMANDER SAID:')) lines.push(s);
+      }
+    }
+    for (const p of this.pending) {
+      const s = p.trim();
+      if (s.startsWith('EVENT:') || s.startsWith('COMMANDER SAID:')) lines.push(s);
+    }
+    return lines.slice(-max);
+  }
+
   /** Keep the session opener (the first spoken exchange) as an anchor and drop
    *  the oldest middle turns once the window is full. */
   private trim(): void {
