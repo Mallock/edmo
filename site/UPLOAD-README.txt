@@ -8,7 +8,7 @@ WHAT THIS IS
   img/                                    screenshots + icons
   ED-Mission-Operator-1.0.0-setup.exe       the Windows installer (~131 MB)
   ED-Mission-Operator-1.0.0-amd64.deb       Linux beta, Ubuntu/Debian (~147 MB)
-  ED-Mission-Operator-1.0.0-x86_64.AppImage Linux beta, any distro (~230 MB)
+  ED-Mission-Operator-1.0.0-x86_64.AppImage Linux beta, any distro (~211 MB)
 
 HOW TO PUT IT ON YOUR WEB HOTEL
   1. Open your web hotel's File Manager (or connect with FTP, e.g. FileZilla).

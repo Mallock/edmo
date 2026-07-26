@@ -1774,6 +1774,49 @@ async fn ardent_trade_candidates(
     serde_json::to_string(&out).map_err(|e| e.to_string())
 }
 
+/// Landing-pad size per station in one system, from Ardent.
+///
+/// Spansh's route response carries no pad information whatsoever, and its only
+/// pad control is a large-pad boolean — so a medium hull gets routed to
+/// small-pad Odyssey settlements and is turned away at the pad. Ardent knows
+/// the pad size, keyed by station name (its marketId is frequently null for
+/// settlements, so the name is the reliable key).
+#[tauri::command]
+async fn ardent_station_pads(system: String) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(8))
+        .timeout(Duration::from_secs(25))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let url = format!(
+        "https://api.ardent-insight.com/v2/system/name/{}/commodities",
+        urlencoding_light(&system)
+    );
+    let res = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Ardent unreachable: {e}"))?;
+    if res.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok("{}".into());
+    }
+    let rows: serde_json::Value = res
+        .error_for_status()
+        .map_err(|e| format!("Ardent error: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("Ardent returned unusable data: {e}"))?;
+    let mut pads = serde_json::Map::new();
+    for r in rows.as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
+        if let (Some(name), Some(pad)) = (r["stationName"].as_str(), r["maxLandingPadSize"].as_i64())
+        {
+            pads.entry(name.to_string())
+                .or_insert(serde_json::Value::from(pad));
+        }
+    }
+    serde_json::to_string(&pads).map_err(|e| e.to_string())
+}
+
 /// commander's current station. OPT-IN ONLY — sends the system/station name to
 /// spansh.co.uk, nothing else. Jobs queue server-side, so this submits and
 /// polls (their API answers in ~30-90 s).
@@ -1786,6 +1829,7 @@ async fn spansh_trade_route(
     max_hop_distance: u32,
     max_hops: u32,
     requires_large_pad: bool,
+    max_price_age_days: u32,
 ) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
@@ -1805,6 +1849,10 @@ async fn spansh_trade_route(
         // ships (Cutter, Corvette, Panther Clipper…) get "docking denied" at
         // medium/small stops, so exclude those when the hull needs a large pad.
         ("requires_large_pad", if requires_large_pad { "1" } else { "0" }.into()),
+        // Spansh honours this and we never sent it, so it happily proposed a
+        // route priced off markets last reported 613 DAYS earlier — a 15,000%
+        // margin that exists only in a two-year-old snapshot.
+        ("max_price_age", max_price_age_days.clamp(1, 365).to_string()),
         ("allow_prohibited", "0".into()),
         ("allow_planetary", "1".into()),
         ("allow_player_owned", "0".into()),
@@ -1990,6 +2038,7 @@ fn main() {
             galnet_headlines,
             ardent_market,
             ardent_trade_candidates,
+            ardent_station_pads,
             edastro_system,
             copy_text,
             llm_cancel,

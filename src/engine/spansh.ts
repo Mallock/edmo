@@ -107,3 +107,63 @@ export function commodityLine(c: RouteCommodity): string {
   const margin = c.marginPct !== null ? ` (${c.marginPct.toLocaleString('en-US')}%)` : '';
   return `${c.amount.toLocaleString('en-US')} t ${c.name}: buy ${c.buyPrice.toLocaleString('en-US')} → sell ${c.sellPrice.toLocaleString('en-US')} · +${c.profitPerTon.toLocaleString('en-US')}/t${margin} · +${c.totalProfit.toLocaleString('en-US')} cr`;
 }
+
+/** A stop on a route the ship cannot actually use. */
+export interface UnusableStop {
+  station: string;
+  system: string;
+  /** Largest pad there: 1 small, 2 medium, 3 large. */
+  pad: number;
+}
+
+/**
+ * Find the stops on a Spansh route the ship would be turned away from.
+ *
+ * Spansh has exactly one pad control — a large-pad boolean — and its route
+ * response carries no pad size at all. So a medium hull is offered small-pad
+ * Odyssey settlements and only finds out at the pad: this is a real route it
+ * proposed to a Type-8, ending in "Docking denied — your ship is too large for
+ * this pad class" at Toussaint Prospecting Hub, a small-pad settlement.
+ *
+ * `padsBySystem` is what Ardent knows, keyed system → station → pad. Stations
+ * that are absent are LEFT ALONE rather than assumed bad: unknown is not the
+ * same as too small, and dropping every unrecognised stop would throw away good
+ * routes to make a point.
+ */
+export function unusableStops(
+  route: TradeRoute,
+  padsBySystem: Readonly<Record<string, Readonly<Record<string, number>>>>,
+  minPad: number,
+): UnusableStop[] {
+  const out: UnusableStop[] = [];
+  const seen = new Set<string>();
+  const check = (station: string, system: string): void => {
+    const key = `${system}|${station}`;
+    if (!station || !system || seen.has(key)) return;
+    seen.add(key);
+    const pad = padsBySystem[system]?.[station];
+    if (typeof pad !== 'number' || pad >= minPad) return;
+    out.push({ station, system, pad });
+  };
+  for (const h of route.hops) {
+    check(h.fromStation, h.fromSystem);
+    check(h.toStation, h.toSystem);
+  }
+  return out;
+}
+
+/** Hops whose prices are older than the ceiling — profit that no longer exists. */
+export function staleHops(route: TradeRoute, maxAgeDays: number): RouteHop[] {
+  return route.hops.filter((h) => h.marketAgeh > maxAgeDays * 24);
+}
+
+const padWord = (p: number): string => (p === 1 ? 'small' : p === 2 ? 'medium' : 'large');
+
+/** Why a route was thrown away, in words the commander can act on. */
+export function describeUnusable(stops: readonly UnusableStop[], minPad: number): string {
+  const list = stops.map((s) => `${s.station} (${s.system}, ${padWord(s.pad)} pad only)`).join(', ');
+  return (
+    `That route puts you somewhere you cannot dock — ${list}. Your ship needs a ` +
+    `${padWord(minPad)} pad or bigger, and the route planner has no way to ask for one.`
+  );
+}

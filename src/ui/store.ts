@@ -62,7 +62,14 @@ import {
   type RouteFilters,
   type TradeFind,
 } from '../engine/traderoute.ts';
-import { parseSpanshRoute, routeSummary, type TradeRoute } from '../engine/spansh.ts';
+import {
+  describeUnusable,
+  parseSpanshRoute,
+  routeSummary,
+  staleHops,
+  unusableStops,
+  type TradeRoute,
+} from '../engine/spansh.ts';
 import {
   CommanderMemory,
   REFLECTION_FORMAT,
@@ -105,6 +112,7 @@ import {
   llmModelTypes,
   ardentMarket,
   ardentTradeCandidates,
+  ardentStationPads,
   galnetHeadlines,
   edastroSystem,
   engineStatus,
@@ -1816,8 +1824,10 @@ export class AppCore {
         maxHopDistance: this.settings.trade.routeMaxHopLy,
         maxHops: 2,
         requiresLargePad,
+        maxPriceAgeDays: DEFAULT_FILTERS.maxAgeDays,
       });
-      const route = parseSpanshRoute(raw);
+      const parsed = parseSpanshRoute(raw);
+      const route = parsed ? await this.vetRoute(parsed, manual) : null;
       this.route = route;
       this.routeIdx = 0;
       if (route) {
@@ -2856,6 +2866,48 @@ export class AppCore {
   }
 
   /**
+   * Check a Spansh route against what the ship can actually do, before the
+   * commander is sent to fly it.
+   *
+   * Spansh's only pad control is a large-pad boolean and its response carries no
+   * pad size, so a medium hull gets routed to small-pad settlements — which is
+   * how a Type-8 ended a route on "docking denied, your ship is too large for
+   * this pad class". Ardent knows the pads; ask it about each system on the
+   * route and throw the route away if any stop is unusable.
+   *
+   * Returns the route when it is flyable, or null when it is not.
+   */
+  private async vetRoute(route: TradeRoute, manual: boolean): Promise<TradeRoute | null> {
+    // Belt and braces on freshness: max_price_age is sent to Spansh, but a
+    // client-side check costs nothing and does not depend on their filtering.
+    const stale = staleHops(route, DEFAULT_FILTERS.maxAgeDays);
+    if (stale.length) {
+      if (manual)
+        this.pushFeed(
+          'system',
+          `Ignoring that route — its prices are ${Math.round(stale[0].marketAgeh / 24)} days old, so the profit is fiction.`,
+        );
+      return null;
+    }
+    if (!this.settings.external.ardent) return route;
+    const minPad = shipRequiresLargePad(this.ship.current?.ship) ? 3 : 2;
+    const systems = [...new Set(route.hops.flatMap((h) => [h.fromSystem, h.toSystem]))].filter(Boolean);
+    const padsBySystem: Record<string, Record<string, number>> = {};
+    for (const sys of systems) {
+      try {
+        padsBySystem[sys] = await ardentStationPads(sys);
+      } catch {
+        // Unknown is not the same as too small — leave that system unchecked.
+      }
+    }
+    const bad = unusableStops(route, padsBySystem, minPad);
+    if (!bad.length) return route;
+    this.pushFeed('system', `⛔ ${describeUnusable(bad, minPad)}`);
+    if (manual) this.speak(describeUnusable(bad, minPad));
+    return null;
+  }
+
+  /**
    * Spansh came back empty. Offer the plain buy-here/sell-there run instead —
    * "no loop" was technically true and practically useless while a 44,000 cr/t
    * run sat thirty light years away.
@@ -2946,8 +2998,12 @@ export class AppCore {
           maxHopDistance: this.settings.trade.routeMaxHopLy,
           maxHops,
           requiresLargePad,
+          maxPriceAgeDays: DEFAULT_FILTERS.maxAgeDays,
         });
-        const route = parseSpanshRoute(raw);
+        const parsed = parseSpanshRoute(raw);
+        // The tool path gets the same vetting as the button: a route the ship
+        // cannot dock at is not an answer, it is a wasted trip.
+        const route = parsed ? await this.vetRoute(parsed, false) : null;
         // Surface it in the route card too, so tool-planned routes are clickable.
         if (route) {
           this.route = route;

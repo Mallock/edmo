@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ED Mission Operator — a mission HUD with a voice, for Elite Dangerous</title>
-<meta name="description" content="Free always-on-top mission HUD for Elite Dangerous: live journal-driven mission tracking, a proactive AI operator with offline neural voices, trade & exobiology leads, and a space-opera chronicle of your career. 100% local, no cloud.">
+<meta name="description" content="Free always-on-top mission HUD for Elite Dangerous: live journal-driven mission tracking, a proactive AI operator with offline neural voices, profitable trade runs, exobiology worked out while you walk, and a space-opera chronicle of your career. 100% local, no cloud — it installs its own AI.">
 <link rel="icon" href="img/favicon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -221,19 +221,16 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
       <h1>A mission HUD<br>with a <em>voice</em>.</h1>
       <p class="lede">
         A small always-on-top panel that reads your Player Journal live: mission cards with
-        objectives and timers, a <b>proactive operator</b> that nudges you when you stall,
-        an <b>AI wingman</b> answering over local neural voices, trade and exobiology leads,
-        a space-opera chronicle written from what you actually did, and a
-        <b>long-term memory</b> that remembers your factions, records and close calls across
-        sessions. New in <b>0.3</b>: it now watches your ship in real time — <b>fuel, heat,
-        shields, interdictions, your docking pad</b> — calls out the hazards out loud, checks
-        whether your hold and cabins can even carry a job before you fly it, and understands
-        far more of the mission board (donations, scans, hacks, sabotage, smuggling and
-        on-foot work). You can even <b>talk to it</b> — hold a key, speak, and it answers out
-        loud, remembering the conversation. Give it a <b>vision model</b> and it turns copilot,
-        <b>riding the whole session with you</b> — reading your screen and reacting in context to
-        the booking, the interdiction, the pad you're cleared to. <b>Everything runs on your
-        machine.</b>
+        objectives and timers, a <b>proactive operator</b> that nudges you when you stall, and an
+        <b>AI wingman</b> that answers out loud in offline neural voices. It watches your ship in
+        real time — <b>fuel, heat, shields, interdictions, your docking pad</b> — checks whether
+        your hold and cabins can carry a job before you fly it, <b>finds you a profitable trade
+        run</b>, does the <b>exobiology arithmetic</b> while you walk, and writes the session up as
+        a space-opera episode when you log off. It <b>remembers you</b> across sessions — your
+        factions, your records, where you lost a ship — and you can <b>talk to it</b>: hold a key,
+        speak, and it answers. Give it a vision model and it turns copilot, <b>riding the whole
+        session with you</b>. <b>Everything runs on your machine</b> — including the AI, which it
+        installs itself.
       </p>
       <div class="cta-row">
         <a class="dl" href="ED-Mission-Operator-1.0.0-setup.exe" download>
@@ -244,7 +241,7 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
         <p class="cta-note">🐧 <b>Linux beta:</b>
           <a href="ED-Mission-Operator-1.0.0-amd64.deb" download style="color:var(--amber)">.deb (147 MB)</a>
           ·
-          <a href="ED-Mission-Operator-1.0.0-x86_64.AppImage" download style="color:var(--amber)">AppImage (230 MB)</a>
+          <a href="ED-Mission-Operator-1.0.0-x86_64.AppImage" download style="color:var(--amber)">AppImage (211 MB)</a>
           — journals auto-detected from the Steam Proton prefix; X11 recommended
           (global hotkeys don't exist on Wayland); screen glances are Windows-only for now.
           Fresh out of the forge — reports welcome. AppImage users: install an emoji font
@@ -268,7 +265,7 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
         <h3>Live mission tracking</h3>
         <p>Reads the game's own journal files as you play. Cards show category, destination,
         reward, <b>kill and cargo counters</b>, gift commodities for VIPs, and a synthesized
-        objective checklist the game never gives you — with live expiry timers. It now reads
+        objective checklist the game never gives you — with live expiry timers. It reads
         the <b>whole board</b>: couriers and cargo, passengers and sightseeing, massacres and
         assassinations, plus <b>donations, scans, hacks, sabotage, smuggling and on-foot
         (Odyssey) work</b> — each with its own checklist and tailored advice.</p>
@@ -284,11 +281,12 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
       </div></div>
       <div class="mi"><span class="n">C</span><div>
         <h3>AI operator <span style="color:var(--dim);font-size:0.82em">(optional)</span></h3>
-        <p>Turn the AI on with <b>one button</b> — the app installs its own engine, no other software —
-        then ask anything. "What should I do first?" gets an
-        answer grounded in your real missions, system intel and expiry order, and it can
-        <b>read your live game data on the fly</b> to answer for certain (see below). A built-in
-        advisor reads your PC's RAM and GPU and tells you which models actually fit.</p>
+        <p>Turn the AI on with <b>one button</b> — the app installs its own engine and model, with
+        nothing else to download or configure — then ask it anything. <i>"What should I do
+        first?"</i> gets an answer grounded in your real missions, system intel and expiry order,
+        and it can <b>read your live game data on the fly</b> rather than guess (see below).
+        Prefer to run your own? Point it at LM Studio instead, and a built-in advisor reads your
+        RAM and graphics card and tells you which models actually fit.</p>
       </div></div>
       <div class="mi"><span class="n">D</span><div>
         <h3>Offline neural voices</h3>
@@ -296,14 +294,15 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
         Six more voices are a one-click download away. Text never leaves your machine.</p>
       </div></div>
       <div class="mi"><span class="n">E</span><div>
-        <h3>Trade &amp; exobio leads</h3>
-        <p>Every commodities market you open is remembered; when a buy-low / sell-high spread
-        clears your threshold, a dismissible <b>trade lead card</b> appears. Same for planets with
-        <b>bio signals you haven't sampled</b> — unclaimed Vista Genomics money, tracked. An
-        <b>opt-in route planner</b> (community data via Spansh) finds profitable multi-hop runs
-        from your current station, sized to your actual cargo hold — and keeps the <b>next
-        waypoint on your clipboard</b>: jump in, and the following system is already copied for a
-        quick Ctrl+V in the galaxy map.</p>
+        <h3>Trade leads &amp; profitable runs</h3>
+        <p>Every commodities market you open is remembered, and when a buy-low / sell-high spread
+        clears your threshold a dismissible <b>trade lead card</b> appears. Ask what's worth
+        hauling and it goes further: it searches community market data for the best
+        <b>buy-here, sell-there run</b> out of your system, sized to your hold and filtered to
+        <b>pads your ship can actually land on</b>. The answer arrives as a card with the numbers
+        you act on — credits a ton, credits a full hold, how far — and a <b>copy button on every
+        destination</b>, so the system name is on your clipboard ready for a Ctrl+V in the galaxy
+        map. A multi-hop Spansh loop is one question away when you want one.</p>
       </div></div>
       <div class="mi"><span class="n">F</span><div>
         <h3>The Saga</h3>
@@ -313,7 +312,7 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
         and the places on your route.</p>
       </div></div>
       <div class="mi"><span class="n">G</span><div>
-        <h3>A memory <span style="color:var(--dim);font-size:0.82em">(new in 0.2)</span></h3>
+        <h3>A memory</h3>
         <p>The operator <b>remembers you across sessions</b>: your history with every faction,
         every system you've visited (and where you lost a ship), personal records — richest
         contract, biggest bounty, best session. It brings memories up at the right moment
@@ -324,8 +323,8 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
       <div class="mi"><span class="n">H</span><div>
         <h3>Eyes &amp; a living copilot <span style="color:var(--dim);font-size:0.82em">(optional, off by default)</span></h3>
         <p>With the AI turned on, the operator can <b>glance at your screen</b>
-        and understand what you're doing — even in situations the journal doesn't record. But it no
-        longer reacts to one frame in isolation: your undockings, jumps, interdictions, arrivals and
+        and understand what you're doing — even in situations the journal doesn't record. It never
+        reacts to a single frame in isolation: your undockings, jumps, interdictions, arrivals and
         hand-ins all stream into <b>one running conversation</b> alongside what it sees, so it
         <b>rides the whole session with you</b> and reacts in context — it knows the leg you just
         flew and the job you just closed, like a crewmate who's been there the whole time. Each
@@ -344,8 +343,8 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
         the operator remembers what it just told you — including its own stories and warnings.</p>
       </div></div>
       <div class="mi"><span class="n">J</span><div>
-        <h3>Flight safety &amp; ship status <span style="color:var(--dim);font-size:0.82em">(new in 0.3)</span></h3>
-        <p>The operator now watches the game's real-time status feed. A compact strip shows your
+        <h3>Flight safety &amp; ship status</h3>
+        <p>The operator watches the game's real-time status feed. A compact strip shows your
         <b>fuel gauge</b> and live hazards, and it speaks the ones that matter: <b>"interdiction —
         submit and boost"</b>, overheating, shields down, low fuel. It reads out your
         <b>docking pad number</b> the instant control clears you, warns before a jump when the
@@ -353,7 +352,7 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
         "stalling" while you plan a route.</p>
       </div></div>
       <div class="mi"><span class="n">K</span><div>
-        <h3>Knows your ship, mats &amp; surveys <span style="color:var(--dim);font-size:0.82em">(new in 0.3)</span></h3>
+        <h3>Knows your ship, mats &amp; surveys</h3>
         <p>From your loadout it does the check the mission board never does: <b>"that delivery
         won't fit your hold"</b>, <b>"you don't have cabins for these VIPs"</b>, <b>"you're not
         rigged to mine this"</b>. It keeps a running tally of your <b>engineering materials and
@@ -362,34 +361,38 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
         the survey data riding in your hold.</p>
       </div></div>
       <div class="mi"><span class="n">L</span><div>
-        <h3>Reads your live data on the fly <span style="color:var(--dim);font-size:0.82em">(new in 0.3)</span></h3>
+        <h3>Reads your live data on the fly</h3>
         <p>Ask <i>"what's worth buying here?"</i> and the operator doesn't guess — it <b>reads the
         live commodities market</b> in front of you before it answers. With a tool-calling model it
         can reach for exactly what a question needs: the current market, where to buy or sell a
-        commodity across the stations you've visited, a fresh <b>Spansh route</b>, whether cargo
-        fits your hold, your missions, materials or system intel. No more being sent to buy
+        commodity across the stations you've visited, <b>a profitable run out of here</b>, a
+        multi-hop Spansh loop, whether cargo fits your hold, your missions, materials or system
+        intel. No more being sent to buy
         something that <b>sold out hours ago</b> — and if your model can't call tools, it still
         answers grounded in the market it can see. All local; nothing leaves your machine.</p>
       </div></div>
       <div class="mi"><span class="n">M</span><div>
-        <h3>Exobiology, worked out for you <span style="color:var(--dim);font-size:0.82em">(new in 1.0)</span></h3>
-        <p>Sample a plant and the operator names the <b>colony radius you have to walk</b> — 500 m
-        for Bacterium, 800 m for Osseus — then tells you, once, the moment you're clear, so the
-        next sample actually counts. On a surface scan it prices the landing before you commit:
-        what's down there, roughly <b>what the full set pays</b>, and how much walking it costs.
-        If nobody has logged the body, it says so — that <b>five-times first-footfall bonus</b> is
-        still on the table.</p>
+        <h3>Exobiology, worked out for you</h3>
+        <p>Odyssey makes you take three samples of a species, each one far enough from the last —
+        and never tells you how far. The operator does: <b>500 m for Bacterium, 800 m for
+        Osseus</b>, called out the moment you take a sample, and then a single "far enough" when
+        you've walked it. Before you commit to a landing it tells you what's down there, roughly
+        <b>what a full set is worth</b>, and how much walking it will cost. If nobody has logged
+        that body before, it says so — <b>a first sample pays five times as much</b>. And when you
+        cash it all in at Vista Genomics, the payout goes into your session ledger and your
+        records, bonuses included.</p>
       </div></div>
       <div class="mi"><span class="n">N</span><div>
-        <h3>The wider galaxy, on request <span style="color:var(--dim);font-size:0.82em">(new in 1.0, opt-in)</span></h3>
-        <p>Three community sources the operator reaches for <b>only when you ask</b>. <i>"Any
-        news?"</i> pulls the <b>Galnet wire</b> and relays it as somebody else's dispatch, never as
-        something you witnessed. <i>"Where can I sell this?"</i> can search markets
-        <b>galaxy-wide</b> (Ardent Insight, EDDN-sourced), not just the stations you've walked. And
-        <i>"is that system worth the detour?"</i> checks the <b>exploration catalogue</b> for what
-        others have already found there — including which species are logged on which body. Each
-        is off until you switch it on, and each sends the bare minimum: a system name, a commodity,
-        or nothing at all.</p>
+        <h3>The wider galaxy, on request <span style="color:var(--dim);font-size:0.82em">(opt-in)</span></h3>
+        <p>Three community sources the operator touches <b>only when you ask it to</b>. <i>"Any
+        news?"</i> reads the <b>Galnet wire</b> and passes the stories on as news — not as
+        something you were there for. <i>"Where can I sell this?"</i> searches markets
+        <b>across the galaxy</b> (Ardent Insight, built from shared EDDN data), not only the
+        stations you have visited. And <i>"is that system worth the detour?"</i> checks the
+        <b>exploration catalogue</b> for what other commanders have already found there, down to
+        which species are logged on which body — and when it comes back empty it says that means
+        nobody has been yet, not that there is nothing to find. Each is off until you switch it
+        on, and each sends the bare minimum: a system name, a commodity, or nothing at all.</p>
       </div></div>
     </div>
   </div>
@@ -566,7 +569,8 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
           <li><b>Open source.</b> Don't take any of this on faith — the full source is on
           <a href="https://github.com/Mallock/edmo" rel="noopener" style="color:var(--amber)">GitHub (MIT license)</a>:
           the tested TypeScript mission engine, the Rust shell, the prompts, everything.
-          Build it yourself with Node + Rust, or audit the network code — it all lives in two files.</li>
+          Build it yourself with Node + Rust, or read the network code for yourself — every
+          request the app can make is in the Rust shell, and each one is named on this page.</li>
           <li><b>Read-only.</b> It reads the journal text files Frontier writes for third-party tools; it never writes to the game's folders.</li>
           <li><b>No game hooks.</b> It never touches game memory, injects code, or talks to game servers — the same mechanism trusted community tools have used for years.</li>
           <li><b>Your words stay home.</b> The bundled voices synthesize speech locally; nothing you read or hear leaves your PC.</li>

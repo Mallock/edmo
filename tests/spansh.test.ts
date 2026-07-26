@@ -1,7 +1,15 @@
 /** Spansh route parsing — against a captured real API response (Tir, 40 ly). */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { commodityLine, parseSpanshRoute, routeSummary } from '../src/engine/spansh.ts';
+import {
+  commodityLine,
+  describeUnusable,
+  parseSpanshRoute,
+  routeSummary,
+  staleHops,
+  unusableStops,
+  type TradeRoute,
+} from '../src/engine/spansh.ts';
 
 // Trimmed but structurally identical to the live /api/results body captured
 // from spansh.co.uk during development (2026-07-19).
@@ -109,4 +117,73 @@ test('profit calculator: buy/sell prices, amounts, margins, per-trip totals', ()
   // The hop leads with the biggest EARNER, not the best cr/t.
   assert.equal(r.hops[1].commodity, 'Military Grade Fabrics');
   assert.match(commodityLine(fabrics), /163 t Military Grade Fabrics: buy 93 → sell 12,215/);
+});
+
+/**
+ * The route Spansh actually proposed to a Type-8: two legs ending at Toussaint
+ * Prospecting Hub, a small-pad Odyssey settlement, priced off markets last
+ * reported 613 days earlier. It ended in "Docking denied — your ship is too
+ * large for this pad class".
+ */
+const REAL_BAD_ROUTE: TradeRoute = {
+  hops: [
+    {
+      fromStation: 'Salted Womb', fromSystem: 'Valac',
+      toStation: 'Hidalgo Cultivation Centre', toSystem: 'Colonia',
+      distanceLy: 24.3, commodity: 'Biowaste', profitPerTon: 711, totalProfit: 23463,
+      marketAgeh: 131, commodities: [],
+    },
+    {
+      fromStation: 'Hidalgo Cultivation Centre', fromSystem: 'Colonia',
+      toStation: 'Toussaint Prospecting Hub', toSystem: 'Luchtaine',
+      distanceLy: 19.6, commodity: 'Grain', profitPerTon: 13301, totalProfit: 3737581,
+      marketAgeh: 14712, commodities: [],
+    },
+  ],
+  totalProfit: 3761044,
+  fetchedAt: 0,
+};
+
+// Real Ardent pad data for Luchtaine — settlements vary, which is why blanket
+// exclusion of planetary stops would be the wrong fix.
+const PADS = {
+  Luchtaine: {
+    'Toussaint Prospecting Hub': 1,
+    'Neugebauer Mines': 2,
+    "Moore's Charm": 3,
+    'Cook Extraction Base': 2,
+  },
+  Colonia: { 'Hidalgo Cultivation Centre': 3 },
+};
+
+test('a medium hull is warned off the small-pad settlement Spansh routed it to', () => {
+  const bad = unusableStops(REAL_BAD_ROUTE, PADS, 2);
+  assert.equal(bad.length, 1);
+  assert.equal(bad[0].station, 'Toussaint Prospecting Hub');
+  assert.equal(bad[0].pad, 1);
+  const text = describeUnusable(bad, 2);
+  assert.match(text, /cannot dock/);
+  assert.match(text, /Toussaint Prospecting Hub \(Luchtaine, small pad only\)/);
+  assert.match(text, /needs a medium pad or bigger/);
+});
+
+test('a large-pad hull loses the medium stops too, and a small ship keeps them all', () => {
+  assert.equal(unusableStops(REAL_BAD_ROUTE, PADS, 3).length, 1);
+  // Same route flown by something that fits anywhere: nothing to complain about.
+  assert.equal(unusableStops(REAL_BAD_ROUTE, PADS, 1).length, 0);
+});
+
+test('an unknown station is left alone — unknown is not too small', () => {
+  // Dropping every unrecognised stop would throw away good routes to make a point.
+  assert.deepEqual(unusableStops(REAL_BAD_ROUTE, {}, 2), []);
+  assert.deepEqual(unusableStops(REAL_BAD_ROUTE, { Luchtaine: {} }, 3), []);
+});
+
+test('613-day-old prices are not a trade route', () => {
+  const stale = staleHops(REAL_BAD_ROUTE, 14);
+  assert.equal(stale.length, 1);
+  assert.equal(stale[0].commodity, 'Grain');
+  // The 131-hour leg is old but believable, and survives.
+  assert.equal(staleHops(REAL_BAD_ROUTE, 30).length, 1);
+  assert.equal(staleHops(REAL_BAD_ROUTE, 1000).length, 0);
 });
