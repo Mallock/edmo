@@ -752,6 +752,15 @@ pub async fn engine_start(
         .arg(&key)
         .arg("--ctx-size")
         .arg(ctx_size.unwrap_or(8192).to_string())
+        // One slot, explicitly. llama.cpp defaults to FOUR, which lets several
+        // generations decode on the GPU at once — and the app can briefly have
+        // two in flight, because superseding a request cancels it
+        // asynchronously and the old one keeps going until its next chunk. Two
+        // decodes plus a running game is a frame hitch. With one slot the
+        // server serialises them instead, and the whole context belongs to the
+        // single request rather than being shared four ways.
+        .arg("--parallel")
+        .arg("1")
         .arg("-ngl")
         .arg(gpu_layers.unwrap_or(99).to_string())
         .stdout(Stdio::null())
