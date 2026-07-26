@@ -37,6 +37,7 @@ import { BioTracker, type BioLead } from '../engine/exobio.ts';
 import { StatusTracker, isBusyFocus, isScoopableStar, type StatusAlert } from '../engine/status.ts';
 import { ShipTracker, describeShip, shipRequiresLargePad } from '../engine/ship.ts';
 import { MaterialsTracker } from '../engine/materials.ts';
+import { CarrierTracker } from '../engine/carrier.ts';
 import { ExploreTracker, classifyBody, type ExploreLead } from '../engine/explore.ts';
 import { parseProspectTarget, matchesProspect, type ProspectTarget } from '../engine/mining.ts';
 import {
@@ -437,6 +438,16 @@ export class AppCore {
   /** "Move 500 m before the next sample" — Odyssey's clonal colony radius. */
   private sampleRange = new SampleRangeTracker();
   private sampleCount = new SampleCounter();
+  /** Whether the commander owns a fleet carrier, and what it runs on. */
+  private carrier = (() => {
+    const t = new CarrierTracker();
+    try {
+      t.load(JSON.parse(localStorage.getItem('edmo.carrier.v1') ?? 'null'));
+    } catch {
+      /* start empty */
+    }
+    return t;
+  })();
   /** Last trade run the operator found, shown as a dismissible card. */
   private tradeRun: TradeFind | null = null;
   /**
@@ -1006,6 +1017,7 @@ export class AppCore {
       this.stats.apply(ev);
       this.saga.apply(ev);
       this.bioTracker.apply(ev);
+      this.carrier.apply(ev);
       this.ship.apply(ev);
       this.materials.apply(ev);
       this.explore.apply(ev);
@@ -1032,6 +1044,14 @@ export class AppCore {
           this.pendingReflectAt = Date.now() + 45_000;
           this.reflectRetries = 0;
           this.reflectManual = false;
+        }
+        if (ev.event === 'LoadGame') this.carrier.resetSession();
+        if (ev.event === 'CarrierLocation' || ev.event === 'CarrierStats' || ev.event === 'Docked') {
+          try {
+            localStorage.setItem('edmo.carrier.v1', JSON.stringify(this.carrier.toJSON()));
+          } catch {
+            /* storage full or unavailable — ownership is re-learned next session */
+          }
         }
         if (ev.event === 'Docked') {
           // Fatigue resets in a docking bay; note how often we've been here.
@@ -2732,6 +2752,9 @@ export class AppCore {
     if (cg) out.push(`Community Goal running: "${cg.title}" at ${cg.market} in ${cg.system}.`);
     const risk = this.stats.riskNote();
     if (risk) out.push(risk);
+    // Carrier ownership changes what a hold full of tritium MEANS.
+    const carrier = this.carrier.contextLine();
+    if (carrier) out.push(carrier);
     // Live ship telemetry (Status.json): fuel, legal state, current mode.
     const stLine = this.liveStatusLine();
     if (stLine) out.push(stLine);
@@ -3190,7 +3213,7 @@ export class AppCore {
     if (withTools[0]?.role === 'system') {
       withTools[0] = {
         ...withTools[0],
-        content: `${withTools[0].content} You can call tools to read the commander's LIVE game data (current market, ship, missions, status, materials, exploration, Spansh trade routes) and, when they ask, the Galnet news wire and the community exploration catalogue. When the answer depends on prices, stock, what to buy or sell, what's profitable here, whether cargo fits, what is happening in the galaxy, or what has already been catalogued in some system, CALL THE RELEVANT TOOL and use its result — never guess or trust possibly-stale route data. Use get_current_market for "here". After gathering what you need, answer in 2-4 short speakable sentences with no markdown.`,
+        content: `${withTools[0].content} You can call tools to read the commander's LIVE game data (current market, ship, missions, status, materials, exploration, Spansh trade routes) and, when they ask, the Galnet news wire and the community exploration catalogue. When the answer depends on prices, stock, what to buy or sell, what's profitable here, whether cargo fits, what is happening in the galaxy, or what has already been catalogued in some system, CALL THE RELEVANT TOOL and use its result — never guess or trust possibly-stale route data. Use get_current_market for "here". After gathering what you need, answer in 2-4 short speakable sentences with no markdown. If the commander is TELLING you something rather than asking — their plan, what the cargo is for, how it is going — take it on board and answer in kind: acknowledge it, add something you actually know that helps. Do not turn a remark into a sales pitch, and never argue with a plan they have already made.`,
       };
     }
     this.agent = { entry, messages: withTools, rounds: 0, useTools: true };

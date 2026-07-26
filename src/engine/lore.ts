@@ -11,7 +11,11 @@ export const LORE_PRIMER =
   'Alliance politics are distant rumors out here. Ships travel by frame shift drive — supercruise ' +
   'inside a system, hyperspace jumps between systems. Pilots dock at stations, outposts and ' +
   'fleet carriers; money is credits; pilots are addressed as Commander. Local minor factions run ' +
-  'the stations and post the work.';
+  'the stations and post the work. A FLEET CARRIER is a commander-owned mobile base that jumps on ' +
+  'TRITIUM: an owner who mines or hauls tritium is almost always fuelling their carrier, not ' +
+  'looking for a buyer, and the tritium is transferred into it rather than sold. Never advise ' +
+  'selling a commander their own carrier fuel, and never suggest a "fuel station" — there is no ' +
+  'such thing for carriers.';
 
 export const GROUNDING_RULES =
   'STRICT grounding: only ever name factions, companies, organizations, stations, systems, ships ' +
