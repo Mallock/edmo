@@ -101,7 +101,7 @@ import {
   copilotSilenceGapMs,
   type ReactionTier,
 } from '../engine/copilot.ts';
-import { ConvoBuffer, cleanTranscript } from '../engine/convo.ts';
+import { ConvoBuffer, cleanTranscript, toolExchangeOf } from '../engine/convo.ts';
 import { TOOL_SCHEMAS, runTool, type ToolContext } from '../engine/tools.ts';
 import type { ChatMessage } from '../engine/lmstudio.ts';
 import type { JournalEvent, Mission, OperatorState } from '../engine/types.ts';
@@ -439,6 +439,18 @@ export class AppCore {
   private sampleCount = new SampleCounter();
   /** Last trade run the operator found, shown as a dismissible card. */
   private tradeRun: TradeFind | null = null;
+  /**
+   * The tool calls and results from the LAST answered question.
+   *
+   * Tool output used to live only inside one question's agentic loop and was
+   * thrown away with it, so a follow-up about the numbers had nothing to read.
+   * Asked "where can I buy tritium cheapest" and then "how much have they got
+   * in storage", the operator answered that it could not know — while the stock
+   * figure had been in the tool result it had just discarded. Carrying the last
+   * exchange forward fixes that without unbounded growth: one question's worth,
+   * replaced each time.
+   */
+  private lastToolExchange: ChatMessage[] = [];
   /**
    * What a station really is, keyed by name: "refinery outpost", "industrial
    * Coriolis". Station NAMES lie — Neugebauer Mines is a refinery, not a mine —
@@ -2997,7 +3009,8 @@ export class AppCore {
       // Opt-in only: null keeps the tool advertised but honestly unavailable,
       // so the model explains how to enable it instead of inventing prices.
       galaxyMarket: this.settings.external.ardent
-        ? (commodity, side) => ardentMarket(this.sm.location.system, commodity, side)
+        ? (commodity, side, nearSystem) =>
+            ardentMarket(nearSystem || this.sm.location.system, commodity, side)
         : null,
       findTradeRun: this.settings.external.ardent
         ? (opts) => this.findTradeRun(opts)
@@ -3094,6 +3107,9 @@ export class AppCore {
     // The recent thread — the operator's own remarks included — goes into the
     // prompt so follow-ups ("and how far is that?") resolve naturally.
     const history = this.convo.recent(Date.now());
+    // Splice the previous answer's lookups back in, so "how much do they have"
+    // can be read off the figures rather than refused or re-guessed.
+    const priorLookups = this.lastToolExchange;
     this.convo.push('user', q, Date.now());
     // The living copilot hears the commander too — record what they said so its
     // ambient beats take it on board (goals, preferences, whatever it is).
@@ -3145,8 +3161,9 @@ export class AppCore {
       ];
     }
 
-    // Splice the dialogue between the system prompt and the fresh question.
-    messages.splice(messages.length - 1, 0, ...history);
+    // Splice the dialogue between the system prompt and the fresh question,
+    // with the previous question's tool results just before it.
+    messages.splice(messages.length - 1, 0, ...history, ...priorLookups);
 
     const entry = this.pushFeed('ai', '', { streaming: true, missionId: mission?.id });
     const model = this.activeModel();
@@ -3573,8 +3590,12 @@ export class AppCore {
       void this.continueAgent(text, toolCalls);
       return;
     }
-    // Any final 'ai' answer ends the agentic run.
-    if (this.currentKind === 'ai') this.agent = null;
+    // Any final 'ai' answer ends the agentic run. Keep what it looked up, so
+    // the next question can be about those numbers.
+    if (this.currentKind === 'ai') {
+      if (this.agent) this.lastToolExchange = toolExchangeOf(this.agent.messages);
+      this.agent = null;
+    }
     const entry = this.currentAiEntry;
     const kind = this.currentKind;
     this.currentAskId = null;

@@ -75,3 +75,26 @@ export function cleanTranscript(raw: string): string {
     .replace(/\s+/g, ' ')
     .trim();
 }
+
+/** Cap on one retained tool result — enough for a market list, not a dump. */
+const MAX_TOOL_RESULT_CHARS = 1200;
+
+/**
+ * Pull the tool calls and their results out of a finished agentic run, so the
+ * next question can be a follow-up about the figures.
+ *
+ * Only the assistant turns that CALLED tools and the results themselves are
+ * kept — the intermediate prose is noise once the final answer exists. Results
+ * are truncated: a follow-up needs the numbers, not every row.
+ */
+export function toolExchangeOf(messages: readonly ChatMessage[]): ChatMessage[] {
+  const out: ChatMessage[] = [];
+  for (const m of messages) {
+    if (m.role === 'tool') {
+      out.push({ ...m, content: m.content.slice(0, MAX_TOOL_RESULT_CHARS) });
+    } else if (m.role === 'assistant' && m.tool_calls?.length) {
+      out.push(m);
+    }
+  }
+  return out;
+}

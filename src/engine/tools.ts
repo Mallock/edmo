@@ -49,7 +49,7 @@ export interface ToolContext {
   /** Galaxy-wide market lookup (Ardent Insight, EDDN data). Injected the same
    *  way; null when the commander has not opted in. */
   galaxyMarket:
-    | ((commodity: string, side: 'buy' | 'sell') => Promise<
+    | ((commodity: string, side: 'buy' | 'sell', nearSystem: string) => Promise<
         Array<{
           station: string; system: string; distanceLy: number | null; price: number | null;
           stock: number | null; demand: number | null; pad: string | null; carrier: boolean;
@@ -74,7 +74,7 @@ export const TOOL_SCHEMAS = [
   fn('get_current_market', 'List the commodities, prices, stock and demand at the station the commander is currently docked at (or the most recently visited market). Use this to answer what is for sale/profitable HERE before suggesting anything.'),
   fn(
     'find_commodity',
-    'Search all markets the commander has visited for where to BUY or SELL a specific commodity, cheapest-buy / highest-sell first.',
+    'Search ONLY the markets the commander has personally docked at this session, cheapest-buy / highest-sell first. It cannot see anywhere they have not been, and it cannot be pointed at another system — for that, use find_market_in_galaxy.',
     {
       commodity: { type: 'string', description: 'Commodity name, e.g. "Gold", "Bauxite".' },
       side: { type: 'string', enum: ['buy', 'sell'], description: 'buy = where to purchase it; sell = where to offload it.' },
@@ -83,10 +83,15 @@ export const TOOL_SCHEMAS = [
   ),
   fn(
     'find_market_in_galaxy',
-    'Find where to BUY or SELL a commodity ANYWHERE near the commander, using community market data — not just stations they have personally visited. Use this when find_commodity comes up empty or the commander asks where to take cargo. Prices can be hours old and fleet carriers move.',
+    'Find where to BUY or SELL a commodity, and HOW MUCH is in stock or demanded there, from community market data covering the whole galaxy. Answers "where is X cheapest", "who buys X", and "how much X has SYSTEM got". Use this whenever a system is NAMED, or whenever the commander has not personally visited the place in question — which is most of the time. Prices can be hours old and fleet carriers move.',
     {
       commodity: { type: 'string', description: 'Commodity name, e.g. "Tritium", "Gold".' },
       side: { type: 'string', enum: ['buy', 'sell'], description: 'buy = where to purchase it; sell = where to offload it.' },
+      system: {
+        type: 'string',
+        description:
+          'Search around this system when the commander names one — "how much tritium has Luchtaine got", "who buys gold near Colonia". Omit to search around where they are now.',
+      },
     },
     ['commodity', 'side'],
   ),
@@ -174,7 +179,12 @@ export async function runTool(name: string, argsJson: string, ctx: ToolContext):
     case 'survey_system':
       return surveySystem(ctx, str(args.system) || ctx.system);
     case 'find_market_in_galaxy':
-      return findMarketInGalaxy(ctx, str(args.commodity), args.side === 'buy' ? 'buy' : 'sell');
+      return findMarketInGalaxy(
+        ctx,
+        str(args.commodity),
+        args.side === 'buy' ? 'buy' : 'sell',
+        str(args.system),
+      );
     case 'list_known_markets':
       return listMarkets(ctx);
     case 'plan_trade_route':
@@ -351,6 +361,7 @@ async function findMarketInGalaxy(
   ctx: ToolContext,
   commodity: string,
   side: 'buy' | 'sell',
+  nearSystem: string,
 ): Promise<string> {
   if (!commodity) return 'Name the commodity to look up.';
   if (!ctx.galaxyMarket) {
@@ -359,14 +370,18 @@ async function findMarketInGalaxy(
   if (!ctx.system || ctx.system === 'unknown') {
     return 'Current system unknown, so "nearby" cannot be measured yet.';
   }
+  // "How much tritium has Luchtaine got" is a question about a NAMED system,
+  // and searching outward from wherever we happen to be standing answers a
+  // different one.
+  const around = nearSystem || ctx.system;
   let rows;
   try {
-    rows = await ctx.galaxyMarket(commodity, side);
+    rows = await ctx.galaxyMarket(commodity, side, around);
   } catch (e) {
     return `The market service did not answer (${String(e).slice(0, 80)}). Fall back on what we have visited.`;
   }
   if (!rows.length) {
-    return `No ${side === 'buy' ? 'sellers' : 'buyers'} of ${commodity} reported near ${ctx.system}.`;
+    return `No ${side === 'buy' ? 'sellers' : 'buyers'} of ${commodity} reported near ${around}.`;
   }
   const verb = side === 'buy' ? 'Buy' : 'Sell';
   const lines = rows.slice(0, 6).map((r) => {
@@ -378,7 +393,10 @@ async function findMarketInGalaxy(
     }, ${qty}`;
   });
   return (
-    `${verb} ${commodity} near ${ctx.system} (community data, may be hours old):\n${lines.join('\n')}` +
+    // "near X" was read as "in X" and reported back as "Luchtaine has it at
+    // 2,565" when the seller was a carrier two systems over. Say it outright.
+    `${verb} ${commodity} — nearest to ${around}, NOT necessarily IN ${around}; each line names ` +
+    `its own system (community data, may be hours old):\n${lines.join('\n')}` +
     `\nFleet carriers are marked — they can jump away, and their prices swing.`
   );
 }

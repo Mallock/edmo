@@ -245,3 +245,21 @@ test('find_trade_run reads a ship name as "here, in this ship"', async () => {
   await runTool('find_trade_run', JSON.stringify({ system: 'Ratraii' }), withShip);
   assert.equal(sawOrigin, 'Ratraii');
 });
+
+test('a named system is searched instead of wherever we are standing', async () => {
+  let sawSystem = '';
+  const galaxyMarket = async (_c: string, _s: 'buy' | 'sell', nearSystem: string) => {
+    sawSystem = nearSystem;
+    return [{ station: 'Neugebauer Mines', system: 'Luchtaine', distanceLy: 0, price: 53715,
+      stock: 4210, demand: 0, pad: 'M', carrier: false }];
+  };
+  const c = ctx({ system: 'Tir', galaxyMarket });
+  // "how much tritium has Luchtaine got" is about Luchtaine, not about Tir.
+  const named = await runTool('find_market_in_galaxy',
+    JSON.stringify({ commodity: 'Tritium', side: 'buy', system: 'Luchtaine' }), c);
+  assert.equal(sawSystem, 'Luchtaine');
+  // The stock figure must be in what the model reads, or follow-ups cannot work.
+  assert.match(named, /4210 in stock|4,210 in stock/);
+  await runTool('find_market_in_galaxy', JSON.stringify({ commodity: 'Tritium', side: 'buy' }), c);
+  assert.equal(sawSystem, 'Tir');
+});
