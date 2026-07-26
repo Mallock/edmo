@@ -2018,7 +2018,7 @@ fn copy_text(app: AppHandle, text: String) -> Result<(), String> {
 fn close_app(app: AppHandle) {
     save_geometry(&app);
     // Never leave the inference engine running after the app is gone (T7.4.3).
-    engine::stop_engine(&app.state::<engine::EngineCtl>());
+    engine::stop_engine_and_clear(&app, &app.state::<engine::EngineCtl>());
     app.exit(0);
 }
 
@@ -2212,7 +2212,7 @@ fn main() {
                     save_geometry(app);
                     // Closing the window must also take the engine with it —
                     // the X button is a more common exit than the menu (T7.4.3).
-                    engine::stop_engine(&app.state::<engine::EngineCtl>());
+                    engine::stop_engine_and_clear(app, &app.state::<engine::EngineCtl>());
                     return;
                 }
                 _ => return,

@@ -152,15 +152,90 @@ fn pid_file(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(engine_root(app)?.join("engine.pid"))
 }
 
+/// Remember EVERY engine we spawn, not just the newest.
+///
+/// The file used to hold one pid, overwritten each start — so if two engines
+/// were ever orphaned (two hard kills, or a restart-in-place that failed to
+/// stop the old one), the earlier one became unreachable and lived on holding
+/// gigabytes. Appending costs nothing and makes the reaper exhaustive.
 fn record_pid(app: &AppHandle, pid: u32) {
     if let Ok(p) = pid_file(app) {
-        let _ = fs::write(p, pid.to_string());
+        let mut pids: Vec<String> = fs::read_to_string(&p)
+            .unwrap_or_default()
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+        pids.push(pid.to_string());
+        // Bounded: older entries are long dead, and the list must not grow
+        // without limit across a long-lived install.
+        let start = pids.len().saturating_sub(8);
+        let _ = fs::write(p, pids[start..].join("
+"));
     }
 }
 
 fn clear_pid(app: &AppHandle) {
     if let Ok(p) = pid_file(app) {
         let _ = fs::remove_file(p);
+    }
+}
+
+/// A Windows job object that kills its children when this process exits.
+///
+/// A shutdown hook cannot help when the app is ended from Task Manager, loses
+/// power, or panics — and an orphaned llama-server holds several gigabytes of
+/// RAM and the GPU allocation, which is exactly what a "somehow slower" restart
+/// feels like. The PID file and the reaper below are a best-effort mop-up after
+/// the fact; this stops it happening at all. Every handle to the job closes
+/// when the process dies, and Windows then terminates everything inside it.
+#[cfg(windows)]
+mod kill_on_exit {
+    use std::os::windows::io::AsRawHandle;
+    use std::process::Child;
+    use std::sync::OnceLock;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        JobObjectExtendedLimitInformation,
+    };
+
+    /// Raw handle kept for the life of the process; dropping it is the trigger.
+    struct Job(HANDLE);
+    // The handle is only ever read, and Windows handles are process-wide.
+    unsafe impl Send for Job {}
+    unsafe impl Sync for Job {}
+
+    static JOB: OnceLock<Option<Job>> = OnceLock::new();
+
+    fn job() -> Option<HANDLE> {
+        JOB.get_or_init(|| unsafe {
+            let h = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if h.is_null() {
+                return None;
+            }
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let ok = SetInformationJobObject(
+                h,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const core::ffi::c_void,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            );
+            if ok == 0 { None } else { Some(Job(h)) }
+        })
+        .as_ref()
+        .map(|j| j.0)
+    }
+
+    /// Tie a spawned child to this process's lifetime. Failure is not fatal —
+    /// the PID file and reaper still cover it, just less reliably.
+    pub fn adopt(child: &Child) {
+        let Some(j) = job() else { return };
+        unsafe {
+            AssignProcessToJobObject(j, child.as_raw_handle() as HANDLE);
+        }
     }
 }
 
@@ -171,7 +246,18 @@ pub fn reap_orphan_engine(app: &AppHandle) {
     let Ok(path) = pid_file(app) else { return };
     let Ok(text) = fs::read_to_string(&path) else { return };
     let _ = fs::remove_file(&path);
-    let Ok(pid) = text.trim().parse::<u32>() else { return };
+    // Every engine this install ever started and did not cleanly stop. Only
+    // pids we spawned ourselves are ever touched — never a sweep by name or
+    // path, which would take out a second copy of the app, or LM Studio.
+    for line in text.lines() {
+        let Ok(pid) = line.trim().parse::<u32>() else { continue };
+        kill_if_engine(pid);
+    }
+}
+
+/// Kill one pid, but only if it is still a llama-server. A pid the OS has since
+/// recycled onto some other program must survive untouched.
+fn kill_if_engine(pid: u32) {
     #[cfg(windows)]
     {
         // /FI on both PID and image name: a stale PID reused by another program
@@ -784,6 +870,9 @@ pub async fn engine_start(
     }
 
     let child = cmd.spawn().map_err(|e| format!("could not start the engine: {e}"))?;
+    // Bind it to this process's lifetime before anything else can go wrong.
+    #[cfg(windows)]
+    kill_on_exit::adopt(&child);
     record_pid(&app, child.id());
     *ctl.proc.lock().unwrap() = Some(RunningEngine {
         child,
@@ -841,6 +930,14 @@ pub fn stop_engine(ctl: &EngineCtl) {
         let _ = p.child.kill();
         let _ = p.child.wait();
     }
+}
+
+/// Stop the engine AND forget its pid. The bare `stop_engine` leaves the file
+/// behind, so after a clean exit the reaper spends its one slot chasing a dead
+/// process instead of a real orphan.
+pub fn stop_engine_and_clear(app: &AppHandle, ctl: &EngineCtl) {
+    stop_engine(ctl);
+    clear_pid(app);
 }
 
 #[tauri::command]

@@ -379,3 +379,32 @@ export function describeTradeFind(find: TradeFind, max = 3): string {
   const body = find.legs.slice(0, max).map((l, i) => `${i + 1}. ${describeLeg(l)}`);
   return `${head}\n${body.join('\n')}\nCommunity prices, so verify stock on arrival.`;
 }
+
+/**
+ * Should an AUTOMATIC route search run right now?
+ *
+ * The docking trigger fires on its own, and firing it while something is
+ * already on screen is worse than useless: a run or route card the commander
+ * has not acted on yet gets silently replaced by a different one, and the
+ * suggestion they were halfway through reading is gone. Active missions say
+ * the same thing louder — they have work in hand and did not dock here looking
+ * for cargo.
+ *
+ * Returns why it is blocked, or null to go ahead. Manual searches never consult
+ * this; pressing the button means asking.
+ */
+export function autoRouteBlocked(state: {
+  /** A found trade run is on screen. */
+  hasRunCard: boolean;
+  /** A Spansh loop is on screen. */
+  hasRouteCard: boolean;
+  /** Missions the commander is carrying. */
+  activeMissions: number;
+}): string | null {
+  if (state.hasRunCard) return 'a trade run is already on the board';
+  if (state.hasRouteCard) return 'a route is already on the board';
+  if (state.activeMissions > 0) {
+    return `${state.activeMissions} mission(s) in hand`;
+  }
+  return null;
+}

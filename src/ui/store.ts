@@ -55,6 +55,7 @@ import {
 } from '../engine/factcheck.ts';
 import {
   DEFAULT_FILTERS,
+  autoRouteBlocked,
   bestSink,
   bestSinksByCommodity,
   legsToDestination,
@@ -1797,8 +1798,26 @@ export class AppCore {
   }
 
   /** Query Spansh (opt-in) for a profitable route from the current station. */
+  /** Why an automatic route search should hold off, or null to go ahead. */
+  private autoRouteBlockedBy(): string | null {
+    return autoRouteBlocked({
+      hasRunCard: (this.tradeRun?.legs.length ?? 0) > 0,
+      hasRouteCard: this.route != null,
+      activeMissions: this.sm.activeMissions().length,
+    });
+  }
+
   async fetchRoute(manual: boolean): Promise<void> {
     if (!isTauri || this.routeBusy) return;
+    // Automatic searches stay out of the way. A run or route card already on
+    // screen is a suggestion the commander has not dealt with yet — replacing
+    // it unasked loses the one they were reading, and it costs a network round
+    // trip to do it. Active missions mean they have work in hand and did not
+    // come here for trade. The 🔄 button always overrides all of this.
+    // Deliberately before the cooldown is stamped: a search that never ran must
+    // not spend the half-hour budget, so it retries next dock once the board is
+    // clear.
+    if (!manual && this.autoRouteBlockedBy()) return;
     if (!this.settings.trade.online) {
       if (manual) {
         this.pushFeed(
