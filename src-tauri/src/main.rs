@@ -1623,6 +1623,157 @@ async fn ardent_market(system: String, commodity: String, side: String) -> Resul
     serde_json::to_string(&out).map_err(|e| e.to_string())
 }
 
+/// Gather the raw material for an Inara-style trade search around one system.
+///
+/// Ardent has no trade-route endpoint, so a route has to be assembled from
+/// primitives: what the origin sells, and where each of those goods is bought
+/// dearest within range. Probing all of them would be ~30 requests, so the
+/// galaxy-wide price table gives each commodity a ceiling (best sell price
+/// anywhere minus the local buy price) and only the top `probe` are looked up.
+/// Anything whose ceiling is negative cannot profit anywhere and costs nothing
+/// to discard.
+///
+/// Returns the rows untouched apart from trimming; the pairing, filtering and
+/// ranking live in the tested TypeScript engine. OPT-IN ONLY — sends the origin
+/// system name and commodity names, nothing about the commander.
+#[tauri::command]
+async fn ardent_trade_candidates(
+    system: String,
+    max_distance: u32,
+    min_volume: u32,
+    probe: u32,
+) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(8))
+        .timeout(Duration::from_secs(25))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let base = "https://api.ardent-insight.com/v2";
+    let sys = urlencoding_light(&system);
+
+    let fetch = |url: String| {
+        let c = client.clone();
+        async move {
+            c.get(&url)
+                .send()
+                .await
+                .map_err(|e| format!("Ardent unreachable: {e}"))?
+                .error_for_status()
+                .map_err(|e| format!("Ardent error: {e}"))?
+                .json::<serde_json::Value>()
+                .await
+                .map_err(|e| format!("Ardent returned unusable data: {e}"))
+        }
+    };
+
+    let trim = |r: &serde_json::Value| {
+        json!({
+            "commodity": r["commodityName"],
+            "station": r["stationName"],
+            "system": r["systemName"],
+            "stationType": r["stationType"],
+            "pad": r["maxLandingPadSize"],
+            "distanceLy": r["distance"],
+            "distanceLs": r["distanceToArrival"],
+            "buyPrice": r["buyPrice"],
+            "sellPrice": r["sellPrice"],
+            "stock": r["stock"],
+            "demand": r["demand"],
+            "updatedAt": r["updatedAt"],
+        })
+    };
+
+    // What the origin sells. A 404 here means the system is not in the market
+    // data at all — a different answer from "nothing profitable", and the one
+    // the commander needs when they have misheard or mistyped a name.
+    let sources_res = client
+        .get(format!(
+            "{base}/system/name/{sys}/commodities/exports?minVolume={min_volume}"
+        ))
+        .send()
+        .await
+        .map_err(|e| format!("Ardent unreachable: {e}"))?;
+    if sources_res.status() == reqwest::StatusCode::NOT_FOUND {
+        return serde_json::to_string(&json!({
+            "origin": system,
+            "originKnown": false,
+            "sources": [],
+            "sinks": {},
+            "checked": 0,
+            "candidates": 0,
+        }))
+        .map_err(|e| e.to_string());
+    }
+    let sources_raw: serde_json::Value = sources_res
+        .error_for_status()
+        .map_err(|e| format!("Ardent error: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("Ardent returned unusable data: {e}"))?;
+    let prices = fetch(format!("{base}/commodities")).await?;
+
+    let mut ceiling: HashMap<String, i64> = HashMap::new();
+    for p in prices.as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
+        if let Some(name) = p["commodityName"].as_str() {
+            ceiling.insert(name.to_string(), p["maxSellPrice"].as_i64().unwrap_or(0));
+        }
+    }
+
+    // Cheapest qualifying source per commodity decides what is worth probing.
+    let mut cheapest: HashMap<String, i64> = HashMap::new();
+    let mut sources: Vec<serde_json::Value> = Vec::new();
+    for r in sources_raw.as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
+        let buy = r["buyPrice"].as_i64().unwrap_or(0);
+        if buy <= 0 {
+            continue;
+        }
+        if let Some(name) = r["commodityName"].as_str() {
+            let e = cheapest.entry(name.to_string()).or_insert(buy);
+            if buy < *e {
+                *e = buy;
+            }
+        }
+        sources.push(trim(r));
+    }
+
+    let mut order: Vec<(String, i64)> = cheapest
+        .iter()
+        .map(|(name, buy)| (name.clone(), ceiling.get(name).copied().unwrap_or(0) - buy))
+        .filter(|(_, head)| *head > 0)
+        .collect();
+    order.sort_by(|a, b| b.1.cmp(&a.1));
+    let candidates = order.len();
+    order.truncate(probe.clamp(1, 16) as usize);
+
+    let mut sinks = serde_json::Map::new();
+    for (commodity, _) in &order {
+        let url = format!(
+            "{base}/system/name/{sys}/commodity/name/{}/nearby/imports?maxDistance={max_distance}&minVolume={min_volume}",
+            urlencoding_light(commodity)
+        );
+        // One dead commodity must not sink the whole search.
+        let rows = match fetch(url).await {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let trimmed: Vec<serde_json::Value> = rows
+            .as_array()
+            .map(|a| a.iter().map(trim).collect())
+            .unwrap_or_default();
+        sinks.insert(commodity.clone(), serde_json::Value::Array(trimmed));
+    }
+
+    let out = json!({
+        "origin": system,
+        "originKnown": true,
+        "sources": sources,
+        "sinks": sinks,
+        "checked": order.len(),
+        "candidates": candidates,
+    });
+    serde_json::to_string(&out).map_err(|e| e.to_string())
+}
+
 /// commander's current station. OPT-IN ONLY — sends the system/station name to
 /// spansh.co.uk, nothing else. Jobs queue server-side, so this submits and
 /// polls (their API answers in ~30-90 s).
@@ -1838,6 +1989,7 @@ fn main() {
             spansh_trade_route,
             galnet_headlines,
             ardent_market,
+            ardent_trade_candidates,
             edastro_system,
             copy_text,
             llm_cancel,

@@ -613,12 +613,14 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
               checked={s.external.ardent}
               onChange={(e) => set({ ...s, external: { ...s.external, ardent: e.target.checked } })}
             />
-            Galaxy-wide market lookup — ask "where can I sell this?" about anywhere, not just stations you've visited
+            Galaxy-wide markets &amp; trade runs — ask "what's worth hauling?" or "where can I sell this?"
           </label>
           <div className="hint">
             Uses Ardent Insight, built from community-shared market data (open source, anonymous).
-            Sends only <b>the system you're in and the commodity you asked about</b>, and only when
-            the operator actually looks something up. Prices can be hours old and fleet carriers move.
+            Finds the best buy-here/sell-there run out of any system, sized to your hold and filtered
+            to pads your ship can actually land on. Sends only <b>the system asked about and the
+            commodities checked</b>, and only when the operator looks something up. Prices can be
+            hours old and fleet carriers move, so verify stock on arrival.
           </div>
           <label className="check">
             <input

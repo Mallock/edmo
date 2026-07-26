@@ -47,6 +47,15 @@ import {
   parseBioSale,
 } from '../engine/exobiorange.ts';
 import { extractPlaces, findCollectivePronoun, findFabricatedPlace } from '../engine/factcheck.ts';
+import {
+  DEFAULT_FILTERS,
+  bestSink,
+  buildLeg,
+  cheapestSources,
+  rankLegs,
+  type RouteFilters,
+  type TradeFind,
+} from '../engine/traderoute.ts';
 import { parseSpanshRoute, routeSummary, type TradeRoute } from '../engine/spansh.ts';
 import {
   CommanderMemory,
@@ -89,6 +98,7 @@ import {
   llmModels,
   llmModelTypes,
   ardentMarket,
+  ardentTradeCandidates,
   galnetHeadlines,
   edastroSystem,
   engineStatus,
@@ -258,6 +268,7 @@ function friendlyTool(name?: string): string {
     get_exploration: 'checking exploration',
     get_system_intel: 'reading system intel',
     find_market_in_galaxy: 'searching the galaxy',
+    find_trade_run: 'hunting a trade run',
     get_galnet_news: 'reading the Galnet wire',
     survey_system: 'checking the exploration catalogue',
   };
@@ -2746,6 +2757,43 @@ export class AppCore {
     return out;
   }
 
+  /**
+   * Fetch trade candidates around the current system and rank them with the
+   * pure engine. Ardent has no route endpoint, so the shell gathers what the
+   * origin sells plus the best sinks for the most promising goods, and the
+   * pairing happens here where it is testable.
+   */
+  private async findTradeRun(opts: {
+    origin: string;
+    maxDistanceLy: number;
+    minVolume: number;
+    minPad: number;
+    cargo: number;
+  }): Promise<TradeFind> {
+    const origin = opts.origin || this.sm.location.system;
+    const filters: RouteFilters = {
+      minPad: opts.minPad,
+      minVolume: opts.minVolume,
+      cargo: opts.cargo,
+      maxAgeDays: DEFAULT_FILTERS.maxAgeDays,
+    };
+    const raw = await ardentTradeCandidates(origin, opts.maxDistanceLy, opts.minVolume, 8);
+    const now = Date.now();
+    const sources = cheapestSources(raw.sources, filters, now);
+    const legs = [...sources.values()].map((src) => {
+      const sink = bestSink(raw.sinks[src.commodity] ?? [], filters, origin, now);
+      return sink ? buildLeg(src, sink, filters, now) : null;
+    });
+    return {
+      legs: rankLegs(legs),
+      originKnown: raw.originKnown !== false,
+      checked: raw.checked,
+      candidates: raw.candidates,
+      filters,
+      origin,
+    };
+  }
+
   /** Assemble the live-data context the operator's tools read from. */
   private buildToolContext(): ToolContext {
     const state = { ...this.sm.getState(), now: new Date().toISOString() };
@@ -2758,6 +2806,9 @@ export class AppCore {
       // so the model explains how to enable it instead of inventing prices.
       galaxyMarket: this.settings.external.ardent
         ? (commodity, side) => ardentMarket(this.sm.location.system, commodity, side)
+        : null,
+      findTradeRun: this.settings.external.ardent
+        ? (opts) => this.findTradeRun(opts)
         : null,
       galnetNews: this.settings.external.galnet ? () => galnetHeadlines(6) : null,
       systemSurvey: this.settings.external.edastro ? (name) => edastroSystem(name) : null,

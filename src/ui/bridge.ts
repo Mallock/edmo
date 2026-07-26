@@ -4,6 +4,7 @@
  * panel still works without the game or the shell.
  */
 import { invoke } from '@tauri-apps/api/core';
+import type { MarketRow } from '../engine/traderoute.ts';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 export const isTauri =
@@ -286,6 +287,37 @@ export async function ardentMarket(
   side: 'buy' | 'sell',
 ): Promise<ArdentMarketRow[]> {
   return JSON.parse(await invoke<string>('ardent_market', { system, commodity, side })) as ArdentMarketRow[];
+}
+
+/** Raw material for a trade search: what the origin sells, and where it sells. */
+export interface TradeCandidates {
+  origin: string;
+  /** False when Ardent has no record of the origin system (404). */
+  originKnown: boolean;
+  sources: MarketRow[];
+  sinks: Record<string, MarketRow[]>;
+  checked: number;
+  candidates: number;
+}
+
+/**
+ * Opt-in trade search around one system. Sends the origin system name and the
+ * commodity names probed — nothing about the commander.
+ */
+export async function ardentTradeCandidates(
+  system: string,
+  maxDistance: number,
+  minVolume: number,
+  probe: number,
+): Promise<TradeCandidates> {
+  return JSON.parse(
+    await invoke<string>('ardent_trade_candidates', {
+      system,
+      maxDistance,
+      minVolume,
+      probe,
+    }),
+  ) as TradeCandidates;
 }
 
 /** One body with organics reported by other commanders (EDAstro / GEC). */

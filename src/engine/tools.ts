@@ -13,6 +13,7 @@ import type { MarketMemory, MarketRecord } from './trade.ts';
 import { shipRequiresLargePad, type ShipLoadout } from './ship.ts';
 import type { Mission } from './types.ts';
 import type { TradeRoute } from './spansh.ts';
+import { DEFAULT_FILTERS, describeTradeFind, resolveOrigin, type TradeFind } from './traderoute.ts';
 
 /** Everything the tools can read. The store builds this per question. */
 export interface ToolContext {
@@ -29,6 +30,20 @@ export interface ToolContext {
   systemIntelLine: string | null; // security/factions/stations here
   /** Spansh route from the current station; injected so tools stay pure. */
   planRoute: (opts: { maxHops: number; requiresLargePad: boolean }) => Promise<TradeRoute | null>;
+  /**
+   * Inara-style single-leg search around the current system (opt-in; null when
+   * the community-data toggle is off). Finds the best buy→sell pair rather than
+   * a closed loop, which is what actually turns up a run most of the time.
+   */
+  findTradeRun:
+    | ((opts: {
+        origin: string;
+        maxDistanceLy: number;
+        minVolume: number;
+        minPad: number;
+        cargo: number;
+      }) => Promise<TradeFind>)
+    | null;
   /** Galaxy-wide market lookup (Ardent Insight, EDDN data). Injected the same
    *  way; null when the commander has not opted in. */
   galaxyMarket:
@@ -90,8 +105,22 @@ export const TOOL_SCHEMAS = [
   ),
   fn('list_known_markets', 'List the station markets the commander has visited this session (station, system, how long ago), so you can reason about nearby options.'),
   fn(
+    'find_trade_run',
+    'Find the most profitable trade run out of the current system: what to buy here and where to sell it within jump range, with credits per ton and per full hold. This is the DEFAULT answer to "what should I haul", "any good trade routes", "where do I make money from here". Uses live community market data and honours the landing-pad size the ship needs.',
+    {
+      system: {
+        type: 'string',
+        description:
+          'System to start the run from, copied verbatim if the commander names a PLACE. Omit when they say "from here" or name their own SHIP — a ship name is not a system.',
+      },
+      max_distance_ly: { type: 'integer', description: 'How far to look for a buyer, in light years. Default 80.' },
+      min_volume: { type: 'integer', description: 'Minimum stock at the source and demand at the destination, in tons. Default 1000.' },
+    },
+    [],
+  ),
+  fn(
     'plan_trade_route',
-    'Ask the Spansh community planner for a profitable multi-hop trade route starting from the current station. Uses live-ish community market data. Slow (up to a minute).',
+    'Ask the Spansh community planner for a closed multi-hop trade LOOP that physically returns to the starting station. Slow (up to a minute) and often finds nothing. IMPORTANT: commanders say "trade loop" loosely to mean any trade route at all — unless they clearly want to come back to where they started, use find_trade_run instead.',
     {
       max_hops: { type: 'integer', description: 'Number of hops (1-4). Default 2.' },
     },
@@ -143,6 +172,13 @@ export async function runTool(name: string, argsJson: string, ctx: ToolContext):
       return listMarkets(ctx);
     case 'plan_trade_route':
       return planRoute(ctx, numOr(args.max_hops, 2));
+    case 'find_trade_run':
+      return findTradeRun(
+        ctx,
+        str(args.system),
+        numOr(args.max_distance_ly, 80),
+        numOr(args.min_volume, DEFAULT_FILTERS.minVolume),
+      );
     case 'get_ship':
       return ctx.shipDescription ? `Ship: ${ctx.shipDescription}` : 'No ship loadout known yet — open the ship panel or re-log so the game writes a Loadout event.';
     case 'check_fit':
@@ -203,7 +239,18 @@ async function planRoute(ctx: ToolContext, maxHops: number): Promise<string> {
   } catch (e) {
     return `Route planner failed: ${String(e)}`;
   }
-  if (!route || !route.hops.length) return 'Spansh found no profitable route from here within range.';
+  if (!route || !route.hops.length) {
+    // A closed loop is a strict thing to ask for and frequently does not exist,
+    // while a plain buy-here/sell-there run usually does. Telling the commander
+    // "no loop" and stopping is what sent a docked commander to go read the
+    // market board by hand. Asking the model to chain to find_trade_run does
+    // not work either — a small local model announces the next call instead of
+    // making it. So answer the question they actually had, and label it.
+    if (!ctx.findTradeRun) return 'Spansh found no profitable loop from here within range.';
+    const single = await findTradeRun(ctx, '', 80, DEFAULT_FILTERS.minVolume);
+    return `No closed loop out of here right now — Spansh needs a run that returns to the start, and there isn't one. A one-way run there is, though:
+${single}`;
+  }
   const legs = route.hops.map((h, i) => {
     const top = h.commodities[0];
     const buy = top ? `buy ${top.name} ${top.buyPrice.toLocaleString('en-US')}` : h.commodity;
@@ -386,4 +433,40 @@ async function surveySystem(ctx: ToolContext, system: string): Promise<string> {
     )
     .join('\n');
   return `${head}.\nBiology already logged by other commanders:\n${bio}\nBecause it is already logged, the five-times first-footfall bonus is gone for these.`;
+}
+
+/**
+ * The Inara-style answer: best buy→sell pair out of here.
+ *
+ * Pad size comes from the hull rather than the question — a medium floor is
+ * right for most ships and opens up outpost sinks, but a large-pad-only hull
+ * cannot use them, and quoting a route it can't fly is worse than no route.
+ */
+async function findTradeRun(
+  ctx: ToolContext,
+  requested: string,
+  maxDistanceLy: number,
+  minVolume: number,
+): Promise<string> {
+  if (!ctx.findTradeRun) {
+    return 'Galaxy-wide market lookup is off. The commander can switch it on in Settings → Community data (it sends only the system name and the commodities checked).';
+  }
+  const { origin } = resolveOrigin(requested, ctx.system, ctx.ship);
+  if (!origin || origin === 'unknown') {
+    return 'I need to know what system we are in before I can look for a run.';
+  }
+  const minPad = shipRequiresLargePad(ctx.ship?.ship) ? 3 : DEFAULT_FILTERS.minPad;
+  const cargo = ctx.ship?.cargoCapacity || DEFAULT_FILTERS.cargo;
+  try {
+    const find = await ctx.findTradeRun({
+      origin,
+      maxDistanceLy: clamp(maxDistanceLy, 5, 250),
+      minVolume: clamp(minVolume, 0, 100_000),
+      minPad,
+      cargo,
+    });
+    return describeTradeFind(find);
+  } catch (e) {
+    return `The market data service did not answer (${String(e).slice(0, 90)}).`;
+  }
 }

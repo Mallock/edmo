@@ -68,6 +68,7 @@ function ctx(over: Partial<ToolContext> = {}): ToolContext {
     systemIntelLine: 'Current system (Tir): security: Medium',
     planRoute: async () => null,
     galaxyMarket: null,
+    findTradeRun: null,
     galnetNews: null,
     systemSurvey: null,
     ...over,
@@ -201,4 +202,46 @@ test('survey_system reports logged biology, and never calls silence proof of abs
   assert.match(empty, /first log/i);
 
   assert.match(await runTool('survey_system', '', ctx()), /Settings/);
+});
+
+test('no closed loop falls back to a one-way run rather than dead-ending', async () => {
+  // The live failure: docked at Tir, asked for a "trade loop", told to go read
+  // the market board by hand while a 44k cr/t run sat 30 ly away.
+  const find = async () => ({
+    legs: [{
+      commodity: 'bauxite', fromStation: 'Webster Excavation Complex', fromSystem: 'Tir',
+      toStation: 'Neugebauer Mines', toSystem: 'Luchtaine', distanceLy: 30, fromLs: 354, toLs: 1463,
+      buyPrice: 629, sellPrice: 44946, profitPerTon: 44317, tons: 400, profitPerTrip: 17726800,
+      stock: 2000, demand: 80644, fromPad: 3, toPad: 2, dataAgeH: 3,
+    }],
+    originKnown: true, checked: 8, candidates: 27,
+    filters: { minPad: 2, minVolume: 1000, cargo: 400, maxAgeDays: 14 },
+    origin: 'Tir',
+  });
+  const out = await runTool('plan_trade_route', '', ctx({ planRoute: async () => null, findTradeRun: find }));
+  assert.match(out, /No closed loop/);
+  assert.match(out, /Neugebauer Mines/);
+  assert.match(out, /44,317 cr a ton/);
+  // Without the community toggle there is nothing to fall back to; say so plainly.
+  const off = await runTool('plan_trade_route', '', ctx({ planRoute: async () => null }));
+  assert.match(off, /no profitable loop/i);
+  assert.doesNotMatch(off, /Neugebauer/);
+});
+
+test('find_trade_run reads a ship name as "here, in this ship"', async () => {
+  let sawOrigin = '';
+  const find = async (o: { origin: string }) => {
+    sawOrigin = o.origin;
+    return { legs: [], originKnown: true, checked: 0, candidates: 0,
+      filters: { minPad: 2, minVolume: 1000, cargo: 400, maxAgeDays: 14 }, origin: o.origin };
+  };
+  const withShip = ctx({
+    system: 'Tir',
+    ship: { ...SHIP, ship: 'type8', shipName: 'rahtari', shipIdent: 'MA-26T' },
+    findTradeRun: find,
+  });
+  await runTool('find_trade_run', JSON.stringify({ system: 'rahtari' }), withShip);
+  assert.equal(sawOrigin, 'Tir');
+  await runTool('find_trade_run', JSON.stringify({ system: 'Ratraii' }), withShip);
+  assert.equal(sawOrigin, 'Ratraii');
 });
