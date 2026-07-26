@@ -1391,6 +1391,238 @@ fn system_specs() -> SystemSpecs {
 // ------------------------------------------------------------- Spansh (opt-in)
 
 /// Ask Spansh's community trade-route planner for a profitable route from the
+/// Galnet, the in-fiction news wire. OPT-IN ONLY — a plain GET that sends
+/// NOTHING about the commander (no system, no name, no identifiers); it is the
+/// same public feed the website serves. Returns the newest headlines as JSON.
+///
+/// Parsed with a narrow regex rather than an XML crate: the feed is a fixed,
+/// well-formed shape and this avoids a dependency for two fields.
+#[tauri::command]
+async fn galnet_headlines(limit: Option<usize>) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(8))
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let xml = client
+        .get("https://community.elitedangerous.com/galnet-rss")
+        .send()
+        .await
+        .map_err(|e| format!("Galnet unreachable: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("Galnet error: {e}"))?
+        .text()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let take = limit.unwrap_or(8);
+    let mut items: Vec<serde_json::Value> = Vec::new();
+    for chunk in xml.split("<item>").skip(1) {
+        let field = |open: &str, close: &str| -> Option<String> {
+            let s = chunk.find(open)? + open.len();
+            let e = chunk[s..].find(close)? + s;
+            Some(chunk[s..e].to_string())
+        };
+        let clean = |v: String| {
+            v.replace("<![CDATA[", "")
+                .replace("]]>", "")
+                .replace("<br />", " ")
+                .replace("&amp;", "&")
+                .replace("&#039;", "'")
+                .replace("&quot;", "\"")
+                .trim()
+                .to_string()
+        };
+        let Some(title) = field("<title>", "</title>").map(clean) else { continue };
+        let date = field("<pubDate>", "</pubDate>").map(clean).unwrap_or_default();
+        // Body is long-form prose; one lead sentence is all a beat can use.
+        let body = field("<description>", "</description>").map(clean).unwrap_or_default();
+        let lead: String = body.chars().take(240).collect();
+        items.push(json!({ "title": title, "date": date, "lead": lead }));
+        if items.len() >= take {
+            break;
+        }
+    }
+    serde_json::to_string(&items).map_err(|e| e.to_string())
+}
+
+/// EDAstro — the Galactic Exploration Catalog. OPT-IN ONLY; sends just the
+/// system name being asked about. Rate limited upstream (100 req / 15 min), and
+/// only ever called when the commander asks, so that is ample.
+///
+/// The raw reply is ~100 KB of orbital mechanics per system; we keep only what
+/// an operator can actually say out loud — headline counts, and above all which
+/// bodies have REPORTED ORGANICS, with species where known. Note that data
+/// exists only where someone has already been: an empty organics list on a
+/// frontier system is not "no life", it means nobody has logged it (and the
+/// first-footfall bonus may still be up for grabs).
+#[tauri::command]
+async fn edastro_system(name: String) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(8))
+        .timeout(Duration::from_secs(25))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let url = format!(
+        "https://edastro.com/api/starsystem?q={}",
+        urlencoding_light(&name)
+    );
+    let text = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("EDAstro unreachable: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("EDAstro error: {e}"))?
+        .text()
+        .await
+        .map_err(|e| e.to_string())?;
+    let parsed: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("EDAstro returned unusable data: {e}"))?;
+    let sys = parsed
+        .as_array()
+        .and_then(|a| a.first())
+        .ok_or_else(|| format!("EDAstro has no record of '{name}'"))?;
+
+    let planets = sys["planets"].as_array().cloned().unwrap_or_default();
+    let mut organics: Vec<serde_json::Value> = Vec::new();
+    let mut landable = 0u32;
+    for p in &planets {
+        if p["isLandable"].as_bool().unwrap_or(false) {
+            landable += 1;
+        }
+        let orgs = p["organic"].as_array().cloned().unwrap_or_default();
+        if orgs.is_empty() {
+            continue;
+        }
+        let mut species: Vec<String> = orgs
+            .iter()
+            .filter_map(|o| {
+                o["species_local"]
+                    .as_str()
+                    .or_else(|| o["genus_local"].as_str())
+                    .or_else(|| o["genus"].as_str())
+                    .map(String::from)
+            })
+            .collect();
+        species.sort();
+        species.dedup();
+        organics.push(json!({
+            "body": p["name"],
+            "subType": p["subType"],
+            "landable": p["isLandable"],
+            "gravity": p["gravity"],
+            "distanceLs": p["distanceToArrivalLS"],
+            "species": species,
+        }));
+    }
+    let out = json!({
+        "system": sys["name"],
+        "bodyCount": sys["bodyCount"],
+        "planets": planets.len(),
+        "landablePlanets": landable,
+        "earthLikes": sys["numELW"],
+        "waterWorlds": sys["numWW"],
+        "ammoniaWorlds": sys["numAW"],
+        "terraformables": sys["numTerra"],
+        "fssProgress": sys["FSSprogress"],
+        // Bodies with organics REPORTED BY OTHERS — absence proves nothing.
+        "bodiesWithOrganics": organics,
+    });
+    serde_json::to_string(&out).map_err(|e| e.to_string())
+}
+
+/// Minimal percent-encoding for a query value (system names carry spaces,
+/// hyphens and digits only), avoiding a dependency for one call site.
+fn urlencoding_light(s: &str) -> String {
+    s.trim()
+        .chars()
+        .map(|c| match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
+            ' ' => "%20".to_string(),
+            other => format!("%{:02X}", other as u32 & 0xFF),
+        })
+        .collect()
+}
+
+/// Ardent Insight — galaxy-wide commodity markets built from crowdsourced EDDN
+/// data (AGPL, anonymous). OPT-IN ONLY — sends the system name and commodity
+/// being asked about, nothing else. `side`: "sell" finds importers paying the
+/// most, "buy" finds exporters with stock.
+///
+/// NOTE: api.ardent-industry.com/v1 now 302s to api.ardent-insight.com/v2; we
+/// call the current host directly rather than rely on the redirect.
+#[tauri::command]
+async fn ardent_market(system: String, commodity: String, side: String) -> Result<String, String> {
+    let want = if side == "buy" { "exports" } else { "imports" };
+    let enc = |s: &str| {
+        s.trim()
+            .replace(' ', "%20")
+            .replace('/', "%2F")
+            .replace('?', "")
+            .replace('#', "")
+    };
+    let url = format!(
+        "https://api.ardent-insight.com/v2/system/name/{}/commodity/name/{}/nearby/{}",
+        enc(&system),
+        enc(&commodity.to_lowercase()),
+        want
+    );
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(8))
+        .timeout(Duration::from_secs(25))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let body: serde_json::Value = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Ardent unreachable: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("Ardent error: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("Ardent returned unusable data: {e}"))?;
+
+    // Trim to what a spoken answer needs: best prices first, a handful of rows.
+    let mut rows: Vec<serde_json::Value> = body
+        .as_array()
+        .map(|a| a.to_vec())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|r| {
+            if want == "exports" {
+                r["stock"].as_i64().unwrap_or(0) > 0
+            } else {
+                r["demand"].as_i64().unwrap_or(0) > 0
+            }
+        })
+        .collect();
+    let key = if want == "exports" { "buyPrice" } else { "sellPrice" };
+    rows.sort_by_key(|r| {
+        let p = r[key].as_i64().unwrap_or(0);
+        if want == "exports" { p } else { -p } // cheapest to buy / dearest to sell
+    });
+    let out: Vec<serde_json::Value> = rows
+        .into_iter()
+        .take(8)
+        .map(|r| {
+            json!({
+                "station": r["stationName"],
+                "system": r["systemName"],
+                "distanceLy": r["distance"],
+                "price": r[key],
+                "stock": r["stock"],
+                "demand": r["demand"],
+                "pad": r["maxLandingPadSize"],
+                "carrier": r["stationType"].as_str().map(|t| t.eq_ignore_ascii_case("FleetCarrier")).unwrap_or(false),
+                "updatedAt": r["updatedAt"],
+            })
+        })
+        .collect();
+    serde_json::to_string(&out).map_err(|e| e.to_string())
+}
+
 /// commander's current station. OPT-IN ONLY — sends the system/station name to
 /// spansh.co.uk, nothing else. Jobs queue server-side, so this submits and
 /// polls (their API answers in ~30-90 s).
@@ -1604,6 +1836,9 @@ fn main() {
             stt_stop,
             stt_cancel,
             spansh_trade_route,
+            galnet_headlines,
+            ardent_market,
+            edastro_system,
             copy_text,
             llm_cancel,
             set_click_through,

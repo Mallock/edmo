@@ -371,6 +371,26 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
         something that <b>sold out hours ago</b> — and if your model can't call tools, it still
         answers grounded in the market it can see. All local; nothing leaves your machine.</p>
       </div></div>
+      <div class="mi"><span class="n">M</span><div>
+        <h3>Exobiology, worked out for you <span style="color:var(--dim);font-size:0.82em">(new in 1.0)</span></h3>
+        <p>Sample a plant and the operator names the <b>colony radius you have to walk</b> — 500 m
+        for Bacterium, 800 m for Osseus — then tells you, once, the moment you're clear, so the
+        next sample actually counts. On a surface scan it prices the landing before you commit:
+        what's down there, roughly <b>what the full set pays</b>, and how much walking it costs.
+        If nobody has logged the body, it says so — that <b>five-times first-footfall bonus</b> is
+        still on the table.</p>
+      </div></div>
+      <div class="mi"><span class="n">N</span><div>
+        <h3>The wider galaxy, on request <span style="color:var(--dim);font-size:0.82em">(new in 1.0, opt-in)</span></h3>
+        <p>Three community sources the operator reaches for <b>only when you ask</b>. <i>"Any
+        news?"</i> pulls the <b>Galnet wire</b> and relays it as somebody else's dispatch, never as
+        something you witnessed. <i>"Where can I sell this?"</i> can search markets
+        <b>galaxy-wide</b> (Ardent Insight, EDDN-sourced), not just the stations you've walked. And
+        <i>"is that system worth the detour?"</i> checks the <b>exploration catalogue</b> for what
+        others have already found there — including which species are logged on which body. Each
+        is off until you switch it on, and each sends the bare minimum: a system name, a commodity,
+        or nothing at all.</p>
+      </div></div>
     </div>
   </div>
 </section>
@@ -540,7 +560,7 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
       <div class="priv">
         <h3>● What it will never do</h3>
         <ul>
-          <li><b>No cloud, no account, no telemetry.</b> The AI runs on your own machine — all inference traffic is to 127.0.0.1, whether that is the built-in engine or your own LM Studio. The only downloads are ones you click: the AI engine and its model (from their official sources), extra voices, and the opt-in Spansh route planner (off by default; it sends just your current system name).</li>
+          <li><b>No cloud, no account, no telemetry.</b> The AI runs on your own machine — all inference traffic is to 127.0.0.1, whether that is the built-in engine or your own LM Studio. The only downloads are ones you click: the AI engine and its model (from their official sources), extra voices, and four opt-in community lookups &mdash; all off by default. Spansh routes and Ardent market searches send just a system name (and the commodity you asked about); the exploration catalogue sends only the system name; Galnet sends nothing at all.</li>
           <li><b>Memory stays home.</b> The operator's long-term memory is one local JSON file you can open, inspect, or wipe with one click ("Forget everything"). Screen glances are off by default; when enabled, screenshots go only to your local LM endpoint and are never written to disk.</li>
           <li><b>Your voice stays home.</b> Push-to-talk is off by default; when enabled, speech is transcribed by a local Whisper model on your own CPU. No cloud speech service, ever — the microphone is only live while you hold the key.</li>
           <li><b>Open source.</b> Don't take any of this on faith — the full source is on
@@ -556,8 +576,9 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
         <div class="qa">
           <h3>Does it need the internet?</h3>
           <p>No. Missions, voices, leads and stories all work offline. Internet is only touched
-          for the one-time AI engine + model download (or LM Studio models if you use that instead), extra voices, or the optional Spansh
-          route planner — each on your explicit click, all off by default.</p>
+          for the one-time AI engine + model download (or LM Studio models if you use that instead), extra
+          voices, or the optional community lookups — Spansh routes, galaxy-wide markets, the
+          exploration catalogue, Galnet news — each on your explicit click, all off by default.</p>
         </div>
         <div class="qa">
           <h3>Will it cost me frames?</h3>

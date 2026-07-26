@@ -55,6 +55,16 @@ export interface AppSettings {
   exobio: {
     enabled: boolean; // track bodies with uncollected biological signals
   };
+  /** OPT-IN community data sources. Both are off by default and each states
+   *  exactly what leaves the machine. */
+  external: {
+    /** Galnet news for lore-flavoured beats. Sends NOTHING about the commander. */
+    galnet: boolean;
+    /** Ardent Insight galaxy-wide markets. Sends the system + commodity asked about. */
+    ardent: boolean;
+    /** EDAstro exploration catalogue. Sends the system name asked about. */
+    edastro: boolean;
+  };
   memory: {
     enabled: boolean; // persistent commander memory bank (memory.json)
     proactive: boolean; // spoken remarks from memory (records, returns, milestones)
@@ -134,6 +144,13 @@ export const DEFAULT_SETTINGS: AppSettings = {
   },
   exobio: {
     enabled: true,
+  },
+  external: {
+    // Off by default like every other network feature; Galnet sends nothing
+    // identifying, Ardent sends a system + commodity name (as Spansh already does).
+    galnet: false,
+    ardent: false,
+    edastro: false,
   },
   memory: {
     enabled: true,

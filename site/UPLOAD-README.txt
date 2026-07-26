@@ -30,10 +30,17 @@ NOTES
     and stopped by the app. LM Studio still works and stays supported - pick it
     in the same dropdown - so existing users lose nothing.
     Also in 1.0: the copilot follows the whole session (events + screen) and
-    reacts in context, with a tunable involvement level.
-  * All three installers are 1.0.0. The Linux .deb + .AppImage were built in a
-    Debian bookworm container (Docker) via `npm run tauri build`; rebuild them
-    the same way (or on a Linux host per README "Linux") when you ship again.
+    reacts in context, with a tunable involvement level; exobiology sampling
+    ranges and payout estimates; and four opt-in community lookups the operator
+    calls only when asked (Spansh routes, galaxy-wide markets via Ardent
+    Insight, the EDAstro exploration catalogue, and the Galnet news wire).
+  * All three installers are 1.0.0. The Linux .deb + .AppImage are built on a
+    Linux host (a WSL Ubuntu 24.04 checkout here) via `npm run tauri build`.
+    Build them with a PURELY LINUX PATH — WSL's interop appends the Windows
+    PATH, and linuxdeploy walks every entry and dies on /mnt/c/WINDOWS/...
+    permission errors:
+      export PATH="$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    Run scripts/fetch-tts.sh first if src-tauri/resources/tts-linux is missing.
   * When you ship a new version, copy the new setup .exe here, rename it to
     match, and update the version number + file name in index.html
     (it appears in the version strip, the download button, and step 01).

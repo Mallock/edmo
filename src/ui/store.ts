@@ -82,6 +82,9 @@ import {
   llmChat,
   llmModels,
   llmModelTypes,
+  ardentMarket,
+  galnetHeadlines,
+  edastroSystem,
   engineStatus,
   engineDownloadRuntime,
   engineDownloadModel,
@@ -248,6 +251,9 @@ function friendlyTool(name?: string): string {
     get_materials: 'checking materials',
     get_exploration: 'checking exploration',
     get_system_intel: 'reading system intel',
+    find_market_in_galaxy: 'searching the galaxy',
+    get_galnet_news: 'reading the Galnet wire',
+    survey_system: 'checking the exploration catalogue',
   };
   return labels[name ?? ''] ?? (name || 'a tool');
 }
@@ -2417,6 +2423,16 @@ export class AppCore {
     this.copilotEvent(`EVENT: Cleared the ${u.species} colony radius — ${Math.round(u.distanceM)} m from the last sample.`);
   }
 
+  /**
+   * Galnet and the exploration catalogue are TOOLS, not feeds.
+   *
+   * Both were tempting to poll on a timer, but the copilot's fact fence
+   * (`buildAllowedPlaces()`) is derived from its own transcript: pipe headlines
+   * or catalogue entries in unprompted and you whitelist a hundred places the
+   * commander has never been, inviting exactly the hallucination the fence
+   * exists to stop. On demand the model has to ask, and the answer arrives
+   * labelled as someone else's report rather than something it witnessed.
+   */
   /** A game event happened — let the copilot react in-conversation (text-only,
    *  no screenshot) if the player's involvement level and cadence allow. This is
    *  what makes the copilot feel present between screen glances. */
@@ -2683,6 +2699,13 @@ export class AppCore {
       system: this.sm.location.system,
       station,
       markets: this.marketMemory,
+      // Opt-in only: null keeps the tool advertised but honestly unavailable,
+      // so the model explains how to enable it instead of inventing prices.
+      galaxyMarket: this.settings.external.ardent
+        ? (commodity, side) => ardentMarket(this.sm.location.system, commodity, side)
+        : null,
+      galnetNews: this.settings.external.galnet ? () => galnetHeadlines(6) : null,
+      systemSurvey: this.settings.external.edastro ? (name) => edastroSystem(name) : null,
       ship: this.ship.current,
       shipDescription: this.ship.current ? describeShip(this.ship.current) : null,
       liveCargo: this.ship.liveCargo,
@@ -2848,7 +2871,7 @@ export class AppCore {
     if (withTools[0]?.role === 'system') {
       withTools[0] = {
         ...withTools[0],
-        content: `${withTools[0].content} You can call tools to read the commander's LIVE game data (current market, ship, missions, status, materials, exploration, and Spansh trade routes). When the answer depends on prices, stock, what to buy or sell, what's profitable here, or whether cargo fits, CALL THE RELEVANT TOOL and use its result — never guess or trust possibly-stale route data. Use get_current_market for "here". After gathering what you need, answer in 2-4 short speakable sentences with no markdown.`,
+        content: `${withTools[0].content} You can call tools to read the commander's LIVE game data (current market, ship, missions, status, materials, exploration, Spansh trade routes) and, when they ask, the Galnet news wire and the community exploration catalogue. When the answer depends on prices, stock, what to buy or sell, what's profitable here, whether cargo fits, what is happening in the galaxy, or what has already been catalogued in some system, CALL THE RELEVANT TOOL and use its result — never guess or trust possibly-stale route data. Use get_current_market for "here". After gathering what you need, answer in 2-4 short speakable sentences with no markdown.`,
       };
     }
     this.agent = { entry, messages: withTools, rounds: 0, useTools: true };

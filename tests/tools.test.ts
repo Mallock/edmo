@@ -67,6 +67,9 @@ function ctx(over: Partial<ToolContext> = {}): ToolContext {
     exploreLine: null,
     systemIntelLine: 'Current system (Tir): security: Medium',
     planRoute: async () => null,
+    galaxyMarket: null,
+    galnetNews: null,
+    systemSurvey: null,
     ...over,
   };
 }
@@ -158,4 +161,44 @@ test('data tools echo their context line, with sensible empty-state text', async
 test('runTool rejects unknown tools and malformed arguments', async () => {
   assert.match(await runTool('do_a_barrel_roll', '', ctx()), /unknown tool/i);
   assert.match(await runTool('find_commodity', '{not json', ctx()), /could not parse/i);
+});
+
+test('get_galnet_news relays headlines, and says how to switch the wire on', async () => {
+  const off = await runTool('get_galnet_news', '', ctx());
+  assert.match(off, /Settings/);
+  assert.doesNotMatch(off, /Thargoid/);
+
+  const on = await runTool('get_galnet_news', '', ctx({
+    galnetNews: async () => [
+      { title: 'Thargoid Incursion Repelled', date: '15 Jul 3311', lead: 'Aegis reports the titan withdrew.' },
+    ],
+  }));
+  assert.match(on, /Thargoid Incursion Repelled/);
+  assert.match(on, /NOT the commander/i); // the model must not claim it was there
+});
+
+test('survey_system reports logged biology, and never calls silence proof of absence', async () => {
+  const found = await runTool('survey_system', JSON.stringify({ system: 'Nervi' }), ctx({
+    systemSurvey: async () => ({
+      system: 'Nervi', bodyCount: 12, landablePlanets: 4, earthLikes: 0, waterWorlds: 1,
+      ammoniaWorlds: null, terraformables: 2,
+      bodiesWithOrganics: [{ body: 'Nervi 2 a', subType: 'High metal content body', distanceLs: 1104.3, species: ['Bacterium Alcyoneum'] }],
+    }),
+  }));
+  assert.match(found, /Nervi 2 a/);
+  assert.match(found, /Bacterium Alcyoneum/);
+  assert.match(found, /1104 Ls/);
+  assert.match(found, /five-times.*gone|gone/i);
+
+  const empty = await runTool('survey_system', '', ctx({
+    system: 'Eol Prou PM-L c8-118',
+    systemSurvey: async () => ({
+      system: 'Eol Prou PM-L c8-118', bodyCount: 9, landablePlanets: 3, earthLikes: 0,
+      waterWorlds: 0, ammoniaWorlds: 0, terraformables: 0, bodiesWithOrganics: [],
+    }),
+  }));
+  assert.match(empty, /not proof/i);
+  assert.match(empty, /first log/i);
+
+  assert.match(await runTool('survey_system', '', ctx()), /Settings/);
 });

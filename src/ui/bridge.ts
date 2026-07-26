@@ -259,6 +259,53 @@ export function onEngineProgress(cb: Cb<EngineProgress>): Promise<UnlistenFn> {
   return sub('engine-progress', cb);
 }
 
+/** Galnet headlines (opt-in). Sends nothing about the commander — a plain GET
+ *  of the same public feed the website serves. */
+export interface GalnetItem { title: string; date: string; lead: string }
+export async function galnetHeadlines(limit = 8): Promise<GalnetItem[]> {
+  return JSON.parse(await invoke<string>('galnet_headlines', { limit })) as GalnetItem[];
+}
+
+/** One galaxy-wide market row from Ardent Insight (EDDN-sourced, anonymous). */
+export interface ArdentMarketRow {
+  station: string;
+  system: string;
+  distanceLy: number | null;
+  price: number | null;
+  stock: number | null;
+  demand: number | null;
+  pad: string | null;
+  carrier: boolean;
+  updatedAt: string | null;
+}
+
+/** Opt-in galaxy-wide commodity lookup; sends only the system + commodity. */
+export async function ardentMarket(
+  system: string,
+  commodity: string,
+  side: 'buy' | 'sell',
+): Promise<ArdentMarketRow[]> {
+  return JSON.parse(await invoke<string>('ardent_market', { system, commodity, side })) as ArdentMarketRow[];
+}
+
+/** One body with organics reported by other commanders (EDAstro / GEC). */
+export interface EdAstroOrganicBody {
+  body: string; subType: string | null; landable: boolean | null;
+  gravity: number | null; distanceLs: number | null; species: string[];
+}
+
+export interface EdAstroSystem {
+  system: string; bodyCount: number | null; planets: number; landablePlanets: number;
+  earthLikes: number | null; waterWorlds: number | null; ammoniaWorlds: number | null;
+  terraformables: number | null; fssProgress: number | null;
+  bodiesWithOrganics: EdAstroOrganicBody[];
+}
+
+/** Opt-in exploration catalogue lookup; sends only the system name. */
+export async function edastroSystem(name: string): Promise<EdAstroSystem> {
+  return JSON.parse(await invoke<string>('edastro_system', { name })) as EdAstroSystem;
+}
+
 /** Load the persistent commander memory bank (app-data memory.json). */
 export async function memoryLoad(): Promise<string> {
   return invoke<string>('memory_load');

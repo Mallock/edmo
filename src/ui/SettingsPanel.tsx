@@ -593,6 +593,49 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
         </section>
 
         <section>
+          <h3>Community data <span style={{ color: 'var(--dim)', fontSize: '0.8em' }}>(optional, off by default)</span></h3>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={s.external.galnet}
+              onChange={(e) => set({ ...s, external: { ...s.external, galnet: e.target.checked } })}
+            />
+            Galnet news — ask "any news?" and the operator reads the wire
+          </label>
+          <div className="hint">
+            Fetches the official public news feed <b>only when you ask</b> — it never interrupts you
+            with headlines. Sends <b>nothing</b> about you: no name, no system, no identifiers. News
+            is relayed as someone else's dispatch, never as something you witnessed.
+          </div>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={s.external.ardent}
+              onChange={(e) => set({ ...s, external: { ...s.external, ardent: e.target.checked } })}
+            />
+            Galaxy-wide market lookup — ask "where can I sell this?" about anywhere, not just stations you've visited
+          </label>
+          <div className="hint">
+            Uses Ardent Insight, built from community-shared market data (open source, anonymous).
+            Sends only <b>the system you're in and the commodity you asked about</b>, and only when
+            the operator actually looks something up. Prices can be hours old and fleet carriers move.
+          </div>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={s.external.edastro}
+              onChange={(e) => set({ ...s, external: { ...s.external, edastro: e.target.checked } })}
+            />
+            Exploration catalogue — ask whether a system is worth the detour, and what biology is already logged there
+          </label>
+          <div className="hint">
+            Uses EDAstro's Galactic Exploration Catalogue. Sends only <b>the system name you asked
+            about</b>. Nothing logged means nobody has been — which is where the five-times first
+            footfall bonus still is, not proof the system is empty.
+          </div>
+        </section>
+
+        <section>
           <h3>Trade leads</h3>
           <label className="check">
             <input

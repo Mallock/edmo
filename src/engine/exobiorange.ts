@@ -69,7 +69,7 @@ const GENUS_VALUE: Record<string, { min: number; max: number }> = {
 
 /** Payout range for a completed set of this genus, or null when unknown. */
 export function genusValue(genusOrSpecies: string): { min: number; max: number } | null {
-  const s = genusOrSpecies.toLowerCase();
+  const s = genusKey(genusOrSpecies);
   for (const [genus, v] of Object.entries(GENUS_VALUE)) if (s.includes(genus)) return v;
   return null;
 }
@@ -115,9 +115,46 @@ export function describeBioHaul(genuses: readonly string[], untouched = false): 
   return { text: `${head}${tail}`, bestTotal, worstRangeM };
 }
 
+/**
+ * The journal (and EDAstro) often give the codex SYMBOL rather than the pretty
+ * name — `$Codex_Ent_Bacterial_Genus_Name;` for Bacterium, `Shrubs` for Frutexa.
+ * Several of these do not contain their own genus word, so a naive substring
+ * match silently falls through to the 1000 m default and sends the commander on
+ * a walk twice as long as needed. Map the symbol stems explicitly.
+ */
+const SYMBOL_ALIASES: Array<[string, string]> = [
+  ['bacterial', 'bacterium'],
+  ['aleoids', 'aleoida'],
+  ['cactoid', 'cactoida'],
+  ['conchas', 'concha'],
+  ['fonticulus', 'fonticulua'],
+  ['shrubs', 'frutexa'],
+  ['fungoids', 'fungoida'],
+  ['fumerolas', 'fumerola'],
+  ['tussocks', 'tussock'],
+  ['stratum', 'stratum'],
+  ['tubus', 'tubus'],
+  ['osseus', 'osseus'],
+  ['clypeus', 'clypeus'],
+  ['recepta', 'recepta'],
+  ['electricae', 'electricae'],
+  // Non-Odyssey organics that still carry a 100 m colony spacing.
+  ['brancae', 'brancae'],
+  ['seed', 'brancae'], // Brain Tree species are $Codex_Ent_Seed_Name;
+  ['tube', 'brancae'],
+  ['sphere', 'anemone'],
+];
+
+/** Normalise a journal/EDAstro genus or species string to a table key. */
+function genusKey(genusOrSpecies: string): string {
+  const s = genusOrSpecies.toLowerCase();
+  for (const [needle, key] of SYMBOL_ALIASES) if (s.includes(needle)) return key;
+  return s;
+}
+
 /** Required separation for a species/genus string from the journal. */
 export function requiredRangeM(genusOrSpecies: string): number {
-  const s = genusOrSpecies.toLowerCase();
+  const s = genusKey(genusOrSpecies);
   for (const [genus, m] of Object.entries(GENUS_RANGE_M)) {
     if (s.includes(genus)) return m;
   }

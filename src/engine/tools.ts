@@ -29,6 +29,27 @@ export interface ToolContext {
   systemIntelLine: string | null; // security/factions/stations here
   /** Spansh route from the current station; injected so tools stay pure. */
   planRoute: (opts: { maxHops: number; requiresLargePad: boolean }) => Promise<TradeRoute | null>;
+  /** Galaxy-wide market lookup (Ardent Insight, EDDN data). Injected the same
+   *  way; null when the commander has not opted in. */
+  galaxyMarket:
+    | ((commodity: string, side: 'buy' | 'sell') => Promise<
+        Array<{
+          station: string; system: string; distanceLy: number | null; price: number | null;
+          stock: number | null; demand: number | null; pad: string | null; carrier: boolean;
+        }>
+      >)
+    | null;
+  /** Galnet news wire (opt-in): recent in-universe headlines, on demand. */
+  galnetNews: (() => Promise<Array<{ title: string; date: string; lead: string }>>) | null;
+  /** EDAstro exploration catalogue (opt-in): what others have logged in a system. */
+  systemSurvey:
+    | ((name: string) => Promise<{
+        system: string; bodyCount: number | null; landablePlanets: number;
+        earthLikes: number | null; waterWorlds: number | null; ammoniaWorlds: number | null;
+        terraformables: number | null;
+        bodiesWithOrganics: Array<{ body: string; subType: string | null; distanceLs: number | null; species: string[] }>;
+      }>)
+    | null;
 }
 
 /** OpenAI-style tool manifest advertised to the model. */
@@ -42,6 +63,30 @@ export const TOOL_SCHEMAS = [
       side: { type: 'string', enum: ['buy', 'sell'], description: 'buy = where to purchase it; sell = where to offload it.' },
     },
     ['commodity', 'side'],
+  ),
+  fn(
+    'find_market_in_galaxy',
+    'Find where to BUY or SELL a commodity ANYWHERE near the commander, using community market data — not just stations they have personally visited. Use this when find_commodity comes up empty or the commander asks where to take cargo. Prices can be hours old and fleet carriers move.',
+    {
+      commodity: { type: 'string', description: 'Commodity name, e.g. "Tritium", "Gold".' },
+      side: { type: 'string', enum: ['buy', 'sell'], description: 'buy = where to purchase it; sell = where to offload it.' },
+    },
+    ['commodity', 'side'],
+  ),
+  fn(
+    'get_galnet_news',
+    'Fetch the latest Galnet news — the in-universe wire. Use ONLY when the commander asks what is happening in the galaxy / for news. These are galaxy-wide stories, NOT things the commander did or places they have been.',
+  ),
+  fn(
+    'survey_system',
+    'Look up what other commanders have already catalogued in a star system: notable worlds and, importantly, which bodies have REPORTED BIOLOGICAL life and which species. Use when asked whether a system is worth visiting for exploration or exobiology. An empty result means nobody has logged it yet — NOT that the system is barren (and it may still be worth a first-footfall bonus).',
+    {
+      system: {
+        type: 'string',
+        description:
+          'The system name EXACTLY as the commander wrote it — copy it verbatim, including sector codes and body suffixes such as "Synuefe LY-I b42-2" or "Eol Prou PM-L c8-118". Omit ONLY when they plainly mean where they are right now.',
+      },
+    },
   ),
   fn('list_known_markets', 'List the station markets the commander has visited this session (station, system, how long ago), so you can reason about nearby options.'),
   fn(
@@ -88,6 +133,12 @@ export async function runTool(name: string, argsJson: string, ctx: ToolContext):
       return currentMarket(ctx);
     case 'find_commodity':
       return findCommodity(ctx, str(args.commodity), args.side === 'sell' ? 'sell' : 'buy');
+    case 'get_galnet_news':
+      return galnetNews(ctx);
+    case 'survey_system':
+      return surveySystem(ctx, str(args.system) || ctx.system);
+    case 'find_market_in_galaxy':
+      return findMarketInGalaxy(ctx, str(args.commodity), args.side === 'buy' ? 'buy' : 'sell');
     case 'list_known_markets':
       return listMarkets(ctx);
     case 'plan_trade_route':
@@ -234,3 +285,105 @@ function ageHours(iso: string): number {
 const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
 const numOr = (v: unknown, d: number): number => (typeof v === 'number' && Number.isFinite(v) ? v : typeof v === 'string' && v.trim() && Number.isFinite(Number(v)) ? Number(v) : d);
 const clamp = (n: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, n));
+
+/**
+ * Galaxy-wide market lookup via community (EDDN) data — the complement to
+ * `find_commodity`, which can only see stations the commander has personally
+ * visited. Answers are explicitly dated and carriers flagged, because both
+ * matter: a fleet carrier can be gone tomorrow and prices drift.
+ */
+async function findMarketInGalaxy(
+  ctx: ToolContext,
+  commodity: string,
+  side: 'buy' | 'sell',
+): Promise<string> {
+  if (!commodity) return 'Name the commodity to look up.';
+  if (!ctx.galaxyMarket) {
+    return 'Galaxy-wide market lookup is off. The commander can enable it in Settings → Community data (it sends only the system name and the commodity).';
+  }
+  if (!ctx.system || ctx.system === 'unknown') {
+    return 'Current system unknown, so "nearby" cannot be measured yet.';
+  }
+  let rows;
+  try {
+    rows = await ctx.galaxyMarket(commodity, side);
+  } catch (e) {
+    return `The market service did not answer (${String(e).slice(0, 80)}). Fall back on what we have visited.`;
+  }
+  if (!rows.length) {
+    return `No ${side === 'buy' ? 'sellers' : 'buyers'} of ${commodity} reported near ${ctx.system}.`;
+  }
+  const verb = side === 'buy' ? 'Buy' : 'Sell';
+  const lines = rows.slice(0, 6).map((r) => {
+    const qty = side === 'buy' ? `${r.stock ?? 0} in stock` : `demand ${r.demand ?? 0}`;
+    const pad = r.pad ? `, pad ${r.pad}` : '';
+    const far = r.distanceLy != null ? `${Math.round(r.distanceLy)} ly` : 'distance unknown';
+    return `- ${r.station} (${r.system}, ${far}${pad})${r.carrier ? ' [fleet carrier]' : ''}: ${
+      r.price != null ? `${r.price.toLocaleString('en-US')} cr` : 'price unknown'
+    }, ${qty}`;
+  });
+  return (
+    `${verb} ${commodity} near ${ctx.system} (community data, may be hours old):\n${lines.join('\n')}` +
+    `\nFleet carriers are marked — they can jump away, and their prices swing.`
+  );
+}
+
+/** Galnet, on demand — the operator relays the wire when asked for news. */
+async function galnetNews(ctx: ToolContext): Promise<string> {
+  if (!ctx.galnetNews) {
+    return 'Galnet is off. The commander can switch it on in Settings → Community data (it sends nothing about them — it is the public news feed).';
+  }
+  try {
+    const items = await ctx.galnetNews();
+    if (!items.length) return 'The Galnet wire returned nothing just now.';
+    return (
+      'Latest Galnet (galaxy news — NOT the commander\'s own doings; do not imply they were there):\n' +
+      items
+        .slice(0, 5)
+        .map((i) => `- ${i.title}${i.date ? ` (${i.date})` : ''}: ${i.lead.slice(0, 180)}`)
+        .join('\n')
+    );
+  } catch (e) {
+    return `The news wire did not answer (${String(e).slice(0, 80)}).`;
+  }
+}
+
+/**
+ * What others have already catalogued in a system — chiefly which bodies have
+ * reported organics, and the species. Absence is explicitly NOT evidence of
+ * absence: unvisited space simply has no reports, and that is exactly where the
+ * first-footfall bonus lives.
+ */
+async function surveySystem(ctx: ToolContext, system: string): Promise<string> {
+  if (!system || system === 'unknown') return 'Name a system to look up.';
+  if (!ctx.systemSurvey) {
+    return 'The exploration catalogue is off. The commander can enable it in Settings → Community data (it sends only the system name).';
+  }
+  let s;
+  try {
+    s = await ctx.systemSurvey(system);
+  } catch (e) {
+    return `No catalogue entry for ${system} (${String(e).slice(0, 70)}). Nobody may have surveyed it — which can mean a first footfall is still going.`;
+  }
+  const head =
+    `${s.system}: ${s.bodyCount ?? '?'} bodies, ${s.landablePlanets} landable` +
+    [
+      s.earthLikes ? `, ${s.earthLikes} Earth-like` : '',
+      s.waterWorlds ? `, ${s.waterWorlds} water world(s)` : '',
+      s.ammoniaWorlds ? `, ${s.ammoniaWorlds} ammonia world(s)` : '',
+      s.terraformables ? `, ${s.terraformables} terraformable` : '',
+    ].join('');
+  if (!s.bodiesWithOrganics.length) {
+    return `${head}.\nNo biology logged here by anyone yet — that is missing data, not proof the system is barren, and it means a first log here would still pay the five-times bonus.`;
+  }
+  const bio = s.bodiesWithOrganics
+    .slice(0, 8)
+    .map(
+      (b) =>
+        `- ${b.body}${b.subType ? ` (${b.subType})` : ''}${b.distanceLs != null ? `, ${Math.round(b.distanceLs)} Ls` : ''}: ${
+          b.species.length ? b.species.join(', ') : 'organics reported, species unknown'
+        }`,
+    )
+    .join('\n');
+  return `${head}.\nBiology already logged by other commanders:\n${bio}\nBecause it is already logged, the five-times first-footfall bonus is gone for these.`;
+}

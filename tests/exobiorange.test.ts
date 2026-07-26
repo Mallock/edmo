@@ -7,6 +7,7 @@ import {
   SampleRangeTracker,
   DEFAULT_RANGE_M,
   describeBioHaul,
+  genusValue,
 } from '../src/engine/exobiorange.ts';
 
 test('genus ranges are read from the localised species name', () => {
@@ -86,4 +87,25 @@ test('a DSS genus list becomes a land-or-skip verdict', () => {
   const odd = describeBioHaul(['Whatsit'])!;
   assert.match(odd.text, /Whatsit \(1000 m apart\)/);
   assert.equal(describeBioHaul([]), null);
+});
+
+test('codex symbol names resolve — the journal does not always send pretty names', () => {
+  // Real strings seen from EDAstro/the journal. Several do not contain their
+  // own genus word, so a naive substring match would fall to the 1000 m default
+  // and send the commander on twice the walk.
+  assert.equal(requiredRangeM('$Codex_Ent_Bacterial_Genus_Name;'), 500);
+  assert.equal(requiredRangeM('$Codex_Ent_Bacterial_06_Name;'), 500); // Bacterium Alcyoneum
+  assert.equal(requiredRangeM('$Codex_Ent_Tussocks_Genus_Name;'), 200);
+  assert.equal(requiredRangeM('$Codex_Ent_Shrubs_Genus_Name;'), 150); // Frutexa
+  assert.equal(requiredRangeM('$Codex_Ent_Aleoids_Genus_Name;'), 150);
+  assert.equal(requiredRangeM('$Codex_Ent_Cactoid_Genus_Name;'), 300);
+  assert.equal(requiredRangeM('$Codex_Ent_Fonticulus_Genus_Name;'), 500);
+  assert.equal(requiredRangeM('$Codex_Ent_Fungoids_Genus_Name;'), 300);
+  assert.equal(requiredRangeM('$Codex_Ent_Conchas_Genus_Name;'), 150);
+  assert.equal(requiredRangeM('$Codex_Ent_Osseus_Genus_Name;'), 800);
+  // Pretty names must keep working.
+  assert.equal(requiredRangeM('Bacterium Alcyoneum'), 500);
+  // Values resolve through the same normalisation.
+  assert.equal(genusValue('$Codex_Ent_Stratum_Genus_Name;')?.max, 19_010_800);
+  assert.equal(genusValue('$Codex_Ent_Bacterial_Genus_Name;')?.min, 1_000_000);
 });
