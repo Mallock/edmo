@@ -46,10 +46,16 @@ import {
   describeBioSale,
   parseBioSale,
 } from '../engine/exobiorange.ts';
-import { extractPlaces, findCollectivePronoun, findFabricatedPlace } from '../engine/factcheck.ts';
+import {
+  extractPlaces,
+  findCollectivePronoun,
+  findFabricatedPlace,
+  findLiftedExample,
+} from '../engine/factcheck.ts';
 import {
   DEFAULT_FILTERS,
   bestSink,
+  describeTradeFind,
   buildLeg,
   cheapestSources,
   rankLegs,
@@ -224,6 +230,7 @@ export interface AppSnapshot {
   /** Highest-value unmapped body known this session, or null. */
   exploreLead: ExploreLead | null;
   route: TradeRoute | null;
+  tradeRun: TradeFind | null;
   routeBusy: boolean;
   routeIdx: number;
   piperOk: boolean;
@@ -251,6 +258,32 @@ const GAME_LIVE_WINDOW_MS = 90_000;
 
 function stripThink(text: string): string {
   return text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+}
+
+/** Plain-English berth type from the journal's StationType. */
+function stationKind(type: unknown): string {
+  const t = typeof type === 'string' ? type.toLowerCase() : '';
+  if (!t) return '';
+  if (t === 'coriolis' || t === 'orbis' || t === 'ocellus') return `a ${t} starport`;
+  if (t === 'outpost') return 'an outpost';
+  if (t === 'fleetcarrier') return 'a fleet carrier';
+  if (t === 'asteroidbase') return 'an asteroid base';
+  if (t === 'megaship') return 'a megaship';
+  if (t.includes('planet') || t.includes('surface')) return 'a surface port';
+  return '';
+}
+
+/**
+ * What a station really is, out of the Docked event: its dominant economy and
+ * berth type. This is the antidote to name-reading — the journal states the
+ * economy outright, so there is never a reason to guess it from the sign.
+ */
+function describeStation(ev: JournalEvent): string {
+  const kind = stationKind(ev.StationType);
+  const econ =
+    typeof ev.StationEconomy_Localised === 'string' ? ev.StationEconomy_Localised.toLowerCase() : '';
+  if (!econ) return kind;
+  return kind ? `${kind.replace(/^an? /, (m) => m)} — ${econ}` : econ;
 }
 
 /** Human-readable label for a tool name, shown in the "working…" bubble. */
@@ -393,6 +426,14 @@ export class AppCore {
   /** "Move 500 m before the next sample" — Odyssey's clonal colony radius. */
   private sampleRange = new SampleRangeTracker();
   private sampleCount = new SampleCounter();
+  /** Last trade run the operator found, shown as a dismissible card. */
+  private tradeRun: TradeFind | null = null;
+  /**
+   * What a station really is, keyed by name: "refinery outpost", "industrial
+   * Coriolis". Station NAMES lie — Neugebauer Mines is a refinery, not a mine —
+   * and a model given only a name will read the name as a fact.
+   */
+  private stationFacts = new Map<string, string>();
   // --- the copilot's read on how the run is GOING (state, not events) ---
   /** When live play started — fatigue is a long shift, not a long app uptime. */
   private sessionStartAt = 0;
@@ -597,6 +638,7 @@ export class AppCore {
       shipStatus: this.hudShipStatus(),
       exploreLead: this.explore.leads()[0] ?? null,
       route: this.route,
+      tradeRun: this.tradeRun,
       routeBusy: this.routeBusy,
       routeIdx: this.routeIdx,
       piperOk: this.piperOk,
@@ -972,7 +1014,11 @@ export class AppCore {
           // Fatigue resets in a docking bay; note how often we've been here.
           this.jumpsSinceDock = 0;
           const where = typeof ev.StationName === 'string' ? ev.StationName : this.sm.location.station;
-          if (where) this.dockVisits.set(where, (this.dockVisits.get(where) ?? 0) + 1);
+          if (where) {
+            this.dockVisits.set(where, (this.dockVisits.get(where) ?? 0) + 1);
+            const fact = describeStation(ev);
+            if (fact) this.stationFacts.set(where, fact);
+          }
           this.maybeLedger();
           // Opt-in online route search: at most twice an hour, on docking.
           if (
@@ -1184,7 +1230,14 @@ export class AppCore {
         const text = `Docking granted — pad ${pad}, commander.`;
         this.pushFeed('system', `🛬 ${text} (${station})`);
         this.speak(text);
-        this.copilotEvent(`EVENT: Docking granted — pad ${pad} at ${station}.`);
+        // Hand over what the station actually IS. Without it the model reads the
+        // NAME as a fact and invents the rest ("Neugebauer Mines… a little
+        // mining spot" — it is a refinery).
+        const known = this.stationFacts.get(station);
+        const kind = known ?? stationKind(ev.StationType);
+        this.copilotEvent(
+          `EVENT: Docking granted — pad ${pad} at ${station}${kind ? `, ${kind}` : ''}.`,
+        );
         this.copilotReact('arrival', 'copilot — reacting to docking clearance…');
         break;
       }
@@ -1774,7 +1827,9 @@ export class AppCore {
         this.addSeed(`Community data pointed to a trade route: ${route.hops[0].commodity} out of ${route.hops[0].fromStation}`);
         if (this.settings.trade.autoCopyRoute) void this.copyWaypoint(0, true);
       } else {
-        this.pushFeed('system', 'Spansh found no profitable route from here within the hop range.');
+        // Spansh wants a closed loop and often has none. The one-way search
+        // usually does, so the button does not dead-end the way it used to.
+        await this.suggestRunAfterNoLoop(manual);
       }
     } catch (e) {
       this.pushFeed('system', `Route search failed: ${String(e)}`);
@@ -2784,7 +2839,7 @@ export class AppCore {
       const sink = bestSink(raw.sinks[src.commodity] ?? [], filters, origin, now);
       return sink ? buildLeg(src, sink, filters, now) : null;
     });
-    return {
+    const find: TradeFind = {
       legs: rankLegs(legs),
       originKnown: raw.originKnown !== false,
       checked: raw.checked,
@@ -2792,6 +2847,68 @@ export class AppCore {
       filters,
       origin,
     };
+    // Surface it as a card too: the spoken answer scrolls away with the feed,
+    // but the destination is something the commander needs on screen while they
+    // fly it, and needs to paste into the galaxy map.
+    this.tradeRun = find.legs.length ? find : null;
+    this.emit();
+    return find;
+  }
+
+  /**
+   * Spansh came back empty. Offer the plain buy-here/sell-there run instead —
+   * "no loop" was technically true and practically useless while a 44,000 cr/t
+   * run sat thirty light years away.
+   */
+  private async suggestRunAfterNoLoop(manual: boolean): Promise<void> {
+    if (!this.settings.external.ardent) {
+      this.pushFeed(
+        'system',
+        'Spansh found no profitable loop from here. Turn on galaxy-wide markets in Settings → Community data and I can look for a one-way run instead.',
+      );
+      return;
+    }
+    this.pushFeed('system', 'No closed loop from here — looking for a one-way run…');
+    this.emit();
+    try {
+      const find = await this.findTradeRun({
+        origin: this.sm.location.system,
+        maxDistanceLy: this.settings.trade.routeMaxHopLy,
+        minVolume: DEFAULT_FILTERS.minVolume,
+        minPad: shipRequiresLargePad(this.ship.current?.ship) ? 3 : DEFAULT_FILTERS.minPad,
+        cargo: this.ship.current?.cargoCapacity || this.stats.cargoCapacity || DEFAULT_FILTERS.cargo,
+      });
+      const best = find.legs[0];
+      if (!best) {
+        this.pushFeed('system', describeTradeFind(find));
+        return;
+      }
+      const text = `${best.commodity} out of ${best.fromStation} — ${best.profitPerTon.toLocaleString('en-US')} a ton into ${best.toStation}, ${best.distanceLy} light years out.`;
+      this.pushFeed('system', `💱 ${text} (data: Ardent)`);
+      if (manual) this.speak(text);
+      this.addSeed(`Community data pointed to a run: ${best.commodity} out of ${best.fromStation}`);
+      if (this.settings.trade.autoCopyRoute) void this.copyRunDestination(0);
+    } catch (e) {
+      this.pushFeed('system', `Run search failed: ${String(e)}`);
+    }
+  }
+
+  dismissTradeRun(): void {
+    this.tradeRun = null;
+    this.emit();
+  }
+
+  /** Copy one run's destination system for galaxy-map pasting (Ctrl+V there). */
+  async copyRunDestination(idx: number): Promise<void> {
+    const leg = this.tradeRun?.legs[idx];
+    if (!leg) return;
+    try {
+      await copyText(leg.toSystem);
+      this.pushFeed('system', `📋 Copied "${leg.toSystem}" — galaxy map → search → Ctrl+V.`);
+    } catch (e) {
+      this.pushFeed('system', `Clipboard failed: ${String(e)}`);
+    }
+    this.emit();
   }
 
   /** Assemble the live-data context the operator's tools read from. */
@@ -3440,6 +3557,23 @@ export class AppCore {
         // Voice fence: "we/us/our" is the model slipping out of its own skin and
         // into play-by-play. Same treatment as an invented place — one resample,
         // then silence.
+        // Parrot fence: a phrase copied out of its own instructions is not an
+        // observation, and lands wrong as often as not.
+        const lifted = findLiftedExample(groundedText);
+        if (lifted && !this.copilotRetried && this.copilotRetryMsgs) {
+          this.copilotRetried = true;
+          this.copilotBeatInFlight = true;
+          this.noteGlance(`resampling — parroted the example "${lifted}"`);
+          this.startLlm(entry, 'commentary', this.copilotRetryMsgs, 0.85, 1800, undefined, { presence: 0.7, frequency: 0.5 });
+          return;
+        }
+        if (lifted) {
+          this.noteGlance(`dropped a beat — parroted "${lifted}"`);
+          this.copilot?.recordSilent();
+          this.feed = this.feed.filter((e) => e !== entry);
+          this.emit();
+          return;
+        }
         const collective = findCollectivePronoun(groundedText);
         if (collective && !this.copilotRetried && this.copilotRetryMsgs) {
           this.copilotRetried = true;

@@ -250,12 +250,20 @@ export function stripFillerTics(text: string): string {
       // Hedging openers the prompt bans but a small model still reaches for.
       // Dropping the lead-in leaves a clean declarative ("Looks like Kirk Dock
       // is ready" → "Kirk Dock is ready") — the flat voice we actually want.
+      // Anchored at the start AND after a sentence break: the model dodges the
+      // ban by putting the hedge in sentence two ("Pad three. Looks like a
+      // little mining spot.").
       .replace(/^(?:it\s+)?(?:looks|seems|sounds)\s+like\s+/i, '')
+      .replace(/([.!?]\s+)(?:it\s+)?(?:looks|seems|sounds)\s+like\s+/gi, '$1')
       .replace(/\s+([.,;:!?])/g, '$1')
       .replace(/\s{2,}/g, ' ')
       .trim()
       // Re-capitalise if stripping the opener exposed a lower-case word.
       .replace(/^([a-z])/, (c) => c.toUpperCase())
+      // ...and after a sentence break, which the model gets wrong on its own
+      // ("Neugebauer Mines? some work in the cargo hold."). Guarded against a
+      // digit before the stop so decimals and "3. " lists survive.
+      .replace(/(?<![0-9])([.!?]\s+)([a-z])/g, (_m, p, c: string) => p + c.toUpperCase())
   );
 }
 

@@ -421,6 +421,18 @@ body {
   color: #c9a0f5;
 }
 
+/* Found trade run — amber, so it reads as money rather than as the purple
+   Spansh loop it sits next to. */
+.run-card {
+  border-color: rgba(240, 176, 64, 0.45);
+  background: rgba(240, 176, 64, 0.06);
+}
+
+.run-title,
+.run-profit {
+  color: #f0b040;
+}
+
 .hop {
   padding: 2px 0;
 }
@@ -429,6 +441,27 @@ body {
   color: var(--dim);
   text-decoration: line-through;
   text-decoration-color: rgba(122, 138, 160, 0.6);
+}
+
+/* Pin the copy button to the end of the line. Left inline it wraps onto a row
+   of its own whenever the station name is long, which is most of the time. */
+.run-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.run-line > .hop-copy {
+  margin-left: auto;
+  flex: none;
+}
+
+.run-card .hop-copy {
+  border-color: rgba(240, 176, 64, 0.45);
+}
+
+.run-card .hop-copy:hover {
+  background: rgba(240, 176, 64, 0.18);
 }
 
 .hop-copy {

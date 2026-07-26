@@ -39,6 +39,11 @@ function ShipStatusStrip({ status }: { status: HudShipStatus }) {
   );
 }
 
+/** Landing-pad floor in the words a commander uses. */
+function padWord(pad: number): string {
+  return pad >= 3 ? 'large' : pad === 2 ? 'medium' : 'small';
+}
+
 export function App() {
   const snap = useSyncExternalStore(core.subscribe, core.getSnapshot);
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -267,6 +272,66 @@ export function App() {
                 {snap.routeIdx >= snap.route.hops.length && (
                   <div className="trade-age">Route complete — good business, commander.</div>
                 )}
+              </div>
+            </div>
+          )}
+
+          {snap.tradeRun && snap.tradeRun.legs.length > 0 && (
+            <div className="trade-card run-card">
+              <div className="trade-head">
+                <span className="trade-title run-title">💱 TRADE RUN · {snap.tradeRun.origin.toUpperCase()}</span>
+                <span className="mono trade-profit run-profit">
+                  +{snap.tradeRun.legs[0].profitPerTrip.toLocaleString('en-US')} cr/trip
+                </span>
+                <button
+                  className="icon-btn"
+                  title="Discard this run"
+                  aria-label="Discard trade run"
+                  onClick={() => core.dismissTradeRun()}
+                >
+                  ✕
+                </button>
+              </div>
+              <div className="trade-body">
+                {snap.tradeRun.legs.slice(0, 3).map((l, i) => (
+                  <div key={`${l.commodity}-${l.toStation}`} className="hop">
+                    <div className="run-line">
+                      {/* One element, so the flex row has exactly two children
+                          and the copy button pins right instead of each text
+                          node becoming its own column. */}
+                      <span>
+                        {i + 1}. <b>{l.commodity}</b> → <b>{l.toStation}</b> · {l.toSystem}{' '}
+                        <span className="mono">({l.distanceLy} ly)</span> ·{' '}
+                        <span className="mono">+{l.profitPerTon.toLocaleString('en-US')}/t</span>
+                      </span>
+                      <button
+                        className="hop-copy"
+                        title={`Copy "${l.toSystem}" for the galaxy map`}
+                        aria-label={`Copy ${l.toSystem} to clipboard`}
+                        onClick={() => void core.copyRunDestination(i)}
+                      >
+                        📋
+                      </button>
+                    </div>
+                    <div className="hop-calc mono">
+                      {l.tons.toLocaleString('en-US')} t · buy {l.buyPrice.toLocaleString('en-US')} at{' '}
+                      {l.fromStation} → sell {l.sellPrice.toLocaleString('en-US')} = +
+                      {l.profitPerTrip.toLocaleString('en-US')} cr
+                      {l.dataAgeH != null && (
+                        <span className="trade-age">
+                          {' '}
+                          · prices {l.dataAgeH < 48 ? `${l.dataAgeH}h` : `${Math.round(l.dataAgeH / 24)}d`} old
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+                <div className="trade-age">
+                  {padWord(snap.tradeRun.filters.minPad)} pad or better ·{' '}
+                  {snap.tradeRun.filters.minVolume.toLocaleString('en-US')} t either side ·{' '}
+                  {snap.tradeRun.filters.cargo} t hold · checked {snap.tradeRun.checked} of{' '}
+                  {snap.tradeRun.candidates}
+                </div>
               </div>
             </div>
           )}

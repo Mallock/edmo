@@ -62,3 +62,39 @@ export function findCollectivePronoun(beat: string): string | null {
   const m = COLLECTIVE.exec(beat);
   return m ? m[1].toLowerCase() : null;
 }
+
+/**
+ * Phrases that appear inside the operator's own instructions as examples.
+ *
+ * Small models parrot them. Observed live: told "a wry impression of a place is
+ * welcome (“big berth for a big crowd, this one”)", gemma-4-e4b served that exact
+ * line back twice in eight beats — at an OUTPOST, the smallest berth there is,
+ * so the borrowed words were also wrong. The instructions say not to lift
+ * example phrasing; this enforces it, the way the fact fence enforces grounding.
+ *
+ * Only distinctive multi-word fragments belong here: matching on short common
+ * phrasing would gag ordinary speech.
+ */
+const LIFTED_EXAMPLES = [
+  'big berth for a big crowd',
+  'quiet little outpost',
+  'gravity well',
+  'chewed ships since',
+  'the docks here are unforgiving',
+  'smells of synth-coffee',
+  'the starfield means',
+  'best haul yet',
+  'home in one piece',
+  'carrier will thank',
+];
+
+const flatten = (v: string): string => v.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+/** The lifted phrase, or null when the beat is in the model's own words. */
+export function findLiftedExample(beat: string): string | null {
+  const flat = flatten(beat);
+  // Normalise the needles too: "synth-coffee" flattens to "synth coffee", so an
+  // un-normalised needle would never match its own example.
+  for (const ex of LIFTED_EXAMPLES) if (flat.includes(flatten(ex))) return ex;
+  return null;
+}

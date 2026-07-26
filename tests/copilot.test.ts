@@ -13,7 +13,12 @@ import {
 } from '../src/engine/copilot.ts';
 import { stripFillerTics } from '../src/engine/glance.ts';
 import { parseProspectTarget, matchesProspect } from '../src/engine/mining.ts';
-import { extractPlaces, findCollectivePronoun, findFabricatedPlace } from '../src/engine/factcheck.ts';
+import {
+  extractPlaces,
+  findCollectivePronoun,
+  findFabricatedPlace,
+  findLiftedExample,
+} from '../src/engine/factcheck.ts';
 
 test('copilot system prompt carries the persona and the event-stream contract', () => {
   const sys = buildCopilotSystem("M'allock");
@@ -234,4 +239,38 @@ test('the voice fence leaves own-voice beats alone', () => {
   assert.equal(findCollectivePronoun('The bus run to Colonia pays well.'), null);
   assert.equal(findCollectivePronoun('Ourania is three jumps out.'), null);
   assert.equal(findCollectivePronoun('That outpost is a wreck.'), null);
+});
+
+test('the parrot fence catches phrasing lifted from the instructions', () => {
+  // Observed live at an OUTPOST — the smallest berth there is — because the
+  // model copied the example instead of looking at what it was told.
+  assert.equal(findLiftedExample('Big berth for a big crowd, this one.'), 'big berth for a big crowd');
+  assert.equal(findLiftedExample('Another quiet little outpost.'), 'quiet little outpost');
+  assert.equal(findLiftedExample("Pad seven smells of synth-coffee."), 'smells of synth-coffee');
+  // Punctuation and case must not let it through.
+  assert.equal(findLiftedExample('big-berth, for a BIG crowd!'), 'big berth for a big crowd');
+});
+
+test('the parrot fence leaves the operator its own words', () => {
+  assert.equal(findLiftedExample('Neugebauer Mines. Refinery dust on everything.'), null);
+  assert.equal(findLiftedExample('Pad three. Tight little berth, that.'), null);
+  assert.equal(findLiftedExample('Gallium to Valac. A steady run.'), null);
+  assert.equal(findLiftedExample('That outpost is busy tonight.'), null);
+});
+
+test('filler stripping handles hedges and casing past the first sentence', () => {
+  // The live slip: the hedge moved to sentence two, where the anchored rule
+  // could not see it.
+  assert.equal(
+    stripFillerTics('Pad three at Neugebauer. Looks like a little mining spot.'),
+    'Pad three at Neugebauer. A little mining spot.',
+  );
+  assert.equal(stripFillerTics('Looks like Kirk Dock is ready.'), 'Kirk Dock is ready.');
+  // Sentence-start casing, which the model gets wrong on its own.
+  assert.equal(
+    stripFillerTics('Neugebauer Mines? some work in the cargo hold.'),
+    'Neugebauer Mines? Some work in the cargo hold.',
+  );
+  // Decimals must survive untouched.
+  assert.equal(stripFillerTics('Jump is 22.5 ly out.'), 'Jump is 22.5 ly out.');
 });
