@@ -1680,6 +1680,11 @@ async fn ardent_trade_candidates(
             "stock": r["stock"],
             "demand": r["demand"],
             "updatedAt": r["updatedAt"],
+            // The per-system endpoints carry no `distance`; the coordinates let
+            // the engine work it out rather than report a directed run as 0 ly.
+            "x": r["systemX"],
+            "y": r["systemY"],
+            "z": r["systemZ"],
         })
     };
 
@@ -1770,6 +1775,99 @@ async fn ardent_trade_candidates(
         "sinks": sinks,
         "checked": order.len(),
         "candidates": candidates,
+    });
+    serde_json::to_string(&out).map_err(|e| e.to_string())
+}
+
+/// What to carry on a run the commander has already decided to make.
+///
+/// A directed search is a different question from "what pays best anywhere",
+/// and much cheaper to answer: what the origin sells, what the destination
+/// buys, intersected. Two requests, no probing heuristic, no bounded coverage
+/// to apologise for.
+#[tauri::command]
+async fn ardent_trade_to(
+    origin: String,
+    destination: String,
+    min_volume: u32,
+) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(8))
+        .timeout(Duration::from_secs(25))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let base = "https://api.ardent-insight.com/v2";
+
+    let trim = |r: &serde_json::Value| {
+        json!({
+            "commodity": r["commodityName"],
+            "station": r["stationName"],
+            "system": r["systemName"],
+            "stationType": r["stationType"],
+            "pad": r["maxLandingPadSize"],
+            "distanceLy": r["distance"],
+            "distanceLs": r["distanceToArrival"],
+            "buyPrice": r["buyPrice"],
+            "sellPrice": r["sellPrice"],
+            "stock": r["stock"],
+            "demand": r["demand"],
+            "updatedAt": r["updatedAt"],
+            // The per-system endpoints carry no `distance`; the coordinates let
+            // the engine work it out rather than report a directed run as 0 ly.
+            "x": r["systemX"],
+            "y": r["systemY"],
+            "z": r["systemZ"],
+        })
+    };
+
+    // A 404 on either end means "no market data for that name", which is a
+    // different answer from "nothing pays" and must not be conflated with it.
+    let fetch = |url: String| {
+        let c = client.clone();
+        async move {
+            let res = c
+                .get(&url)
+                .send()
+                .await
+                .map_err(|e| format!("Ardent unreachable: {e}"))?;
+            if res.status() == reqwest::StatusCode::NOT_FOUND {
+                return Ok(None);
+            }
+            let v: serde_json::Value = res
+                .error_for_status()
+                .map_err(|e| format!("Ardent error: {e}"))?
+                .json()
+                .await
+                .map_err(|e| format!("Ardent returned unusable data: {e}"))?;
+            Ok::<Option<serde_json::Value>, String>(Some(v))
+        }
+    };
+
+    let src = fetch(format!(
+        "{base}/system/name/{}/commodities/exports?minVolume={min_volume}",
+        urlencoding_light(&origin)
+    ))
+    .await?;
+    let dst = fetch(format!(
+        "{base}/system/name/{}/commodities/imports?minVolume={min_volume}",
+        urlencoding_light(&destination)
+    ))
+    .await?;
+
+    let rows = |v: &Option<serde_json::Value>| -> Vec<serde_json::Value> {
+        v.as_ref()
+            .and_then(|x| x.as_array())
+            .map(|a| a.iter().map(trim).collect())
+            .unwrap_or_default()
+    };
+
+    let out = json!({
+        "origin": origin,
+        "destination": destination,
+        "originKnown": src.is_some(),
+        "destinationKnown": dst.is_some(),
+        "sources": rows(&src),
+        "sinks": rows(&dst),
     });
     serde_json::to_string(&out).map_err(|e| e.to_string())
 }
@@ -2039,6 +2137,7 @@ fn main() {
             ardent_market,
             ardent_trade_candidates,
             ardent_station_pads,
+            ardent_trade_to,
             edastro_system,
             copy_text,
             llm_cancel,

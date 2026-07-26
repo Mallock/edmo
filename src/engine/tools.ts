@@ -38,6 +38,8 @@ export interface ToolContext {
   findTradeRun:
     | ((opts: {
         origin: string;
+        /** Where they are heading, when they named it; '' for an open search. */
+        destination: string;
         maxDistanceLy: number;
         minVolume: number;
         minPad: number;
@@ -106,12 +108,17 @@ export const TOOL_SCHEMAS = [
   fn('list_known_markets', 'List the station markets the commander has visited this session (station, system, how long ago), so you can reason about nearby options.'),
   fn(
     'find_trade_run',
-    'Find the most profitable trade run out of the current system: what to buy here and where to sell it within jump range, with credits per ton and per full hold. This is the DEFAULT answer to "what should I haul", "any good trade routes", "where do I make money from here". Uses live community market data and honours the landing-pad size the ship needs.',
+    'Find a profitable trade run: what to buy and where to sell it, with credits per ton and per full hold. Two modes — with no destination it finds the best-paying run in any direction ("what should I haul", "any good trade routes"); with a destination it finds the best cargo for a trip the commander is already making ("what can I sell to Tir", "anything worth carrying to Colonia"). ALWAYS use this rather than the local market when the question involves selling somewhere ELSE. Uses live community market data and honours the landing-pad size the ship needs.',
     {
       system: {
         type: 'string',
         description:
           'System to start the run from, copied verbatim if the commander names a PLACE. Omit when they say "from here" or name their own SHIP — a ship name is not a system.',
+      },
+      destination: {
+        type: 'string',
+        description:
+          'Where the commander is HEADING, when they name somewhere — "what can I sell to Tir", "anything to carry to Colonia". Then the answer is the best cargo for THAT trip, not the best trip. Omit when they just want the most profitable run in any direction.',
       },
       max_distance_ly: { type: 'integer', description: 'How far to look for a buyer, in light years. Default 80.' },
       min_volume: { type: 'integer', description: 'Minimum stock at the source and demand at the destination, in tons. Default 1000.' },
@@ -176,6 +183,7 @@ export async function runTool(name: string, argsJson: string, ctx: ToolContext):
       return findTradeRun(
         ctx,
         str(args.system),
+        str(args.destination),
         numOr(args.max_distance_ly, 80),
         numOr(args.min_volume, DEFAULT_FILTERS.minVolume),
       );
@@ -247,7 +255,7 @@ async function planRoute(ctx: ToolContext, maxHops: number): Promise<string> {
     // not work either — a small local model announces the next call instead of
     // making it. So answer the question they actually had, and label it.
     if (!ctx.findTradeRun) return 'Spansh found no profitable loop from here within range.';
-    const single = await findTradeRun(ctx, '', 80, DEFAULT_FILTERS.minVolume);
+    const single = await findTradeRun(ctx, '', '', 80, DEFAULT_FILTERS.minVolume);
     return `No closed loop out of here right now — Spansh needs a run that returns to the start, and there isn't one. A one-way run there is, though:
 ${single}`;
   }
@@ -445,6 +453,7 @@ async function surveySystem(ctx: ToolContext, system: string): Promise<string> {
 async function findTradeRun(
   ctx: ToolContext,
   requested: string,
+  destination: string,
   maxDistanceLy: number,
   minVolume: number,
 ): Promise<string> {
@@ -460,6 +469,8 @@ async function findTradeRun(
   try {
     const find = await ctx.findTradeRun({
       origin,
+      // A destination equal to where we already are is not a trip.
+      destination: destination && destination.toLowerCase() !== origin.toLowerCase() ? destination : '',
       maxDistanceLy: clamp(maxDistanceLy, 5, 250),
       minVolume: clamp(minVolume, 0, 100_000),
       minPad,

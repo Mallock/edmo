@@ -36,6 +36,10 @@ export interface MarketRow {
   demand: number | null;
   /** ISO timestamp of the last EDDN report for this market. */
   updatedAt: string | null;
+  /** Galactic coordinates, when the endpoint supplies them. */
+  x?: number | null;
+  y?: number | null;
+  z?: number | null;
 }
 
 export interface RouteFilters {
@@ -99,6 +103,15 @@ export interface TradeFind {
   candidates: number;
   filters: RouteFilters;
   origin: string;
+  /**
+   * Set when the commander named where they are GOING. A directed search is a
+   * different question from "what pays best anywhere" — they have a reason to
+   * be heading there, and a smaller profit on the way is worth more than a
+   * bigger one in the opposite direction.
+   */
+  destination?: string;
+  /** False when the destination is absent from the market data entirely. */
+  destinationKnown?: boolean;
 }
 
 /**
@@ -122,6 +135,20 @@ export function resolveOrigin(
   const aliases = [ship?.shipName, ship?.shipIdent, ship?.ship].map(norm).filter(Boolean);
   if (aliases.includes(asked)) return { origin: currentSystem, namedTheShip: true };
   return { origin: (requested ?? '').trim(), namedTheShip: false };
+}
+
+/**
+ * Straight-line distance between two markets' systems, in light years.
+ *
+ * The `nearby/` endpoints hand back a `distance`; the plain per-system ones do
+ * not, so a directed search had nothing and rendered "Tir, 0 ly" — which reads
+ * as "you are already there" for a system forty-three light years away. The
+ * coordinates are in every row, so compute it.
+ */
+export function systemDistanceLy(a: MarketRow, b: MarketRow): number | null {
+  if (a.x == null || a.y == null || a.z == null) return null;
+  if (b.x == null || b.y == null || b.z == null) return null;
+  return Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
 }
 
 const hoursSince = (iso: string | null, nowMs: number): number | null =>
@@ -174,6 +201,46 @@ export function bestSink(
   return best;
 }
 
+/**
+ * Best sink per commodity, for a directed search into one system. Unlike
+ * `bestSink`, which answers "where does this one good pay most", this answers
+ * "of everything sold here, what does that system pay most for" — the shape of
+ * the question when the commander has already decided where they are going.
+ */
+export function bestSinksByCommodity(
+  rows: readonly MarketRow[],
+  f: RouteFilters,
+  originSystem: string,
+  nowMs: number,
+): Map<string, MarketRow> {
+  const best = new Map<string, MarketRow>();
+  for (const r of rows) {
+    if ((r.pad ?? 0) < f.minPad) continue;
+    if ((r.demand ?? 0) < f.minVolume) continue;
+    if (!r.sellPrice || r.sellPrice <= 0) continue;
+    if (!fresh(r, nowMs, f.maxAgeDays)) continue;
+    if (r.system === originSystem) continue;
+    const cur = best.get(r.commodity);
+    if (!cur || r.sellPrice > (cur.sellPrice ?? 0)) best.set(r.commodity, r);
+  }
+  return best;
+}
+
+/** Every profitable pairing between what is on sale here and what they buy there. */
+export function legsToDestination(
+  sources: ReadonlyMap<string, MarketRow>,
+  sinks: ReadonlyMap<string, MarketRow>,
+  f: RouteFilters,
+  nowMs: number,
+): TradeLeg[] {
+  const legs: Array<TradeLeg | null> = [];
+  for (const [commodity, src] of sources) {
+    const sink = sinks.get(commodity);
+    if (sink) legs.push(buildLeg(src, sink, f, nowMs));
+  }
+  return rankLegs(legs);
+}
+
 /** Pair one source with one sink into a costed leg, or null if it loses money. */
 export function buildLeg(
   source: MarketRow,
@@ -198,7 +265,7 @@ export function buildLeg(
     fromSystem: source.system,
     toStation: sink.station,
     toSystem: sink.system,
-    distanceLy: Math.round(sink.distanceLy ?? 0),
+    distanceLy: Math.round(sink.distanceLy ?? systemDistanceLy(source, sink) ?? 0),
     fromLs: source.distanceLs == null ? null : Math.round(source.distanceLs),
     toLs: sink.distanceLs == null ? null : Math.round(sink.distanceLs),
     buyPrice,
@@ -270,6 +337,29 @@ export function describeTradeFind(find: TradeFind, max = 3): string {
   const constraints =
     `${padName(f.minPad)} pad or better, at least ${f.minVolume.toLocaleString('en-US')} t either side, ` +
     `${f.cargo} t hold`;
+  if (find.destination && find.destinationKnown === false) {
+    return (
+      `I have no market data for "${find.destination}" — check the name, or nobody has reported a ` +
+      `market there. I can still find you the best-paying run in any direction.`
+    );
+  }
+  if (find.destination) {
+    // A directed answer must never quietly become an undirected one: telling a
+    // commander headed for Tir about a good run to Luchtaine answers a question
+    // they did not ask.
+    if (!find.legs.length) {
+      return (
+        `Nothing on sale around ${find.origin} sells for more at ${find.destination} — not on ` +
+        `${constraints}. You would be flying there empty, or hauling at a loss. Want the ` +
+        `best-paying run in any direction instead?`
+      );
+    }
+    const body = find.legs.slice(0, max).map((l, i) => `${i + 1}. ${describeLeg(l)}`);
+    return (
+      `Best cargo for the run to ${find.destination} (${constraints}):\n${body.join('\n')}\n` +
+      `Community prices, so verify stock on arrival.`
+    );
+  }
   if (!find.originKnown) {
     return (
       `I have no market data for "${find.origin}" — check the name, or it may be a system nobody has ` +

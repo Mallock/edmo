@@ -292,6 +292,27 @@ export async function ardentMarket(
   return JSON.parse(await invoke<string>('ardent_market', { system, commodity, side })) as ArdentMarketRow[];
 }
 
+/** Origin exports + destination imports, for a run the commander already plans. */
+export interface DirectedCandidates {
+  origin: string;
+  destination: string;
+  originKnown: boolean;
+  destinationKnown: boolean;
+  sources: MarketRow[];
+  sinks: MarketRow[];
+}
+
+/** Opt-in directed trade search. Sends only the two system names. */
+export async function ardentTradeTo(
+  origin: string,
+  destination: string,
+  minVolume: number,
+): Promise<DirectedCandidates> {
+  return JSON.parse(
+    await invoke<string>('ardent_trade_to', { origin, destination, minVolume }),
+  ) as DirectedCandidates;
+}
+
 /**
  * Landing-pad size per station in one system (opt-in). Spansh returns no pad
  * data, so this is the only way to know whether a routed stop is dockable.

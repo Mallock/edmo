@@ -13,6 +13,9 @@ import {
   type MarketRow,
   type RouteFilters,
   resolveOrigin,
+  bestSinksByCommodity,
+  legsToDestination,
+  systemDistanceLy,
 } from '../src/engine/traderoute.ts';
 
 const NOW = Date.parse('2026-07-26T16:00:00Z');
@@ -224,4 +227,81 @@ test('a real place is still treated as a place', () => {
   assert.deepEqual(resolveOrigin(null, 'Tir', RAHTARI), { origin: 'Tir', namedTheShip: false });
   // No loadout known yet: nothing can match the ship, so the name stands.
   assert.deepEqual(resolveOrigin('rahtari', 'Tir', null), { origin: 'rahtari', namedTheShip: false });
+});
+
+// Real Valac→Tir data. The commander asked twice for a run TO Tir and was
+// twice answered about somewhere else.
+const VALAC_SELLS = [
+  row({ commodity: 'cobalt', station: "Becker's Burrow", system: 'Valac', buyPrice: 4624, stock: 4000 }),
+  row({ commodity: 'basicmedicines', station: 'Salted Womb', system: 'Valac', buyPrice: 2081, stock: 3000 }),
+  row({ commodity: 'waterpurifiers', station: 'Salted Womb', system: 'Valac', buyPrice: 168, stock: 9000 }),
+];
+const TIR_BUYS = [
+  row({ commodity: 'cobalt', station: "Bolden's Enterprise", system: 'Tir', sellPrice: 9791, demand: 5000, distanceLy: 43 }),
+  row({ commodity: 'basicmedicines', station: 'Huber Metallurgic Enterprise', system: 'Tir', sellPrice: 5027, demand: 9000, distanceLy: 43 }),
+  // Tir pays nothing special for water purifiers — the undirected search's pick
+  // must not survive into a directed answer.
+  row({ commodity: 'waterpurifiers', station: 'Ariss Dock', system: 'Tir', sellPrice: 150, demand: 4000, distanceLy: 43 }),
+];
+
+test('a run to a named system carries what THAT system pays for', () => {
+  const sources = cheapestSources(VALAC_SELLS, F, NOW);
+  const sinks = bestSinksByCommodity(TIR_BUYS, F, 'Valac', NOW);
+  const legs = legsToDestination(sources, sinks, F, NOW);
+  assert.deepEqual(legs.map((l) => l.commodity), ['cobalt', 'basicmedicines']);
+  assert.equal(legs[0].profitPerTon, 5167);
+  assert.equal(legs[0].profitPerTrip, 2_066_800);
+  assert.equal(legs[0].toSystem, 'Tir');
+  // Water purifiers lose money into Tir, so they are not offered at all.
+  assert.equal(legs.some((l) => l.commodity === 'waterpurifiers'), false);
+});
+
+test('a directed answer never quietly becomes an undirected one', () => {
+  const text = describeTradeFind({
+    legs: legsToDestination(cheapestSources(VALAC_SELLS, F, NOW), bestSinksByCommodity(TIR_BUYS, F, 'Valac', NOW), F, NOW),
+    originKnown: true, destination: 'Tir', destinationKnown: true,
+    checked: 3, candidates: 3, filters: F, origin: 'Valac',
+  });
+  assert.match(text, /Best cargo for the run to Tir/);
+  assert.match(text, /cobalt/);
+  assert.match(text, /Bolden's Enterprise/);
+  // It must not wander off to the best-paying run in some other direction.
+  assert.doesNotMatch(text, /Luchtaine|Neugebauer/);
+});
+
+test('nothing worth carrying there says exactly that, and offers the alternative', () => {
+  const text = describeTradeFind({
+    legs: [], originKnown: true, destination: 'Tir', destinationKnown: true,
+    checked: 3, candidates: 3, filters: F, origin: 'Valac',
+  });
+  assert.match(text, /Nothing on sale around Valac sells for more at Tir/);
+  assert.match(text, /flying there empty/);
+  assert.match(text, /best-paying run in any direction/);
+  // Must not read as "there are no trade routes".
+  assert.doesNotMatch(text, /No profitable run out of/);
+});
+
+test('an unknown destination is named as unknown, not as unprofitable', () => {
+  const text = describeTradeFind({
+    legs: [], originKnown: true, destination: 'Teer', destinationKnown: false,
+    checked: 0, candidates: 0, filters: F, origin: 'Valac',
+  });
+  assert.match(text, /no market data for "Teer"/);
+  assert.doesNotMatch(text, /Nothing on sale/);
+});
+
+test('a directed run reports the real distance, not zero', () => {
+  // Real coordinates: Valac and Tir are ~43 ly apart. The per-system endpoints
+  // send no `distance`, and rendering that as "Tir, 0 ly" reads as "you are
+  // already there".
+  const valac = row({ commodity: 'cobalt', system: 'Valac', buyPrice: 4624, stock: 4000,
+    x: -9532.9, y: -923.4, z: 19799.1 });
+  const tir = row({ commodity: 'cobalt', system: 'Tir', sellPrice: 9791, demand: 5000,
+    distanceLy: null, x: -9553.5, y: -914.8, z: 19837.3 });
+  assert.ok(Math.abs(systemDistanceLy(valac, tir)! - 43.6) < 1);
+  assert.equal(buildLeg(valac, tir, F, NOW)!.distanceLy, 44);
+  // A row that DOES carry a distance keeps it — the nearby endpoints are authoritative.
+  assert.equal(buildLeg(valac, { ...tir, distanceLy: 43 }, F, NOW)!.distanceLy, 43);
+  // No coordinates anywhere: fall back to 0 rather than invent one.
+  assert.equal(systemDistanceLy(row({}), row({})), null);
 });

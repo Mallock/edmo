@@ -55,6 +55,8 @@ import {
 import {
   DEFAULT_FILTERS,
   bestSink,
+  bestSinksByCommodity,
+  legsToDestination,
   describeTradeFind,
   buildLeg,
   cheapestSources,
@@ -113,6 +115,7 @@ import {
   ardentMarket,
   ardentTradeCandidates,
   ardentStationPads,
+  ardentTradeTo,
   galnetHeadlines,
   edastroSystem,
   engineStatus,
@@ -2830,6 +2833,7 @@ export class AppCore {
    */
   private async findTradeRun(opts: {
     origin: string;
+    destination: string;
     maxDistanceLy: number;
     minVolume: number;
     minPad: number;
@@ -2842,21 +2846,39 @@ export class AppCore {
       cargo: opts.cargo,
       maxAgeDays: DEFAULT_FILTERS.maxAgeDays,
     };
-    const raw = await ardentTradeCandidates(origin, opts.maxDistanceLy, opts.minVolume, 8);
     const now = Date.now();
-    const sources = cheapestSources(raw.sources, filters, now);
-    const legs = [...sources.values()].map((src) => {
-      const sink = bestSink(raw.sinks[src.commodity] ?? [], filters, origin, now);
-      return sink ? buildLeg(src, sink, filters, now) : null;
-    });
-    const find: TradeFind = {
-      legs: rankLegs(legs),
-      originKnown: raw.originKnown !== false,
-      checked: raw.checked,
-      candidates: raw.candidates,
-      filters,
-      origin,
-    };
+    let find: TradeFind;
+    if (opts.destination) {
+      // Directed: two requests and an intersection, no probing heuristic.
+      const raw = await ardentTradeTo(origin, opts.destination, opts.minVolume);
+      const sources = cheapestSources(raw.sources, filters, now);
+      const sinks = bestSinksByCommodity(raw.sinks, filters, origin, now);
+      find = {
+        legs: legsToDestination(sources, sinks, filters, now),
+        originKnown: raw.originKnown !== false,
+        destination: opts.destination,
+        destinationKnown: raw.destinationKnown !== false,
+        checked: sinks.size,
+        candidates: sources.size,
+        filters,
+        origin,
+      };
+    } else {
+      const raw = await ardentTradeCandidates(origin, opts.maxDistanceLy, opts.minVolume, 8);
+      const sources = cheapestSources(raw.sources, filters, now);
+      const legs = [...sources.values()].map((src) => {
+        const sink = bestSink(raw.sinks[src.commodity] ?? [], filters, origin, now);
+        return sink ? buildLeg(src, sink, filters, now) : null;
+      });
+      find = {
+        legs: rankLegs(legs),
+        originKnown: raw.originKnown !== false,
+        checked: raw.checked,
+        candidates: raw.candidates,
+        filters,
+        origin,
+      };
+    }
     // Surface it as a card too: the spoken answer scrolls away with the feed,
     // but the destination is something the commander needs on screen while they
     // fly it, and needs to paste into the galaxy map.
@@ -2925,6 +2947,7 @@ export class AppCore {
     try {
       const find = await this.findTradeRun({
         origin: this.sm.location.system,
+        destination: '',
         maxDistanceLy: this.settings.trade.routeMaxHopLy,
         minVolume: DEFAULT_FILTERS.minVolume,
         minPad: shipRequiresLargePad(this.ship.current?.ship) ? 3 : DEFAULT_FILTERS.minPad,

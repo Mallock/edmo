@@ -230,7 +230,7 @@ test('no closed loop falls back to a one-way run rather than dead-ending', async
 
 test('find_trade_run reads a ship name as "here, in this ship"', async () => {
   let sawOrigin = '';
-  const find = async (o: { origin: string }) => {
+  const find = async (o: { origin: string; destination: string }) => {
     sawOrigin = o.origin;
     return { legs: [], originKnown: true, checked: 0, candidates: 0,
       filters: { minPad: 2, minVolume: 1000, cargo: 400, maxAgeDays: 14 }, origin: o.origin };
