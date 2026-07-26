@@ -8,6 +8,9 @@ import {
   DEFAULT_RANGE_M,
   describeBioHaul,
   genusValue,
+  SampleCounter,
+  parseBioSale,
+  describeBioSale,
 } from '../src/engine/exobiorange.ts';
 
 test('genus ranges are read from the localised species name', () => {
@@ -108,4 +111,74 @@ test('codex symbol names resolve — the journal does not always send pretty nam
   // Values resolve through the same normalisation.
   assert.equal(genusValue('$Codex_Ent_Stratum_Genus_Name;')?.max, 19_010_800);
   assert.equal(genusValue('$Codex_Ent_Bacterial_Genus_Name;')?.min, 1_000_000);
+});
+
+test('SampleCounter numbers the real Log/Sample/Sample/Analyse sequence', () => {
+  const c = new SampleCounter();
+  // Exactly the sequence Frontier writes — verified against a live journal.
+  assert.equal(c.note('Tubus Cavas', 'Log'), 1);
+  assert.equal(c.note('Tubus Cavas', 'Sample'), 2);
+  assert.equal(c.note('Tubus Cavas', 'Sample'), 3);
+  assert.equal(c.note('Tubus Cavas', 'Analyse'), null);
+  // The set is banked, so the next Log starts over rather than reading 4.
+  assert.equal(c.note('Tubus Cavas', 'Log'), 1);
+});
+
+test('SampleCounter keeps species apart and never runs past three', () => {
+  const c = new SampleCounter();
+  c.note('Bacterium Aurasus', 'Log');
+  c.note('Tussock Pennata', 'Log');
+  assert.equal(c.note('Bacterium Aurasus', 'Sample'), 2);
+  assert.equal(c.note('Tussock Pennata', 'Sample'), 2);
+  assert.equal(c.progress('Bacterium Aurasus'), 2);
+  // A stray extra Sample (journal replay, a re-read log) must not read "4 of 3".
+  c.note('Tussock Pennata', 'Sample');
+  assert.equal(c.note('Tussock Pennata', 'Sample'), 3);
+  c.reset();
+  assert.equal(c.progress('Tussock Pennata'), 0);
+});
+
+// The real BioData array from a live 75M hand-in — four species, all first logs.
+const REAL_SALE = [
+  { Genus_Localised: 'Bacterium', Species_Localised: 'Bacterium Bullaris', Value: 1_152_500, Bonus: 4_610_000 },
+  { Genus_Localised: 'Tussock', Species_Localised: 'Tussock Propagito', Value: 1_000_000, Bonus: 4_000_000 },
+  { Genus_Localised: 'Bacterium', Species_Localised: 'Bacterium Aurasus', Value: 1_000_000, Bonus: 4_000_000 },
+  { Genus_Localised: 'Tubus', Species_Localised: 'Tubus Cavas', Value: 11_873_200, Bonus: 47_492_800 },
+];
+
+test('parseBioSale sums a hand-in the journal never totals', () => {
+  const sale = parseBioSale(REAL_SALE);
+  assert.ok(sale);
+  assert.equal(sale.total, 75_128_500);
+  assert.equal(sale.base, 15_025_700);
+  assert.equal(sale.bonus, 60_102_800);
+  assert.equal(sale.firstLogs, 4);
+  // Richest first, so the operator leads with what actually paid.
+  assert.equal(sale.species[0], 'Tubus Cavas');
+});
+
+test('parseBioSale handles no-bonus sales and rubbish input', () => {
+  const plain = parseBioSale([
+    { Species_Localised: 'Bacterium Aurasus', Value: 1_000_000, Bonus: 0 },
+    { Species_Localised: 'Bacterium Aurasus', Value: 1_000_000, Bonus: 0 },
+  ]);
+  assert.ok(plain);
+  assert.equal(plain.total, 2_000_000);
+  assert.equal(plain.firstLogs, 0);
+  // The same species from two bodies is still one name.
+  assert.deepEqual(plain.species, ['Bacterium Aurasus']);
+  assert.equal(parseBioSale([]), null);
+  assert.equal(parseBioSale(undefined), null);
+  assert.equal(parseBioSale('nope'), null);
+});
+
+test('describeBioSale leads with the money and credits the first logs', () => {
+  const text = describeBioSale(parseBioSale(REAL_SALE)!);
+  assert.match(text, /75\.1M/);
+  assert.match(text, /Vista Genomics/);
+  assert.match(text, /Tubus Cavas/);
+  assert.match(text, /Every one a first log/);
+  assert.match(text, /60\.1M/);
+  // A payday line is spoken — it must not be a wall of digits.
+  assert.doesNotMatch(text, /75,128,500/);
 });

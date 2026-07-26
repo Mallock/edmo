@@ -6,6 +6,7 @@
  */
 import type { JournalEvent } from './types.ts';
 import { formatCredits } from './operator.ts';
+import { parseBioSale } from './exobiorange.ts';
 
 const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
 const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
@@ -25,8 +26,14 @@ export class SessionStats {
   oreCounts: Record<string, number> = {};
   /** Completed (Analyse-stage) exobiology samples not yet sold. */
   unsoldBio = 0;
+  /** Credits banked at Vista Genomics this session, bonuses included. */
+  bioCredits = 0;
+  /** Species sold this session that carried a first-log bonus. */
+  bioFirstLogs = 0;
   /** Bodies scanned since cartographic data was last sold. */
   unsoldCarto = 0;
+  /** Credits banked for cartographic data this session. */
+  cartoCredits = 0;
   /** Last known ship state (Loadout / HullDamage). */
   rebuy = 0;
   hullHealth = 1;
@@ -67,14 +74,23 @@ export class SessionStats {
       case 'ScanOrganic':
         if (str(ev.ScanType) === 'Analyse') this.unsoldBio += 1;
         break;
-      case 'SellOrganicData':
+      case 'SellOrganicData': {
+        // No TotalEarnings on this event — the payout has to be summed out of
+        // BioData, which is why a bio hand-in used to vanish from the ledger.
+        const sale = parseBioSale(ev.BioData);
+        if (sale) {
+          this.bioCredits += sale.total;
+          this.bioFirstLogs += sale.firstLogs;
+        }
         this.unsoldBio = 0;
         break;
+      }
       case 'Scan':
         if (str(ev.BodyName)) this.unsoldCarto += 1;
         break;
       case 'SellExplorationData':
       case 'MultiSellExplorationData':
+        this.cartoCredits += num(ev.TotalEarnings);
         this.unsoldCarto = 0;
         break;
       case 'Loadout':
@@ -103,11 +119,14 @@ export class SessionStats {
     this.fuelScooped = 0;
     this.refinedOre = 0;
     this.oreCounts = {};
+    this.bioCredits = 0;
+    this.bioFirstLogs = 0;
+    this.cartoCredits = 0;
     // unsoldBio / unsoldCarto deliberately survive: unsold value carries over.
   }
 
   earnedTotal(): number {
-    return this.missionCredits + this.bountyCredits;
+    return this.missionCredits + this.bountyCredits + this.bioCredits + this.cartoCredits;
   }
 
   /** Most-refined ore types this session, e.g. ["12 t Platinum", "4 t Gold"]. */
@@ -132,6 +151,11 @@ export class SessionStats {
       bits.push(`${this.missionsCompleted} mission(s) paid ${formatCredits(this.missionCredits)}`);
     if (this.bountyCount)
       bits.push(`${this.bountyCount} bounties worth ${formatCredits(this.bountyCredits)}`);
+    if (this.bioCredits)
+      bits.push(
+        `Vista Genomics paid ${formatCredits(this.bioCredits)}${this.bioFirstLogs ? ` (${this.bioFirstLogs} first log(s))` : ''}`,
+      );
+    if (this.cartoCredits) bits.push(`cartographic data paid ${formatCredits(this.cartoCredits)}`);
     if (this.crewWages) bits.push(`crew took ${formatCredits(this.crewWages)} in wages`);
     if (this.jumps) bits.push(`${this.jumps} jump(s), ${this.distanceLy.toFixed(1)} ly`);
     if (this.refinedOre) bits.push(`${this.refinedOre} t of ore refined`);

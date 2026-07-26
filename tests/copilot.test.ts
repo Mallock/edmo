@@ -13,7 +13,7 @@ import {
 } from '../src/engine/copilot.ts';
 import { stripFillerTics } from '../src/engine/glance.ts';
 import { parseProspectTarget, matchesProspect } from '../src/engine/mining.ts';
-import { extractPlaces, findFabricatedPlace } from '../src/engine/factcheck.ts';
+import { extractPlaces, findCollectivePronoun, findFabricatedPlace } from '../src/engine/factcheck.ts';
 
 test('copilot system prompt carries the persona and the event-stream contract', () => {
   const sys = buildCopilotSystem("M'allock");
@@ -216,4 +216,22 @@ test('near-duplicate gate catches the same fact re-served in fresh words', () =>
   assert.equal(isNearDuplicate('Bio signals on that moon — Vista pays for those.', spoken), false);
   assert.equal(isNearDuplicate('Pad nine. Big berth for a crowd this size.', spoken), false);
   assert.equal(isNearDuplicate('anything', []), false);
+});
+
+test('the voice fence catches the operator slipping into "we"', () => {
+  // Real slips from a live session — the exact lines that prompted this gate.
+  assert.equal(findCollectivePronoun("Let's get us back to a proper dock soon."), "let's");
+  assert.equal(findCollectivePronoun('Almost there on the samples. Keep us moving.'), 'us');
+  assert.equal(findCollectivePronoun("We're docked at Kirk Dock."), "we're");
+  assert.equal(findCollectivePronoun('That is our best haul yet.'), 'our');
+});
+
+test('the voice fence leaves own-voice beats alone', () => {
+  assert.equal(findCollectivePronoun('You have two more genera down there.'), null);
+  assert.equal(findCollectivePronoun("Pad eight. I'd take it slow."), null);
+  // Words that merely contain the letters must not trip it.
+  assert.equal(findCollectivePronoun('Weather is filthy down there.'), null);
+  assert.equal(findCollectivePronoun('The bus run to Colonia pays well.'), null);
+  assert.equal(findCollectivePronoun('Ourania is three jumps out.'), null);
+  assert.equal(findCollectivePronoun('That outpost is a wreck.'), null);
 });

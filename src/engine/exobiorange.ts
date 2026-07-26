@@ -178,6 +178,50 @@ export function surfaceDistanceM(
   return 2 * radiusM * Math.asin(Math.min(1, Math.sqrt(a)));
 }
 
+/**
+ * Which of the three samples a ScanOrganic event actually is.
+ *
+ * The journal does not number them, and the obvious reading of ScanType is
+ * wrong. For one species the real sequence is:
+ *
+ *   Log → Sample → Sample → Analyse
+ *
+ * The THIRD sample is another "Sample"; "Analyse" is the set completing a few
+ * seconds later, not a fourth scan. So mapping the type straight to a number
+ * can never reach three — it has to be counted per species.
+ */
+export class SampleCounter {
+  private taken = new Map<string, number>();
+
+  /**
+   * Record a scan. Returns 1, 2 or 3 for a sample the commander just took, or
+   * null for the closing Analyse (and for anything unrecognised).
+   */
+  note(species: string, scanType: string): number | null {
+    if (scanType === 'Log') {
+      this.taken.set(species, 1);
+      return 1;
+    }
+    if (scanType === 'Sample') {
+      const n = Math.min(3, (this.taken.get(species) ?? 1) + 1);
+      this.taken.set(species, n);
+      return n;
+    }
+    if (scanType === 'Analyse') this.taken.delete(species);
+    return null;
+  }
+
+  /** How far along this species is, without recording anything. */
+  progress(species: string): number {
+    return this.taken.get(species) ?? 0;
+  }
+
+  /** New body or new session — partial progress no longer applies. */
+  reset(): void {
+    this.taken.clear();
+  }
+}
+
 export interface SampleFix {
   species: string;
   requiredM: number;
@@ -239,4 +283,67 @@ export class SampleRangeTracker {
     }
     return { kind: 'progress', species: this.fix.species, distanceM, requiredM: this.fix.requiredM, remainingM };
   }
+}
+
+export interface BioSale {
+  /** Credits banked, base value plus first-log bonus. */
+  total: number;
+  /** Base value alone — what the samples would pay with no first log. */
+  base: number;
+  /** The first-log bonus portion; four times base for every first-footfall. */
+  bonus: number;
+  /** Species sold, richest first, e.g. "Tubus Cavas". */
+  species: string[];
+  /** How many of them carried a first-log bonus. */
+  firstLogs: number;
+}
+
+/**
+ * Read a SellOrganicData event.
+ *
+ * The journal does NOT give a total here — unlike SellExplorationData there is
+ * no TotalEarnings field, so the payout has to be summed out of BioData. And
+ * the headline "five times" figure a commander sees at the counter is
+ * Value + Bonus, not Value × 5: Bonus is already the extra four parts.
+ */
+export function parseBioSale(bioData: unknown): BioSale | null {
+  if (!Array.isArray(bioData) || !bioData.length) return null;
+  let base = 0;
+  let bonus = 0;
+  let firstLogs = 0;
+  const rows: Array<{ name: string; worth: number }> = [];
+  for (const raw of bioData) {
+    if (!raw || typeof raw !== 'object') continue;
+    const r = raw as Record<string, unknown>;
+    const value = typeof r.Value === 'number' ? r.Value : 0;
+    const b = typeof r.Bonus === 'number' ? r.Bonus : 0;
+    base += value;
+    bonus += b;
+    if (b > 0) firstLogs += 1;
+    const name =
+      (typeof r.Species_Localised === 'string' && r.Species_Localised) ||
+      (typeof r.Genus_Localised === 'string' && r.Genus_Localised) ||
+      'an organism';
+    rows.push({ name, worth: value + b });
+  }
+  if (!rows.length) return null;
+  rows.sort((a, b) => b.worth - a.worth);
+  // The same species can be sold from several bodies; name each one once.
+  const species = [...new Set(rows.map((r) => r.name))];
+  return { total: base + bonus, base, bonus, species, firstLogs };
+}
+
+/** Speakable summary of a Vista Genomics hand-in. */
+export function describeBioSale(s: BioSale): string {
+  const head = `${shortCredits(s.total)} from Vista Genomics`;
+  const what =
+    s.species.length === 1
+      ? ` for the ${s.species[0]}`
+      : ` for ${s.species.length} species — ${s.species.slice(0, 3).join(', ')}${
+          s.species.length > 3 ? ' and more' : ''
+        }`;
+  const first = s.firstLogs
+    ? `. ${s.firstLogs === s.species.length ? 'Every one' : `${s.firstLogs} of them`} a first log, which is ${shortCredits(s.bonus)} of that.`
+    : '.';
+  return `${head}${what}${first}`;
 }

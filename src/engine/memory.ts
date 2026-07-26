@@ -18,6 +18,7 @@
 import type { ChatMessage } from './lmstudio.ts';
 import type { JournalEvent } from './types.ts';
 import { formatCredits } from './operator.ts';
+import { parseBioSale } from './exobiorange.ts';
 
 const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
 const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
@@ -295,6 +296,56 @@ export class CommanderMemory {
         this.dirty = true;
         const recEv = this.bumpRecord('bounty', reward, `Biggest single bounty: ${formatCredits(reward)}`, at, 1000);
         if (recEv) out.push({ kind: 'record', key: `record:bounty:${reward}`, importance: 2, text: `${formatCredits(reward)} on one kill — biggest bounty you've ever collected.` });
+        out.push(...this.checkSessionRecord(at));
+        break;
+      }
+      case 'SellOrganicData': {
+        // Exobiology can out-earn everything else in a session by an order of
+        // magnitude, so it has to count toward the session record — otherwise
+        // "your best session ever" quietly ignores the best session ever.
+        const sale = parseBioSale(ev.BioData);
+        if (!sale) break;
+        this.sessionEarned += sale.total;
+        this.dirty = true;
+        const recEv = this.bumpRecord(
+          'bio',
+          sale.total,
+          `Biggest exobiology hand-in: ${formatCredits(sale.total)}${sale.species[0] ? ` (${sale.species[0]} led it)` : ''}`,
+          at,
+          1000,
+        );
+        if (recEv)
+          out.push({
+            kind: 'record',
+            key: `record:bio:${sale.total}`,
+            importance: 3,
+            text: `${formatCredits(sale.total)} of biology in one hand-in — the most you have ever banked at a Vista counter.`,
+          });
+        out.push(...this.checkSessionRecord(at));
+        break;
+      }
+      case 'SellExplorationData':
+      case 'MultiSellExplorationData': {
+        // Same omission as the bio counter had: the copilot reacted to these
+        // sales but the credits never reached the session record.
+        const earned = num(ev.TotalEarnings);
+        if (!earned) break;
+        this.sessionEarned += earned;
+        this.dirty = true;
+        const recEv = this.bumpRecord(
+          'carto',
+          earned,
+          `Biggest cartographic sale: ${formatCredits(earned)}`,
+          at,
+          1000,
+        );
+        if (recEv)
+          out.push({
+            kind: 'record',
+            key: `record:carto:${earned}`,
+            importance: 2,
+            text: `${formatCredits(earned)} for one batch of survey data — the most you have ever sold at once.`,
+          });
         out.push(...this.checkSessionRecord(at));
         break;
       }

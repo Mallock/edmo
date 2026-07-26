@@ -129,3 +129,31 @@ test('story prompts carry true-event seeds; afterglow works with no missions', (
   assert.match(chat[1].content, /Recent true events/);
   assert.match(chat[1].content, /Ramtop/);
 });
+
+test('the ledger counts what exploration actually earns', () => {
+  const s = new SessionStats();
+  s.apply(ev({ event: 'LoadGame', Credits: 1_000_000 }));
+  // A real four-species hand-in: the journal gives no total, only rows.
+  s.apply(ev({
+    event: 'SellOrganicData',
+    BioData: [
+      { Species_Localised: 'Tubus Cavas', Value: 11_873_200, Bonus: 47_492_800 },
+      { Species_Localised: 'Bacterium Bullaris', Value: 1_152_500, Bonus: 4_610_000 },
+    ],
+  }));
+  s.apply(ev({ event: 'MultiSellExplorationData', TotalEarnings: 3_400_000 }));
+  s.apply(ev({ event: 'MissionCompleted', Reward: 500_000 }));
+  assert.equal(s.bioCredits, 65_128_500);
+  assert.equal(s.bioFirstLogs, 2);
+  assert.equal(s.cartoCredits, 3_400_000);
+  assert.equal(s.earnedTotal(), 69_028_500);
+  const ledger = s.ledgerSummary();
+  assert.match(ledger!, /Vista Genomics paid/);
+  assert.match(ledger!, /2 first log\(s\)/);
+  assert.match(ledger!, /cartographic data paid/);
+  // A new game session zeroes the earnings but leaves unbanked value alone.
+  s.apply(ev({ event: 'ScanOrganic', ScanType: 'Analyse' }));
+  s.apply(ev({ event: 'LoadGame', Credits: 2_000_000 }));
+  assert.equal(s.earnedTotal(), 0);
+  assert.equal(s.unsoldBio, 1);
+});

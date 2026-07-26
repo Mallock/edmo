@@ -132,6 +132,21 @@ export class BioTracker {
     }
   }
 
+  /**
+   * Genera the DSS found on this body that the commander has not completed.
+   * Empty when the body is fully collected, unknown, or was never mapped —
+   * "nothing left" and "we never looked" are both silence here, so callers
+   * must not read an empty list as proof the rock is finished.
+   */
+  uncollectedOn(systemAddress: unknown, bodyId: unknown): string[] {
+    const addr = num(systemAddress);
+    const id = num(bodyId);
+    if (addr == null || id == null) return [];
+    const b = this.bodies.get(`${addr}|${id}`);
+    if (!b) return [];
+    return b.genuses.filter((g) => !b.sampled.includes(g));
+  }
+
   private trim(): void {
     if (this.bodies.size <= MAX_BODIES) return;
     const oldest = [...this.bodies.values()].sort(

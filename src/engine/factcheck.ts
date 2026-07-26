@@ -38,3 +38,27 @@ export function findFabricatedPlace(beat: string, allowed: Iterable<string>): st
   }
   return null;
 }
+
+/**
+ * Collective pronouns — the copilot's oldest bad habit.
+ *
+ * "We're docked", "let's get moving", "keep us moving" turn a person on the
+ * other end of the channel into a disembodied narrator of shared state. The
+ * operator watches and advises; the commander flies. The prompt bans this, but
+ * a small local model backslides under pressure, so gate it mechanically too.
+ *
+ * Deliberately NOT matched: "we" inside quoted speech from someone else, and
+ * possessives about a third party ("their haul"). Only the operator claiming to
+ * share the cockpit is wrong.
+ */
+const COLLECTIVE =
+  // Contractions must carry the apostrophe: an optional one makes "we'?ll"
+  // match "well" and "we'?d" match "wed", which drops perfectly good beats.
+  // Longest alternatives first so "we're" is reported whole, not as "we".
+  /(?:^|[^\p{L}])(we['’](?:re|ve|ll|d|s)|let['’]s|ourselves|ours|our|we|us)(?![\p{L}'’])/iu;
+
+/** The offending pronoun, or null when the beat speaks in its own voice. */
+export function findCollectivePronoun(beat: string): string | null {
+  const m = COLLECTIVE.exec(beat);
+  return m ? m[1].toLowerCase() : null;
+}

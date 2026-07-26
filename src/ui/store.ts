@@ -39,8 +39,14 @@ import { ShipTracker, describeShip, shipRequiresLargePad } from '../engine/ship.
 import { MaterialsTracker } from '../engine/materials.ts';
 import { ExploreTracker, classifyBody, type ExploreLead } from '../engine/explore.ts';
 import { parseProspectTarget, matchesProspect, type ProspectTarget } from '../engine/mining.ts';
-import { SampleRangeTracker, describeBioHaul } from '../engine/exobiorange.ts';
-import { extractPlaces, findFabricatedPlace } from '../engine/factcheck.ts';
+import {
+  SampleRangeTracker,
+  SampleCounter,
+  describeBioHaul,
+  describeBioSale,
+  parseBioSale,
+} from '../engine/exobiorange.ts';
+import { extractPlaces, findCollectivePronoun, findFabricatedPlace } from '../engine/factcheck.ts';
 import { parseSpanshRoute, routeSummary, type TradeRoute } from '../engine/spansh.ts';
 import {
   CommanderMemory,
@@ -375,6 +381,7 @@ export class AppCore {
   private lastStateTally = '';
   /** "Move 500 m before the next sample" — Odyssey's clonal colony radius. */
   private sampleRange = new SampleRangeTracker();
+  private sampleCount = new SampleCounter();
   // --- the copilot's read on how the run is GOING (state, not events) ---
   /** When live play started — fatigue is a long shift, not a long app uptime. */
   private sessionStartAt = 0;
@@ -1256,8 +1263,19 @@ export class AppCore {
         // Odyssey needs three samples of a species, each taken outside the
         // previous one's clonal colony radius. Missing that distance rejects the
         // sample, so call the number the moment the sample lands.
-        if (ev.ScanType === 'Log' || ev.ScanType === 'Sample') {
-          const taken = ev.ScanType === 'Log' ? 1 : 2;
+        const taken = this.sampleCount.note(species, String(ev.ScanType));
+        if (taken != null) {
+          // The third sample needs no walk — the analysis follows on its own a
+          // few seconds later. Telling the commander to hike another 800 m here
+          // is the one thing worse than saying nothing.
+          if (taken >= 3) {
+            this.sampleRange.clear();
+            const text = `Sample 3 of 3 — ${species}. That's the set.`;
+            this.pushFeed('system', `🧬 ${text}`);
+            this.speak(text);
+            this.copilotEvent(`EVENT: Took the third and last ${species} sample; the set is complete.`);
+            break;
+          }
           if (st?.latitude != null && st.longitude != null && st.planetRadius) {
             const fix = this.sampleRange.sample(species, st.latitude, st.longitude, st.planetRadius, taken);
             const text = `Sample ${taken} of 3 — ${species}. Move at least ${fix.requiredM} m before the next one.`;
@@ -1268,10 +1286,37 @@ export class AppCore {
           break;
         }
         if (ev.ScanType !== 'Analyse') break;
-        // Third sample done — the species is complete, stop ranging.
+        // Set banked. Say what is still uncollected on this rock, or the
+        // copilot will cheerfully suggest leaving with two genera still down
+        // there.
         this.sampleRange.clear();
-        this.copilotEvent(`EVENT: Completed the ${species} sample set — three of three.`);
+        const left = this.bioTracker.uncollectedOn(ev.SystemAddress, ev.Body);
+        this.copilotEvent(
+          `EVENT: Completed the ${species} sample set — three of three.` +
+            (left.length
+              ? ` Still uncollected on this body: ${left.join(', ')}.`
+              : ' That is every species on this body.'),
+        );
         this.copilotReact('discovery', 'copilot — reacting to a completed sample set…');
+        break;
+      }
+      case 'SellOrganicData': {
+        // The payday the whole exobiology loop exists for. It used to pass in
+        // total silence: this event carries no TotalEarnings, so nothing in the
+        // app had a number to react to.
+        const sale = parseBioSale(ev.BioData);
+        if (!sale) break;
+        const text = describeBioSale(sale);
+        this.pushFeed('system', `🧬 ${text}`);
+        this.speak(text);
+        this.copilotEvent(
+          `EVENT: Sold biology at Vista Genomics for ${Math.round(sale.total).toLocaleString('en-US')} cr` +
+            ` — ${sale.species.join(', ')}` +
+            (sale.firstLogs
+              ? `; ${sale.firstLogs} first log(s), worth ${Math.round(sale.bonus).toLocaleString('en-US')} cr of the total.`
+              : '.'),
+        );
+        this.copilotReact('mission', 'copilot — reacting to a bio payday…');
         break;
       }
       case 'MultiSellExplorationData':
@@ -2050,6 +2095,11 @@ export class AppCore {
     if (Date.now() - this.lastGameActivity >= GAME_LIVE_WINDOW_MS) return;
     if (Date.now() - this.lastGlanceAt < this.settings.vision.intervalMin * 60_000) return;
     if (Date.now() - this.lastCombatAt < 2 * 60_000) return;
+    // Same rule as the idle beat: mid-walk between samples, the one line that
+    // matters is the tracker's "far enough". A glance here lands on a commander
+    // trudging across rock and reliably produces a paraphrase of the distance
+    // call, one second before the real one.
+    if (this.sampleRange.active()) return;
     void this.glance(false);
   }
 
@@ -2398,6 +2448,11 @@ export class AppCore {
     if (!this.lmOk || this.lmBusy || this.glanceInFlight) return;
     if (Date.now() - this.lastGameActivity >= GAME_LIVE_WINDOW_MS) return;
     if (Date.now() - this.lastCombatAt < 60_000) return;
+    // Mid-walk between samples the commander is listening for one specific
+    // call — "far enough". An ambient beat here either talks over it or, worse,
+    // paraphrases it ("almost there on the samples"), which reads as the
+    // distance call and is not one. The tracker owns this stretch.
+    if (this.sampleRange.active()) return;
     // Only once the session has something to be about, and only after a genuine
     // stretch of quiet (measured from the last beat OR any spoken line).
     if (!this.copilot?.hasHistory()) return;
@@ -3326,6 +3381,24 @@ export class AppCore {
         // when nothing new has happened. Dropping is better than repeating.
         if (isNearDuplicate(groundedText, this.recentStories)) {
           this.noteGlance('dropped a beat — too close to one just spoken');
+          this.copilot?.recordSilent();
+          this.feed = this.feed.filter((e) => e !== entry);
+          this.emit();
+          return;
+        }
+        // Voice fence: "we/us/our" is the model slipping out of its own skin and
+        // into play-by-play. Same treatment as an invented place — one resample,
+        // then silence.
+        const collective = findCollectivePronoun(groundedText);
+        if (collective && !this.copilotRetried && this.copilotRetryMsgs) {
+          this.copilotRetried = true;
+          this.copilotBeatInFlight = true;
+          this.noteGlance(`resampling — said "${collective}" instead of speaking for itself`);
+          this.startLlm(entry, 'commentary', this.copilotRetryMsgs, 0.85, 1800, undefined, { presence: 0.7, frequency: 0.5 });
+          return;
+        }
+        if (collective) {
+          this.noteGlance(`dropped a beat — collective "${collective}"`);
           this.copilot?.recordSilent();
           this.feed = this.feed.filter((e) => e !== entry);
           this.emit();
