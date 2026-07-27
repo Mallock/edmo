@@ -259,6 +259,11 @@ export async function engineAlive(): Promise<boolean> {
   return invoke<boolean>('engine_alive');
 }
 
+/** Tail of the engine's own log — what it said before it died. */
+export async function engineLog(): Promise<string> {
+  return invoke<string>('engine_log');
+}
+
 export function onEngineProgress(cb: Cb<EngineProgress>): Promise<UnlistenFn> {
   return sub('engine-progress', cb);
 }

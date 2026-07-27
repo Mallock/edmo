@@ -1,7 +1,7 @@
 /** ConvoBuffer — dialogue memory — and whisper transcript cleaning. */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ConvoBuffer, cleanTranscript } from '../src/engine/convo.ts';
+import { ConvoBuffer, cleanTranscript, toolExchangeOf } from '../src/engine/convo.ts';
 
 const M = 60_000;
 
@@ -70,4 +70,53 @@ test('cleanTranscript strips whisper noise annotations', () => {
   assert.equal(cleanTranscript(' [BLANK_AUDIO] '), '');
   assert.equal(cleanTranscript('(wind blowing) Where should I hunt? [MUSIC]'), 'Where should I hunt?');
   assert.equal(cleanTranscript('  Operator,   status  report. '), 'Operator, status report.');
+});
+
+test('the retained tool exchange cannot grow question after question', () => {
+  // The bug this guards: a run's message list already carries the PREVIOUS
+  // question's exchange, so harvesting all of it added a pair per question for
+  // as long as the app stayed open.
+  const call = (n: number) => ({
+    role: 'assistant' as const,
+    content: '',
+    tool_calls: [{ id: `c${n}`, type: 'function' as const, function: { name: 'get_ship', arguments: '{}' } }],
+  });
+  const result = (n: number) => ({ role: 'tool' as const, tool_call_id: `c${n}`, content: `result ${n}` });
+
+  let carried = toolExchangeOf([]);
+  for (let q = 1; q <= 8; q++) {
+    // Each question re-sends what was carried in, then adds its own pair.
+    carried = toolExchangeOf([
+      { role: 'system', content: 'sys' },
+      ...carried,
+      { role: 'user', content: `question ${q}` },
+      call(q),
+      result(q),
+    ]);
+    assert.ok(carried.length <= 4, `after ${q} questions it held ${carried.length} messages`);
+  }
+  // What survives is the most RECENT work, not the oldest.
+  assert.match(carried.map((m) => m.content).join(' '), /result 8/);
+  assert.doesNotMatch(carried.map((m) => m.content).join(' '), /result 1\b/);
+});
+
+test('an assistant tool call keeps its results directly behind it', () => {
+  // The chat format rejects a tool message that does not follow its call.
+  const msgs = [
+    { role: 'user' as const, content: 'q' },
+    { role: 'assistant' as const, content: '', tool_calls: [{ id: 'c1', type: 'function' as const, function: { name: 'get_ship', arguments: '{}' } }] },
+    { role: 'tool' as const, tool_call_id: 'c1', content: 'a' },
+    { role: 'assistant' as const, content: 'prose that should not survive' },
+  ];
+  const out = toolExchangeOf(msgs);
+  assert.deepEqual(out.map((m) => m.role), ['assistant', 'tool']);
+  assert.equal(out[0].tool_calls?.[0].id, 'c1');
+});
+
+test('an oversized tool result is truncated, not carried whole', () => {
+  const out = toolExchangeOf([
+    { role: 'assistant', content: '', tool_calls: [{ id: 'c1', type: 'function', function: { name: 'x', arguments: '{}' } }] },
+    { role: 'tool', tool_call_id: 'c1', content: 'x'.repeat(50_000) },
+  ]);
+  assert.ok(out[1].content.length < 2000, `kept ${out[1].content.length} chars`);
 });

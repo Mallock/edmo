@@ -148,6 +148,24 @@ fn models_dir(app: &AppHandle) -> Result<PathBuf, String> {
 /// Where we remember the engine's PID, so a crashed or force-killed app can
 /// still clean up its orphan on the next launch (the graceful exits handle
 /// themselves; Task Manager and hard crashes do not).
+/// Where the engine's stdout/stderr is kept, for diagnosing a crash after it.
+fn engine_log_path(app: &AppHandle) -> PathBuf {
+    engine_root(app)
+        .map(|d| d.join("engine.log"))
+        .unwrap_or_else(|_| PathBuf::from("engine.log"))
+}
+
+/// The tail of the engine log — what it said before it died.
+#[tauri::command]
+pub fn engine_log(app: AppHandle) -> String {
+    let Ok(text) = fs::read_to_string(engine_log_path(&app)) else {
+        return String::new();
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    lines[lines.len().saturating_sub(40)..].join("
+")
+}
+
 fn pid_file(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(engine_root(app)?.join("engine.pid"))
 }
@@ -848,9 +866,21 @@ pub async fn engine_start(
         .arg("--parallel")
         .arg("1")
         .arg("-ngl")
-        .arg(gpu_layers.unwrap_or(99).to_string())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .arg(gpu_layers.unwrap_or(99).to_string());
+    // Keep the engine's own log. It was going to /dev/null, so when the server
+    // died mid-session the only record anywhere was a Windows crash bucket —
+    // 0xC00000FD, a stack overflow inside llama.cpp, which no amount of staring
+    // at our own code would have revealed. Truncated each start so it stays
+    // small and always describes the run that is actually going.
+    match fs::File::create(engine_log_path(&app)) {
+        Ok(f) => {
+            let err = f.try_clone().unwrap_or_else(|_| f.try_clone().expect("dup"));
+            cmd.stdout(Stdio::from(f)).stderr(Stdio::from(err));
+        }
+        Err(_) => {
+            cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        }
+    }
     // Spike finding #1: scrub ambient llama/OpenAI env so the server cannot
     // pick up a foreign API key or CLI defaults and reject our own calls.
     for var in [

@@ -120,6 +120,7 @@ import {
   ardentTradeCandidates,
   ardentStationPads,
   ardentTradeTo,
+  engineLog,
   galnetHeadlines,
   edastroSystem,
   engineStatus,
@@ -3161,6 +3162,14 @@ export class AppCore {
       if (!alive) {
         this.engine = { ...this.engine, running: false, port: null, api_key: null };
         this.pushFeed('system', 'The local AI engine stopped — restart it in Settings, or switch to LM Studio.');
+        // Say WHY, if it left a reason. Without this the only record of the
+        // last crash was a Windows fault bucket.
+        const why = await engineLog().catch(() => '');
+        const fatal = why
+          .split('\n')
+          .filter((l: string) => /error|failed|out of memory|oom|assert|abort|exception/i.test(l))
+          .slice(-2);
+        if (fatal.length) this.pushFeed('system', `Engine log: ${fatal.join(' | ').slice(0, 300)}`);
       }
     }
     const { endpoint, apiKey } = this.lmTarget();

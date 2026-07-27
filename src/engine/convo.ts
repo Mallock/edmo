@@ -79,6 +79,9 @@ export function cleanTranscript(raw: string): string {
 /** Cap on one retained tool result — enough for a market list, not a dump. */
 const MAX_TOOL_RESULT_CHARS = 1200;
 
+/** How many call/result pairs survive into the next question. */
+const MAX_TOOL_PAIRS = 2;
+
 /**
  * Pull the tool calls and their results out of a finished agentic run, so the
  * next question can be a follow-up about the figures.
@@ -86,10 +89,23 @@ const MAX_TOOL_RESULT_CHARS = 1200;
  * Only the assistant turns that CALLED tools and the results themselves are
  * kept — the intermediate prose is noise once the final answer exists. Results
  * are truncated: a follow-up needs the numbers, not every row.
+ *
+ * CRITICAL: the run's message list already contains whatever was carried in
+ * from the PREVIOUS question, so harvesting all of it compounds — one extra
+ * pair per question, for as long as the app stays open, until the prompt is
+ * enormous. Only the trailing pairs are kept, and the assistant turn that made
+ * each call stays immediately ahead of its results, which the chat format
+ * requires.
  */
 export function toolExchangeOf(messages: readonly ChatMessage[]): ChatMessage[] {
+  const callIdx: number[] = [];
+  messages.forEach((m, i) => {
+    if (m.role === 'assistant' && m.tool_calls?.length) callIdx.push(i);
+  });
+  if (!callIdx.length) return [];
+  const from = callIdx[Math.max(0, callIdx.length - MAX_TOOL_PAIRS)];
   const out: ChatMessage[] = [];
-  for (const m of messages) {
+  for (const m of messages.slice(from)) {
     if (m.role === 'tool') {
       out.push({ ...m, content: m.content.slice(0, MAX_TOOL_RESULT_CHARS) });
     } else if (m.role === 'assistant' && m.tool_calls?.length) {

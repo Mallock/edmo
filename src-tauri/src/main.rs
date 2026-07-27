@@ -2153,7 +2153,8 @@ fn main() {
             engine::engine_cancel_download,
             engine::engine_start,
             engine::engine_stop,
-            engine::engine_alive
+            engine::engine_alive,
+            engine::engine_log
         ])
         .setup(move |app| {
             // A previous run that was force-killed (Task Manager, crash) cannot
