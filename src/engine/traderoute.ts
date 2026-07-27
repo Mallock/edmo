@@ -408,3 +408,77 @@ export function autoRouteBlocked(state: {
   }
   return null;
 }
+
+/** A market the commander personally docked at — first-hand, and complete. */
+export interface OwnObservation {
+  station: string;
+  system: string;
+  /** ISO timestamp of the snapshot. */
+  at: string;
+  /** Only commodities actually buyable or sellable there when we looked. */
+  items: ReadonlyArray<{ name: string; buy: number; sell: number; stock: number; demand: number }>;
+}
+
+/** "Basic Medicines" and "basicmedicines" are the same thing. */
+const key = (v: string): string => v.toLowerCase().replace(/[^a-z0-9]+/g, '');
+
+/**
+ * Correct community data with what the commander saw themselves.
+ *
+ * EDDN rows can be days old, and the operator sent someone thirty light years
+ * for bauxite that was not on the board when they arrived. A market we have
+ * docked at is better evidence than a stranger's report from last week, in two
+ * directions:
+ *
+ *  - Prices and volumes we recorded REPLACE the community ones for that
+ *    station, when our visit is the more recent of the two.
+ *  - A commodity ABSENT from our snapshot vetoes the community row entirely.
+ *    Snapshots keep every commodity that was buyable or sellable, so absence
+ *    means we looked and it was not for sale — not that we failed to record it.
+ *
+ * Metadata the snapshot lacks (pad size, coordinates, distance) is kept from
+ * the community row, which is where it comes from.
+ */
+export function applyOwnObservations(
+  rows: readonly MarketRow[],
+  own: readonly OwnObservation[],
+): MarketRow[] {
+  if (!own.length) return rows.slice();
+  // Newest visit per station wins, and index its goods for absence checks.
+  const visits = new Map<string, { at: number; goods: Map<string, OwnObservation['items'][number]> }>();
+  for (const o of own) {
+    const id = `${key(o.system)}|${key(o.station)}`;
+    const at = Date.parse(o.at);
+    if (!Number.isFinite(at)) continue;
+    const prev = visits.get(id);
+    if (prev && prev.at >= at) continue;
+    visits.set(id, { at, goods: new Map(o.items.map((i) => [key(i.name), i])) });
+  }
+
+  const out: MarketRow[] = [];
+  for (const r of rows) {
+    const visit = visits.get(`${key(r.system)}|${key(r.station)}`);
+    if (!visit) {
+      out.push(r);
+      continue;
+    }
+    const theirs = Date.parse(r.updatedAt ?? '');
+    // Only override when OUR look is the fresher one; a community report from
+    // this morning beats our visit from last week.
+    if (Number.isFinite(theirs) && theirs > visit.at) {
+      out.push(r);
+      continue;
+    }
+    const seen = visit.goods.get(key(r.commodity));
+    if (!seen) continue; // we were there, it was not on the board
+    out.push({
+      ...r,
+      buyPrice: seen.buy || null,
+      sellPrice: seen.sell || null,
+      stock: seen.stock,
+      demand: seen.demand,
+      updatedAt: new Date(visit.at).toISOString(),
+    });
+  }
+  return out;
+}

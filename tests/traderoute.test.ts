@@ -17,6 +17,7 @@ import {
   legsToDestination,
   systemDistanceLy,
   autoRouteBlocked,
+  applyOwnObservations,
 } from '../src/engine/traderoute.ts';
 
 const NOW = Date.parse('2026-07-26T16:00:00Z');
@@ -320,4 +321,64 @@ test('missions in hand mean they did not dock here looking for cargo', () => {
 
 test('a clear board lets the automatic search run', () => {
   assert.equal(autoRouteBlocked({ hasRunCard: false, hasRouteCard: false, activeMissions: 0 }), null);
+});
+
+// A community row claiming bauxite at Webster, eight days old — the one that
+// sent the commander thirty light years to an empty board.
+const STALE_BAUXITE = row({
+  commodity: 'bauxite', station: 'Webster Excavation Complex', system: 'Tir',
+  buyPrice: 629, stock: 2000, updatedAt: '2026-07-18T12:00:00Z',
+});
+
+test('a market we have docked at vetoes a stale claim about it', () => {
+  // We were at Webster yesterday and bauxite was not on the board. Snapshots
+  // keep everything buyable or sellable, so absence is evidence.
+  const visited = [{
+    station: 'Webster Excavation Complex', system: 'Tir', at: '2026-07-25T12:00:00Z',
+    items: [{ name: 'Cobalt', buy: 2418, sell: 0, stock: 594, demand: 0 }],
+  }];
+  assert.deepEqual(applyOwnObservations([STALE_BAUXITE], visited), []);
+});
+
+test('our own prices replace the community ones for that station', () => {
+  const visited = [{
+    station: 'Webster Excavation Complex', system: 'Tir', at: '2026-07-25T12:00:00Z',
+    // Localised name vs the community key — "Basic Medicines" is basicmedicines.
+    items: [{ name: 'Bauxite', buy: 812, sell: 0, stock: 140, demand: 0 }],
+  }];
+  const [merged] = applyOwnObservations([STALE_BAUXITE], visited);
+  assert.equal(merged.buyPrice, 812);
+  assert.equal(merged.stock, 140);
+  // Metadata the snapshot cannot know is kept from the community row.
+  assert.equal(merged.pad, 3);
+  assert.equal(merged.system, 'Tir');
+});
+
+test('a community report NEWER than our visit is left alone', () => {
+  const visited = [{
+    station: 'Webster Excavation Complex', system: 'Tir', at: '2026-07-01T12:00:00Z',
+    items: [{ name: 'Cobalt', buy: 2418, sell: 0, stock: 594, demand: 0 }],
+  }];
+  // Ours is three weeks old; theirs is more recent, so it stands.
+  const out = applyOwnObservations([STALE_BAUXITE], visited);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].buyPrice, 629);
+});
+
+test('stations we have never visited pass through untouched', () => {
+  const visited = [{
+    station: 'Somewhere Else', system: 'Tir', at: '2026-07-25T12:00:00Z', items: [],
+  }];
+  assert.deepEqual(applyOwnObservations([STALE_BAUXITE], visited), [STALE_BAUXITE]);
+  assert.deepEqual(applyOwnObservations([STALE_BAUXITE], []), [STALE_BAUXITE]);
+});
+
+test('the newest of several visits to one station is the one that counts', () => {
+  const visited = [
+    { station: 'Webster Excavation Complex', system: 'Tir', at: '2026-07-20T12:00:00Z',
+      items: [{ name: 'Bauxite', buy: 700, sell: 0, stock: 9000, demand: 0 }] },
+    { station: 'Webster Excavation Complex', system: 'Tir', at: '2026-07-25T12:00:00Z',
+      items: [{ name: 'Bauxite', buy: 812, sell: 0, stock: 140, demand: 0 }] },
+  ];
+  assert.equal(applyOwnObservations([STALE_BAUXITE], visited)[0].stock, 140);
 });

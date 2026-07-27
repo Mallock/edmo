@@ -55,6 +55,7 @@ import {
 } from '../engine/factcheck.ts';
 import {
   DEFAULT_FILTERS,
+  applyOwnObservations,
   autoRouteBlocked,
   bestSink,
   bestSinksByCommodity,
@@ -2414,7 +2415,11 @@ export class AppCore {
     const tally =
       s.missionsCompleted || s.earnedTotal() > 0 || s.refinedOre > 0
         ? `${s.missionsCompleted} job(s) done, ${money(s.earnedTotal())} cr banked` +
-          `${s.refinedOre ? `, ${s.refinedOre} t refined` : ''}, ${s.jumps} jump(s)`
+          // "Refined this session" is a lifetime-of-session counter, NOT what is
+          // in the hold — and read as cargo it produced "a solid spot to turn
+          // that 206 tonnes into credits" to a commander who had already moved
+          // the lot to their carrier. State the hold alongside it.
+          `${s.refinedOre ? `, ${s.refinedOre} t refined this session (hold right now: ${this.ship.liveCargo ?? 0} t)` : ''}, ${s.jumps} jump(s)`
         : '';
     if (tally && tally !== this.lastStateTally) {
       this.lastStateTally = tally;
@@ -2901,12 +2906,20 @@ export class AppCore {
       maxAgeDays: DEFAULT_FILTERS.maxAgeDays,
     };
     const now = Date.now();
+    // Everything we have seen with our own eyes, which outranks a community
+    // report of the same station whenever our visit is the newer one.
+    const seen = this.marketMemory.all().map((m) => ({
+      station: m.station,
+      system: m.system,
+      at: m.at,
+      items: m.items,
+    }));
     let find: TradeFind;
     if (opts.destination) {
       // Directed: two requests and an intersection, no probing heuristic.
       const raw = await ardentTradeTo(origin, opts.destination, opts.minVolume);
-      const sources = cheapestSources(raw.sources, filters, now);
-      const sinks = bestSinksByCommodity(raw.sinks, filters, origin, now);
+      const sources = cheapestSources(applyOwnObservations(raw.sources, seen), filters, now);
+      const sinks = bestSinksByCommodity(applyOwnObservations(raw.sinks, seen), filters, origin, now);
       find = {
         legs: legsToDestination(sources, sinks, filters, now),
         originKnown: raw.originKnown !== false,
@@ -2919,9 +2932,9 @@ export class AppCore {
       };
     } else {
       const raw = await ardentTradeCandidates(origin, opts.maxDistanceLy, opts.minVolume, 8);
-      const sources = cheapestSources(raw.sources, filters, now);
+      const sources = cheapestSources(applyOwnObservations(raw.sources, seen), filters, now);
       const legs = [...sources.values()].map((src) => {
-        const sink = bestSink(raw.sinks[src.commodity] ?? [], filters, origin, now);
+        const sink = bestSink(applyOwnObservations(raw.sinks[src.commodity] ?? [], seen), filters, origin, now);
         return sink ? buildLeg(src, sink, filters, now) : null;
       });
       find = {
