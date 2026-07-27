@@ -964,3 +964,80 @@ body {
 .explore-value {
   color: var(--green);
 }
+
+/* ---------------------------------------------- ship readout (no-mission) */
+.ship-panel {
+  text-align: left;
+  padding: 2px 2px 4px;
+}
+
+.sp-title {
+  color: var(--amber);
+  font-size: 0.95em;
+  padding-bottom: 6px;
+}
+
+.sp-gauge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+  font-size: 0.9em;
+}
+
+.sp-label {
+  color: var(--dim);
+  flex: none;
+  letter-spacing: 0.08em;
+  width: 46px;
+}
+
+.sp-bar {
+  flex: 1;
+  height: 8px;
+  min-width: 40px;
+  background: rgba(122, 138, 160, 0.18);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.sp-bar i {
+  display: block;
+  height: 100%;
+  background: var(--amber);
+}
+
+.sp-gauge.warn .sp-bar i {
+  background: #e06060;
+}
+
+.sp-val {
+  flex: none;
+  color: var(--text);
+  font-size: 0.92em;
+}
+
+.sp-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  padding-top: 6px;
+  font-size: 0.86em;
+  color: var(--dim);
+}
+
+.sp-facts b {
+  color: var(--dim);
+  font-weight: 500;
+  letter-spacing: 0.08em;
+}
+
+.sp-facts .mono {
+  color: var(--text);
+}
+
+.sp-risk {
+  padding-top: 6px;
+  font-size: 0.86em;
+  color: #e0a860;
+}

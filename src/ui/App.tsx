@@ -7,6 +7,7 @@ import { Feed } from './Feed.tsx';
 import { SettingsPanel } from './SettingsPanel.tsx';
 import { categoryColor, countdown } from './util.ts';
 import type { HudShipStatus } from './store.ts';
+import type { ShipPanel } from '../engine/shippanel.ts';
 
 /** Compact live ship telemetry: fuel gauge + hazard chips (from Status.json). */
 function ShipStatusStrip({ status }: { status: HudShipStatus }) {
@@ -35,6 +36,35 @@ function ShipStatusStrip({ status }: { status: HudShipStatus }) {
         </span>
       ))}
       {status.onFoot && <span className="status-chip info">ON FOOT</span>}
+    </div>
+  );
+}
+
+/** The ship readout that fills the space when no mission is selected. */
+function ShipPanelCard({ panel }: { panel: ShipPanel }) {
+  return (
+    <div className="ship-panel">
+      <div className="sp-title mono">{panel.title}</div>
+      {panel.gauges.map((g) => (
+        <div className={g.warn ? 'sp-gauge warn' : 'sp-gauge'} key={g.label}>
+          <span className="sp-label">{g.label}</span>
+          <span className="sp-bar">
+            {g.fraction != null && <i style={{ width: `${Math.round(g.fraction * 100)}%` }} />}
+          </span>
+          <span className="sp-val mono">{g.text}</span>
+        </div>
+      ))}
+      {panel.facts.length > 0 && (
+        <div className="sp-facts">
+          {panel.facts.map((f) => (
+            <span key={f.label}>
+              <b>{f.label}</b> <span className="mono">{f.value}</span>
+            </span>
+          ))}
+        </div>
+      )}
+      {panel.atRisk && <div className="sp-risk">⚠ {panel.atRisk}</div>}
+      {panel.hint && <div className="empty-hint">{panel.hint}</div>}
     </div>
   );
 }
@@ -167,21 +197,12 @@ export function App() {
               )}
               {snap.journal.ok ? (
                 <>
-                  <div>No active missions — accept one in-game and it appears here.</div>
-                  <div className="empty-actions">
-                    Meanwhile:
-                    <button onClick={() => void core.fetchRoute(true)} disabled={snap.routeBusy}>
-                      🔄 {snap.routeBusy ? 'searching…' : 'trade route'}
-                    </button>
-                    <button onClick={() => core.tellStory()} disabled={snap.lm.busy}>
-                      📖 story
-                    </button>
-                    <button onClick={() => core.tellSaga()} disabled={snap.lm.busy}>
-                      📜 today's episode
-                    </button>
-                  </div>
+                  {/* The trade-route / story / episode buttons that used to
+                      live here are all in the chat bar below, so this was a
+                      large panel of nothing. Show the ship instead. */}
+                  <ShipPanelCard panel={snap.shipPanel} />
                   <div className="empty-hint">
-                    <span className="mono">Ctrl+Shift+H</span> asks the operator, any time
+                    No active missions · <span className="mono">Ctrl+Shift+H</span> asks the operator
                   </div>
                 </>
               ) : (

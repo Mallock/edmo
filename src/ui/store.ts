@@ -38,6 +38,7 @@ import { StatusTracker, isBusyFocus, isScoopableStar, type StatusAlert } from '.
 import { ShipTracker, describeShip, shipRequiresLargePad } from '../engine/ship.ts';
 import { MaterialsTracker } from '../engine/materials.ts';
 import { CarrierTracker } from '../engine/carrier.ts';
+import { buildShipPanel, type ShipPanel } from '../engine/shippanel.ts';
 import { ExploreTracker, classifyBody, type ExploreLead } from '../engine/explore.ts';
 import { parseProspectTarget, matchesProspect, type ProspectTarget } from '../engine/mining.ts';
 import {
@@ -245,6 +246,7 @@ export interface AppSnapshot {
   exploreLead: ExploreLead | null;
   route: TradeRoute | null;
   tradeRun: TradeFind | null;
+  shipPanel: ShipPanel;
   routeBusy: boolean;
   routeIdx: number;
   piperOk: boolean;
@@ -675,6 +677,7 @@ export class AppCore {
       exploreLead: this.explore.leads()[0] ?? null,
       route: this.route,
       tradeRun: this.tradeRun,
+      shipPanel: this.shipPanel(),
       routeBusy: this.routeBusy,
       routeIdx: this.routeIdx,
       piperOk: this.piperOk,
@@ -1799,6 +1802,35 @@ export class AppCore {
   }
 
   /** Query Spansh (opt-in) for a profitable route from the current station. */
+  /** The at-a-glance readout shown where the duplicate buttons used to be. */
+  private shipPanel(): ShipPanel {
+    const st = this.statusTracker.current;
+    return buildShipPanel({
+      ship: this.ship.current,
+      liveCargo: this.ship.liveCargo ?? null,
+      fuelPct: st?.fuelPct ?? null,
+      hullHealth: this.stats.hullHealth,
+      unsoldBio: this.stats.unsoldBio,
+      unsoldCartoValue: this.explore.unsoldValue(),
+      carrier: this.carrierLine(),
+      session: {
+        jumps: this.stats.jumps,
+        distanceLy: this.stats.distanceLy,
+        earned: this.stats.earnedTotal(),
+      },
+    });
+  }
+
+  /** "V6W-TTJ · Tir" when they own a carrier, else null. */
+  private carrierLine(): string | null {
+    const line = this.carrier.contextLine();
+    if (!line) return null;
+    const call = /fleet carrier (\S+)/.exec(line)?.[1] ?? null;
+    const where = /parked in ([^.]+)/.exec(line)?.[1] ?? null;
+    if (!call && !where) return 'owned';
+    return [call, where].filter(Boolean).join(' · ');
+  }
+
   /** Why an automatic route search should hold off, or null to go ahead. */
   private autoRouteBlockedBy(): string | null {
     return autoRouteBlocked({
