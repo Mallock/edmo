@@ -38,6 +38,8 @@ export interface ToolContext {
   findTradeRun:
     | ((opts: {
         origin: string;
+        /** Station the commander is docked at, or '' when in space. */
+        atStation: string;
         /** Where they are heading, when they named it; '' for an open search. */
         destination: string;
         maxDistanceLy: number;
@@ -487,6 +489,9 @@ async function findTradeRun(
   try {
     const find = await ctx.findTradeRun({
       origin,
+      // Where they are standing, so a run that starts at a different outpost in
+      // the same system cannot be read as the board in front of them.
+      atStation: ctx.station ?? '',
       // A destination equal to where we already are is not a trip.
       destination: destination && destination.toLowerCase() !== origin.toLowerCase() ? destination : '',
       maxDistanceLy: clamp(maxDistanceLy, 5, 250),

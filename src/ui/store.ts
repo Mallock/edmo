@@ -2892,6 +2892,7 @@ export class AppCore {
    */
   private async findTradeRun(opts: {
     origin: string;
+    atStation?: string;
     destination: string;
     maxDistanceLy: number;
     minVolume: number;
@@ -2925,6 +2926,7 @@ export class AppCore {
         originKnown: raw.originKnown !== false,
         destination: opts.destination,
         destinationKnown: raw.destinationKnown !== false,
+        atStation: opts.atStation || undefined,
         checked: sinks.size,
         candidates: sources.size,
         filters,
@@ -2940,6 +2942,7 @@ export class AppCore {
       find = {
         legs: rankLegs(legs),
         originKnown: raw.originKnown !== false,
+        atStation: opts.atStation || undefined,
         checked: raw.checked,
         candidates: raw.candidates,
         filters,
@@ -3014,6 +3017,7 @@ export class AppCore {
     try {
       const find = await this.findTradeRun({
         origin: this.sm.location.system,
+        atStation: this.sm.location.station ?? '',
         destination: '',
         maxDistanceLy: this.settings.trade.routeMaxHopLy,
         minVolume: DEFAULT_FILTERS.minVolume,

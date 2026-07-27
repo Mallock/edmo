@@ -382,3 +382,39 @@ test('the newest of several visits to one station is the one that counts', () =>
   ];
   assert.equal(applyOwnObservations([STALE_BAUXITE], visited)[0].stock, 140);
 });
+
+test('a run starting at a DIFFERENT station in the system says so first', () => {
+  // The real confusion: docked at Moore's Charm, told military grade fabrics
+  // cost 371 while the board in front of them read 3,691. Both true — 371 is
+  // Neugebauer Mines, thirty light-seconds away.
+  const leg = buildLeg(
+    row({ commodity: 'militarygradefabrics', station: 'Neugebauer Mines', system: 'Luchtaine',
+      pad: 2, buyPrice: 371, stock: 3115, distanceLs: 1463 }),
+    row({ commodity: 'militarygradefabrics', station: 'Rymill Munitions Stockade', system: 'Kojeara',
+      pad: 3, sellPrice: 4531, demand: 9000, distanceLy: 16 }),
+    F, NOW,
+  )!;
+  const here = describeLeg(leg, 'Neugebauer Mines');
+  assert.doesNotMatch(here, /NOT here/);
+  const away = describeLeg(leg, "Moore's Charm");
+  assert.match(away, /NOT here — fly to Neugebauer Mines \(1,463 Ls\) first/);
+  // The figures themselves are unchanged; only the framing is added.
+  assert.match(away, /buy at 371/);
+  assert.match(away, /4,160 cr a ton/);
+});
+
+test('the summary names where the commander actually is', () => {
+  const leg = buildLeg(SOURCE, SINK, F, NOW)!;
+  const text = describeTradeFind({
+    legs: [leg], originKnown: true, checked: 8, candidates: 29, filters: F,
+    origin: 'Tir', atStation: "Moore's Charm",
+  });
+  assert.match(text, /docked at Moore's Charm/);
+  assert.match(text, /starts at a DIFFERENT station/);
+  // Undocked, there is no "here" to contrast with, so the note stays away.
+  const inSpace = describeTradeFind({
+    legs: [leg], originKnown: true, checked: 8, candidates: 29, filters: F, origin: 'Tir',
+  });
+  assert.doesNotMatch(inSpace, /docked at/);
+  assert.doesNotMatch(inSpace, /NOT here/);
+});

@@ -112,6 +112,16 @@ export interface TradeFind {
   destination?: string;
   /** False when the destination is absent from the market data entirely. */
   destinationKnown?: boolean;
+  /**
+   * The station the commander is standing on, when docked.
+   *
+   * The cheapest source is frequently a DIFFERENT station in the same system,
+   * and "a run out of here" then gets read as "a run out of this station".
+   * Told military grade fabrics were 371 while the board in front of them said
+   * 3,691, the commander reasonably concluded the operator was inventing
+   * numbers — both were correct, and they belonged to different outposts.
+   */
+  atStation?: string;
 }
 
 /**
@@ -314,9 +324,16 @@ const padName = (p: number | null): string =>
   p === 3 ? 'large' : p === 2 ? 'medium' : p === 1 ? 'small' : 'unknown';
 
 /** One speakable line for a single leg. */
-export function describeLeg(l: TradeLeg): string {
+export function describeLeg(l: TradeLeg, atStation?: string): string {
+  // Where the run STARTS is the first thing that matters when it is not under
+  // the commander's feet — otherwise the price reads as the board they are
+  // looking at, and every figure after it looks like a lie.
+  const elsewhere =
+    atStation && key(atStation) !== key(l.fromStation)
+      ? `NOT here — fly to ${l.fromStation}${l.fromLs != null ? ` (${l.fromLs.toLocaleString('en-US')} Ls)` : ''} first — `
+      : '';
   return (
-    `${l.commodity} — buy at ${l.buyPrice.toLocaleString('en-US')} from ${l.fromStation} (${l.fromSystem}` +
+    `${l.commodity} — ${elsewhere}buy at ${l.buyPrice.toLocaleString('en-US')} from ${l.fromStation} (${l.fromSystem}` +
     `${l.fromLs != null ? `, ${l.fromLs.toLocaleString('en-US')} Ls` : ''}), sell at ` +
     `${l.sellPrice.toLocaleString('en-US')} to ${l.toStation} (${l.toSystem}, ${l.distanceLy} ly` +
     `${l.toLs != null ? `, ${l.toLs.toLocaleString('en-US')} Ls` : ''}). ` +
@@ -354,7 +371,7 @@ export function describeTradeFind(find: TradeFind, max = 3): string {
         `best-paying run in any direction instead?`
       );
     }
-    const body = find.legs.slice(0, max).map((l, i) => `${i + 1}. ${describeLeg(l)}`);
+    const body = find.legs.slice(0, max).map((l, i) => `${i + 1}. ${describeLeg(l, find.atStation)}`);
     return (
       `Best cargo for the run to ${find.destination} (${constraints}):\n${body.join('\n')}\n` +
       `Community prices, so verify stock on arrival.`
@@ -376,8 +393,12 @@ export function describeTradeFind(find: TradeFind, max = 3): string {
   const head =
     `Best runs from ${find.origin} (${constraints}; checked the ${find.checked} likeliest of ` +
     `${find.candidates} buyable commodities):`;
-  const body = find.legs.slice(0, max).map((l, i) => `${i + 1}. ${describeLeg(l)}`);
-  return `${head}\n${body.join('\n')}\nCommunity prices, so verify stock on arrival.`;
+  const body = find.legs.slice(0, max).map((l, i) => `${i + 1}. ${describeLeg(l, find.atStation)}`);
+  const note = find.atStation
+    ? `\nThe commander is docked at ${find.atStation}. A leg marked "NOT here" starts at a DIFFERENT ` +
+      `station — say so, rather than implying the price is on the board in front of them.`
+    : '';
+  return `${head}\n${body.join('\n')}${note}\nCommunity prices, so verify stock on arrival.`;
 }
 
 /**
