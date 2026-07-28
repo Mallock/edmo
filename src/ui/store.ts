@@ -57,7 +57,6 @@ import {
 import {
   DEFAULT_FILTERS,
   applyOwnObservations,
-  autoRouteBlocked,
   bestSink,
   bestSinksByCommodity,
   legsToDestination,
@@ -581,7 +580,6 @@ export class AppCore {
 
   private route: TradeRoute | null = null;
   private routeBusy = false;
-  private lastRouteFetchAt = 0;
   /** Next waypoint index into route.hops (hops before this are completed). */
   private routeIdx = 0;
   private sagaEpisodes: Array<{ n: number; day: string; text: string; at: number }> = (() => {
@@ -1069,13 +1067,6 @@ export class AppCore {
             if (fact) this.stationFacts.set(where, fact);
           }
           this.maybeLedger();
-          // Opt-in online route search: at most twice an hour, on docking.
-          if (
-            this.settings.trade.online &&
-            Date.now() - this.lastRouteFetchAt > 30 * 60_000
-          ) {
-            void this.fetchRoute(false);
-          }
         }
         // Session over → the chronicler files tonight's episode.
         if (ev.event === 'Shutdown' && this.settings.saga.enabled) {
@@ -1832,28 +1823,16 @@ export class AppCore {
     return [call, where].filter(Boolean).join(' · ');
   }
 
-  /** Why an automatic route search should hold off, or null to go ahead. */
-  private autoRouteBlockedBy(): string | null {
-    return autoRouteBlocked({
-      hasRunCard: (this.tradeRun?.legs.length ?? 0) > 0,
-      hasRouteCard: this.route != null,
-      activeMissions: this.sm.activeMissions().length,
-    });
-  }
-
-  async fetchRoute(manual: boolean): Promise<void> {
+  /**
+   * Look for a trade route. Only ever reached from a button or a question —
+   * the operator used to do this by itself on every docking, which put a
+   * suggestion on screen in the middle of whatever the commander was actually
+   * doing. Trade help happens when it is asked for.
+   */
+  async fetchRoute(): Promise<void> {
     if (!isTauri || this.routeBusy) return;
-    // Automatic searches stay out of the way. A run or route card already on
-    // screen is a suggestion the commander has not dealt with yet — replacing
-    // it unasked loses the one they were reading, and it costs a network round
-    // trip to do it. Active missions mean they have work in hand and did not
-    // come here for trade. The 🔄 button always overrides all of this.
-    // Deliberately before the cooldown is stamped: a search that never ran must
-    // not spend the half-hour budget, so it retries next dock once the board is
-    // clear.
-    if (!manual && this.autoRouteBlockedBy()) return;
     if (!this.settings.trade.online) {
-      if (manual) {
+      {
         this.pushFeed(
           'system',
           'The route planner asks Spansh (community price data) and sends only your current system name. Flip it on under Trade leads below, then hit 🔄 again.',
@@ -1874,7 +1853,7 @@ export class AppCore {
     if (!station || carrierName.test(station)) {
       const fallback = this.marketMemory.stationIn(system);
       if (fallback) {
-        if (manual && station) {
+        if (station) {
           this.pushFeed('system', `You're on the carrier — planning the route from ${fallback} instead.`);
         }
         station = fallback;
@@ -1892,13 +1871,11 @@ export class AppCore {
       }
     }
     this.routeBusy = true;
-    this.lastRouteFetchAt = Date.now();
     // Large-pad hulls (Cutter, Panther Clipper…) can't dock at medium/small
     // stops — constrain the planner so it never routes us somewhere we'd be
     // turned away at the pad.
     const requiresLargePad = shipRequiresLargePad(this.ship.current?.ship);
-    if (manual)
-      this.pushFeed(
+    this.pushFeed(
         'system',
         `Asking Spansh for routes from ${station ?? system}…${requiresLargePad ? ' (large-pad only)' : ''} (takes up to a minute)`,
       );
@@ -1915,7 +1892,7 @@ export class AppCore {
         maxPriceAgeDays: DEFAULT_FILTERS.maxAgeDays,
       });
       const parsed = parseSpanshRoute(raw);
-      const route = parsed ? await this.vetRoute(parsed, manual) : null;
+      const route = parsed ? await this.vetRoute(parsed, true) : null;
       this.route = route;
       this.routeIdx = 0;
       if (route) {
@@ -1927,7 +1904,7 @@ export class AppCore {
       } else {
         // Spansh wants a closed loop and often has none. The one-way search
         // usually does, so the button does not dead-end the way it used to.
-        await this.suggestRunAfterNoLoop(manual);
+        await this.suggestRunAfterNoLoop();
       }
     } catch (e) {
       this.pushFeed('system', `Route search failed: ${String(e)}`);
@@ -3002,12 +2979,12 @@ export class AppCore {
    *
    * Returns the route when it is flyable, or null when it is not.
    */
-  private async vetRoute(route: TradeRoute, manual: boolean): Promise<TradeRoute | null> {
+  private async vetRoute(route: TradeRoute, speak: boolean): Promise<TradeRoute | null> {
     // Belt and braces on freshness: max_price_age is sent to Spansh, but a
     // client-side check costs nothing and does not depend on their filtering.
     const stale = staleHops(route, DEFAULT_FILTERS.maxAgeDays);
     if (stale.length) {
-      if (manual)
+      if (speak)
         this.pushFeed(
           'system',
           `Ignoring that route — its prices are ${Math.round(stale[0].marketAgeh / 24)} days old, so the profit is fiction.`,
@@ -3028,7 +3005,7 @@ export class AppCore {
     const bad = unusableStops(route, padsBySystem, minPad);
     if (!bad.length) return route;
     this.pushFeed('system', `⛔ ${describeUnusable(bad, minPad)}`);
-    if (manual) this.speak(describeUnusable(bad, minPad));
+    if (speak) this.speak(describeUnusable(bad, minPad));
     return null;
   }
 
@@ -3037,7 +3014,7 @@ export class AppCore {
    * "no loop" was technically true and practically useless while a 44,000 cr/t
    * run sat thirty light years away.
    */
-  private async suggestRunAfterNoLoop(manual: boolean): Promise<void> {
+  private async suggestRunAfterNoLoop(): Promise<void> {
     if (!this.settings.external.ardent) {
       this.pushFeed(
         'system',
@@ -3064,7 +3041,7 @@ export class AppCore {
       }
       const text = `${best.commodity} out of ${best.fromStation} — ${best.profitPerTon.toLocaleString('en-US')} a ton into ${best.toStation}, ${best.distanceLy} light years out.`;
       this.pushFeed('system', `💱 ${text} (data: Ardent)`);
-      if (manual) this.speak(text);
+      this.speak(text);
       this.addSeed(`Community data pointed to a run: ${best.commodity} out of ${best.fromStation}`);
       if (this.settings.trade.autoCopyRoute) void this.copyRunDestination(0);
     } catch (e) {

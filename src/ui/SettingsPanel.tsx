@@ -682,7 +682,7 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
               onChange={(e) => set({ ...s, trade: { ...s.trade, online: e.target.checked } })}
             />
             Online route planner (Spansh) — community price data, sends only your
-            current system/station name
+            current system/station name, and only when you ask
           </label>
           {s.trade.online && (
             <>
@@ -714,7 +714,7 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
               <button
                 className="btn"
                 disabled={snap.routeBusy}
-                onClick={() => void core.fetchRoute(true)}
+                onClick={() => void core.fetchRoute()}
               >
                 {snap.routeBusy ? 'Searching…' : '🔄 Find a route from here'}
               </button>

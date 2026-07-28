@@ -460,7 +460,7 @@ export function App() {
               title="Find a profitable trade route from here (community data via Spansh)"
               aria-label="Find a trade route"
               disabled={snap.routeBusy}
-              onClick={() => void core.fetchRoute(true)}
+              onClick={() => void core.fetchRoute()}
             >
               🔄
             </button>

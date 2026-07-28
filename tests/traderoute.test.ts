@@ -16,7 +16,6 @@ import {
   bestSinksByCommodity,
   legsToDestination,
   systemDistanceLy,
-  autoRouteBlocked,
   applyOwnObservations,
 } from '../src/engine/traderoute.ts';
 
@@ -308,20 +307,8 @@ test('a directed run reports the real distance, not zero', () => {
   assert.equal(systemDistanceLy(row({}), row({})), null);
 });
 
-test('an automatic search holds off while a card is still on the board', () => {
-  // Replacing an unread suggestion with a different one loses the thing the
-  // commander was halfway through reading, and spends a network call doing it.
-  assert.match(autoRouteBlocked({ hasRunCard: true, hasRouteCard: false, activeMissions: 0 })!, /trade run is already/);
-  assert.match(autoRouteBlocked({ hasRunCard: false, hasRouteCard: true, activeMissions: 0 })!, /route is already/);
-});
 
-test('missions in hand mean they did not dock here looking for cargo', () => {
-  assert.match(autoRouteBlocked({ hasRunCard: false, hasRouteCard: false, activeMissions: 3 })!, /3 mission\(s\) in hand/);
-});
 
-test('a clear board lets the automatic search run', () => {
-  assert.equal(autoRouteBlocked({ hasRunCard: false, hasRouteCard: false, activeMissions: 0 }), null);
-});
 
 // A community row claiming bauxite at Webster, eight days old — the one that
 // sent the commander thirty light years to an empty board.
