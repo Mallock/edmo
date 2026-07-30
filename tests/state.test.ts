@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { MissionStateManager } from '../src/engine/state.ts';
+import { MissionStateManager , rankCommunityGoals, type CommunityGoal } from '../src/engine/state.ts';
 import type { JournalEvent } from '../src/engine/types.ts';
 
 const ev = (o: Record<string, unknown>): JournalEvent => o as JournalEvent;
@@ -155,4 +155,46 @@ test('location tracking + arrival hand-in detection', () => {
   );
   assert.equal(sm.docked, true);
   assert.ok(changes.some((c) => c.kind === 'arrivedAtDestination'));
+});
+
+// --- community-goal ranking --------------------------------------------------
+// Handed four goals and the rule "fewer pilots = bigger share", the model
+// recommended the MOST contested one on 6 of 6 beats — a bigger number reads as
+// better. Sorting four numbers is not a job for a language model, so the answer
+// is computed here and the operator only voices it.
+
+test('rankCommunityGoals picks the least and most contested goals', () => {
+  const g = (system: string, contributors: number, over: Partial<CommunityGoal> = {}): CommunityGoal => ({
+    id: contributors, title: `${system} Calls for Assistance`, system, market: `${system} Dock`,
+    expiry: null, bonus: 0, contributors, playerContribution: 0, complete: false, ...over,
+  });
+  // The four from the live Colonia session.
+  const r = rankCommunityGoals([g('Asura', 894), g('Randgnid', 795), g('Einheriar', 601), g('Carcosa', 825)])!;
+  assert.equal(r.quietest.system, 'Einheriar'); // the one the model kept missing
+  assert.equal(r.busiest?.system, 'Asura');
+  assert.equal(r.count, 4);
+});
+
+test('completed goals never get recommended', () => {
+  const g = (system: string, contributors: number, complete: boolean): CommunityGoal => ({
+    id: contributors, title: system, system, market: 'Dock', expiry: null, bonus: 0,
+    contributors, playerContribution: 0, complete,
+  });
+  // The quietest goal is finished — the answer must be the quietest LIVE one.
+  const r = rankCommunityGoals([g('Done', 100, true), g('Einheriar', 601, false), g('Asura', 894, false)])!;
+  assert.equal(r.quietest.system, 'Einheriar');
+  assert.equal(r.count, 2);
+  assert.equal(rankCommunityGoals([g('Done', 100, true)]), null);
+  assert.equal(rankCommunityGoals([]), null);
+});
+
+test('a lone goal is the quietest and has no busiest counterpart', () => {
+  const only: CommunityGoal = {
+    id: 1, title: 'Only', system: 'Asura', market: 'Mizuno Dock', expiry: null,
+    bonus: 0, contributors: 894, playerContribution: 0, complete: false,
+  };
+  const r = rankCommunityGoals([only])!;
+  assert.equal(r.quietest.system, 'Asura');
+  assert.equal(r.busiest, null); // nothing to contrast against — say nothing
+  assert.equal(r.count, 1);
 });

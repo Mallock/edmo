@@ -165,6 +165,10 @@ export async function llmChat(opts: {
   tools?: unknown; // OpenAI tools manifest; enables the tool loop
   presencePenalty?: number; // discourage repeated topics (copilot anti-looping)
   frequencyPenalty?: number; // discourage repeated tokens (copilot anti-looping)
+  /** Skip the model's hidden reasoning pass (`chat_template_kwargs.enable_thinking`).
+   *  Set on the conversational paths, where it is ~10x latency for no gain; left
+   *  off for tool calls and schema-constrained JSON. */
+  noThinking?: boolean;
   apiKey?: string | null; // bundled engine's per-session key; null for LM Studio
 }): Promise<void> {
   await invoke('llm_chat', {
@@ -178,8 +182,32 @@ export async function llmChat(opts: {
     tools: opts.tools ?? null,
     presencePenalty: opts.presencePenalty ?? null,
     frequencyPenalty: opts.frequencyPenalty ?? null,
+    noThinking: opts.noThinking ?? false,
     apiKey: opts.apiKey ?? null,
   });
+}
+
+/** One-shot, non-streaming completion for the app's own internal questions
+ *  (the copilot speak/skip gate). Returns '' rather than throwing when the
+ *  model is unreachable — every caller must have a deterministic fallback. */
+export async function llmQuick(opts: {
+  endpoint: string;
+  model: string;
+  messages: ChatMessageWire[];
+  maxTokens?: number;
+  apiKey?: string | null;
+}): Promise<string> {
+  try {
+    return await invoke<string>('llm_quick', {
+      endpoint: opts.endpoint,
+      model: opts.model,
+      messages: opts.messages,
+      maxTokens: opts.maxTokens ?? 8,
+      apiKey: opts.apiKey ?? null,
+    });
+  } catch {
+    return '';
+  }
 }
 
 // ------------------------------------------------------------ bundled engine

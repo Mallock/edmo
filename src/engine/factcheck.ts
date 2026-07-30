@@ -98,3 +98,37 @@ export function findLiftedExample(beat: string): string | null {
   for (const ex of LIFTED_EXAMPLES) if (flat.includes(flatten(ex))) return ex;
   return null;
 }
+
+/**
+ * A habitual claim — "X always …", "Y never …" — which the operator cannot
+ * possibly know and which the prompt already bans twice ("Skip empty
+ * generalities", "never invent … sensory claims you cannot have").
+ *
+ * It bans them and the model does it anyway, in the shape of the very example
+ * it is warned off: told not to say "pad seven smells of synth-coffee", it
+ * produced "Jaques Station always smells like recycled air", "Paxton Landing
+ * always has a decent flow to it" and "Pad seven always gets the traffic,
+ * doesn't it". Three of three glance beats at one station opened this way.
+ *
+ * The tell is what it correlates with. Across a session where the beat context
+ * carried real material — ship, client, system economy, memory — this fired on
+ * 0 of 16 lines. Where the context was thin it fired on most of them. It is the
+ * sound of a model with nothing true to say reaching for atmosphere, so
+ * catching it is really catching an empty beat, and dropping it is right.
+ *
+ * Returns the offending phrase, or null.
+ */
+export function findHabitualGenerality(beat: string): string | null {
+  // "always"/"never" as a claim about how something habitually IS. A few words
+  // of slack covers "always seems to", "never really", "always a good spot".
+  const m = beat.match(
+    /\b(?:it|that|this|there|[A-Z][\w'’-]*(?:\s+[A-Z][\w'’-]*){0,3}|\bpad\s+\w+)\s+(?:is\s+|are\s+|has\s+|have\s+)?\b(always|never)\b(?:\s+\w+){0,3}/i,
+  );
+  if (m) return m[0].trim();
+  // Clause-initial "Always a good spot…" — the same claim with the subject
+  // dropped, or smuggled in after a comma ("…a bartender's jump in 3302,
+  // always smells faintly of old synth-whiskey"), which a live run produced
+  // the moment the subject pattern above stopped matching.
+  const lead = beat.match(/(?:^|[.!?,;—-]\s*)(always|never)\b(?:\s+\w+){0,3}/i);
+  return lead ? lead[0].replace(/^[.!?,;—-]\s*/, '').trim() : null;
+}

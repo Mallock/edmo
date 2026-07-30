@@ -23,6 +23,12 @@ export interface CopilotTurn {
   content: string;
 }
 
+/** Lines worth carrying into a session digest: what happened, what the
+ *  commander said, and what the operator has already said out loud. */
+function isDigestLine(s: string): boolean {
+  return s.startsWith('EVENT:') || s.startsWith('COMMANDER SAID:') || s.startsWith('OPERATOR SAID:');
+}
+
 /** How reactive the copilot is to game events, tuned by the player. */
 export type CopilotInvolvement = 'low' | 'medium' | 'high';
 
@@ -68,6 +74,109 @@ export function copilotReactsTo(inv: CopilotInvolvement, tier: ReactionTier): bo
   if (tier === 'mission') return true;
   if (tier === 'arrival' || tier === 'discovery') return inv !== 'low';
   return inv === 'high';
+}
+
+/**
+ * What a beat is allowed to be ABOUT.
+ *
+ * Every ambient line came out being about money, and the prompt was not the
+ * reason: the beat context only ever held money. Events, a NOW line of
+ * location + payouts, and a STATE line of the running tally — asked to hang its
+ * colour on real facts, the model had credits and nothing else to reach for.
+ * Measured over a replayed session, 7 of 8 lines were about the takings.
+ *
+ * So the angle is chosen HERE, and the material to serve it is gathered by the
+ * caller. `null` is deliberately in the pool and deliberately common: an angle
+ * on every beat would be its own formula, and the best lines in testing were
+ * the unprompted ones.
+ */
+export type BeatAngle = 'ship' | 'clock' | 'client' | 'place' | 'callback' | 'ahead' | 'opening';
+
+const ANGLE_HINTS: Readonly<Record<BeatAngle, string>> = {
+  ship: 'ANGLE: the ship — what it is hauling, how it is holding up, what it was built for.',
+  clock: 'ANGLE: the clock — the deadline, the hours into this shift, what is still to run.',
+  client: 'ANGLE: the client — who posted this work, and what they are like to fly for.',
+  place: 'ANGLE: this place — but ONLY from what you have actually been told about it (its type, ' +
+    'its economy, the traffic, the berth, and any LOCAL LORE line — that lore is true and yours to ' +
+    'riff on). If you have been told nothing, pick another angle.',
+  callback: 'ANGLE: a callback — something from earlier in this run that this moment rhymes with.',
+  ahead: 'ANGLE: the road ahead — the next leg, not the one just finished.',
+  // Point the commander at the opening the FACTS have already identified. This
+  // angle deliberately does not ask for a comparison: asked to work out which
+  // of four goals was least contested, the model picked the most contested one
+  // 6 times out of 6. It is reliable at passing on a conclusion and unreliable
+  // at reaching one, so the ranking is done in code and this only voices it.
+  opening: 'ANGLE: the opening — pass on the opportunity the facts have already picked out, in your ' +
+    'own words. Say only what the facts say is worth taking; never rank or compare anything yourself.',
+};
+
+/**
+ * Pick this beat's angle, or null to leave it open. `available` is the set the
+ * caller actually has material for — asking for the ship angle with no loadout
+ * on file just invites the model to make one up, which is the failure mode the
+ * whole fact fence exists to prevent.
+ */
+export function pickBeatAngle(
+  available: readonly BeatAngle[],
+  rng: () => number = Math.random,
+): BeatAngle | null {
+  if (!available.length) return null;
+  // Roughly one beat in four stays open — no angle, whatever it notices.
+  if (rng() < 0.25) return null;
+  return available[Math.floor(rng() * available.length) % available.length];
+}
+
+/** The instruction line for an angle; '' for an open beat. */
+export function beatAngleHint(angle: BeatAngle | null): string {
+  return angle ? ANGLE_HINTS[angle] : '';
+}
+
+/**
+ * The speak/skip gate.
+ *
+ * The operator itself cannot stay quiet. Asked in character it spoke on 16 of
+ * 16 events in a replayed session, on 5 of 5 routine jumps and docking
+ * clearances, and still on 5 of 5 with "a routine jump is ALWAYS NO_BEAT; you
+ * speak on at most one in three events" appended verbatim to its prompt. In
+ * persona, mid-conversation, with a page of voice rules in front of it, NO_BEAT
+ * is a word it will not reach for.
+ *
+ * Asked cold, as a one-line classification with no persona attached, the same
+ * model gets it right: 12 of 14 on a labelled set from the fixture session, in
+ * ~90 ms — including every routine jump, docking clearance and cargo tick. So
+ * silence is decided here, before the beat exists, rather than requested from a
+ * model that is busy being someone.
+ *
+ * NOT a replacement for the tier and density gates in the store: it runs after
+ * them, on the events they already let through.
+ */
+const BEAT_GATE_SYSTEM =
+  "You are a filter for a ship's copilot. Given ONE game event from an Elite Dangerous flight log, " +
+  'decide whether it deserves a spoken remark from a laconic veteran in the right-hand seat. ' +
+  'SPEAK only when the event carries a surprise, a setback, a real payday, danger, or a genuine first. ' +
+  'SKIP the routine texture of flying: ordinary jumps, docking clearances, undocks, incremental cargo ' +
+  'ticks, and unremarkable mid-size payouts. The copilot speaks at most once in three events — when in ' +
+  'doubt, SKIP. Answer with exactly one word: SPEAK or SKIP.';
+
+/** Messages for the gate. Deliberately stateless and personaless — the session
+ *  transcript is what makes the operator want to talk, so it is not shown one. */
+export function buildBeatGateChat(eventLine: string): VisionMessage[] {
+  return [
+    { role: 'system', content: BEAT_GATE_SYSTEM },
+    { role: 'user', content: eventLine.trim() },
+  ];
+}
+
+/**
+ * Read the gate's verdict. Unparseable or empty means SPEAK: an unreachable or
+ * confused model must not be able to mute the operator for a whole session —
+ * the tier and density gates are still upstream, so the failure mode is the
+ * behaviour we already shipped, not a flood.
+ */
+export function parseBeatGate(raw: string): boolean {
+  const t = (raw ?? '').trim().toUpperCase();
+  if (/\bSKIP\b/.test(t)) return false;
+  return true;
 }
 
 /**
@@ -133,6 +242,9 @@ export function buildCopilotSystem(cmdr?: string): string {
     'report; open something of your own from the STATE — how the run is going, the hours in, the ship, ' +
     'what is still ahead. It is the one time a thought needs no event behind it. Still NO_BEAT if you have ' +
     'nothing true to say. ' +
+    'A line beginning "OPERATOR SAID" is something YOU already said aloud on this channel — usually the ' +
+    'briefing when a contract came in. Treat it as your own words: do not repeat it, do not react to it as ' +
+    'news, and do not introduce that job again as though it were new. ' +
     'A line beginning "COMMANDER SAID" is the commander speaking to you directly — take it on board and let ' +
     'it steer what you notice and mention (if they say they are hunting tritium, keep an eye out for it and ' +
     'react when it turns up). Do not answer them as a question here; just factor it in. ' +
@@ -153,7 +265,10 @@ export function buildCopilotSystem(cmdr?: string): string {
     'economy, the berth, the traffic. What you must NOT do is state fabricated FACTS as if you ' +
     'knew them: invented history, dates, events, a named reputation, or sensory claims you cannot have — ' +
     '"a gravity well that\'s chewed ships since 3308", "the docks here are unforgiving", "pad seven smells ' +
-    'of synth-coffee". A light, hedged impression: fine. An invented fact stated as truth: never. Beyond ' +
+    'of synth-coffee". A light, hedged impression: fine. An invented fact stated as truth: never. ' +
+    'The ONE exception: a line marked LOCAL LORE is true, established history you genuinely know — ' +
+    'that is exactly the material to riff on, in your own words, like a local would. The story of a ' +
+    'place beats its pad number every time. Beyond ' +
     'that, your richest colour is the WORK itself — the pay, the client, the passengers or cargo, the ' +
     'clock — so lean there often. Skip empty generalities ("docking always…", "you always…"). ' +
     'GOOD is a dry angle built from the REAL numbers in front of you — the actual payout, client and clock, ' +
@@ -312,12 +427,12 @@ export class CopilotConversation {
       if (t.role !== 'user') continue;
       for (const l of t.content.split('\n')) {
         const s = l.trim();
-        if (s.startsWith('EVENT:') || s.startsWith('COMMANDER SAID:')) lines.push(s);
+        if (isDigestLine(s)) lines.push(s);
       }
     }
     for (const p of this.pending) {
       const s = p.trim();
-      if (s.startsWith('EVENT:') || s.startsWith('COMMANDER SAID:')) lines.push(s);
+      if (isDigestLine(s)) lines.push(s);
     }
     return lines.slice(-max);
   }
@@ -330,4 +445,50 @@ export class CopilotConversation {
     const tail = this.turns.slice(this.turns.length - (this.maxTurns - 2));
     this.turns = [...head, ...tail];
   }
+}
+
+// ---------------------------------------------------------------------------
+// Credits the model can actually say
+// ---------------------------------------------------------------------------
+
+/**
+ * A credit figure in the form a small local model reads aloud correctly.
+ *
+ * Exact figures are garbled reliably enough to be a bug: "2,424,592" came back
+ * as "twenty-four point two million", and a 971,646 cr hand-in was announced to
+ * a commander as "ninety-seven grand". The digit groups are simply too much for
+ * a 7.5B model to track while also composing a line, and a wrong number spoken
+ * with confidence is worse than no number.
+ *
+ * The feed and the TTS still get the exact figure — Piper reads digits fine.
+ * This is only for what goes into the model's prompt.
+ */
+export function speakableCredits(n: number): string {
+  if (!Number.isFinite(n)) return '0 cr';
+  const v = Math.abs(Math.round(n));
+  const sign = n < 0 ? '-' : '';
+  if (v >= 1e7) return `${sign}~${Math.round(v / 1e6)}M cr`;
+  if (v >= 1e6) return `${sign}~${(v / 1e6).toFixed(1)}M cr`;
+  if (v >= 1e4) return `${sign}~${Math.round(v / 1e3)}k cr`;
+  return `${sign}${v} cr`;
+}
+
+/**
+ * Rewrite every exact credit figure in a line into its speakable form, leaving
+ * everything else alone.
+ *
+ * The operator's event stream is built from the same notice strings the feed
+ * shows, so it arrives full of "971,646 cr". Rounding at the one point where
+ * events enter the conversation keeps the feed exact and the voice right, and
+ * means a new event source cannot reintroduce the bug by forgetting to round.
+ *
+ * Only matches figures carrying a `cr` suffix, so tonnage, percentages, pad
+ * numbers, distances and body names are untouched.
+ */
+export function roundCreditsForSpeech(text: string): string {
+  return text.replace(/\b(\d{1,3}(?:,\d{3})+|\d{4,})(\s*)cr\b/g, (whole, digits: string, gap: string) => {
+    const n = Number(digits.replace(/,/g, ''));
+    if (!Number.isFinite(n) || n < 1e4) return whole; // small figures read fine
+    return speakableCredits(n).replace(/ cr$/, `${gap || ' '}cr`);
+  });
 }

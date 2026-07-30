@@ -8,7 +8,7 @@ WHAT THIS IS
   img/                                    screenshots + icons
   ED-Mission-Operator-1.0.0-setup.exe       the Windows installer (~131 MB)
   ED-Mission-Operator-1.0.0-amd64.deb       Linux beta, Ubuntu/Debian (~147 MB)
-  ED-Mission-Operator-1.0.0-x86_64.AppImage Linux beta, any distro (~211 MB)
+  ED-Mission-Operator-1.0.0-x86_64.AppImage Linux beta, any distro (~231 MB)
 
 HOW TO PUT IT ON YOUR WEB HOTEL
   1. Open your web hotel's File Manager (or connect with FTP, e.g. FileZilla).
@@ -34,13 +34,28 @@ NOTES
     ranges and payout estimates; and four opt-in community lookups the operator
     calls only when asked (Spansh routes, galaxy-wide markets via Ardent
     Insight, the EDAstro exploration catalogue, and the Galnet news wire).
-  * All three installers are 1.0.0. The Linux .deb + .AppImage are built on a
-    Linux host (a WSL Ubuntu 24.04 checkout here) via `npm run tauri build`.
-    Build them with a PURELY LINUX PATH — WSL's interop appends the Windows
-    PATH, and linuxdeploy walks every entry and dies on /mnt/c/WINDOWS/...
-    permission errors:
+  * All three installers are 1.0.0.
+
+    Windows:  npm run tauri build
+              -> src-tauri/target/release/bundle/nsis/
+
+    Linux:    docker build -f Dockerfile.linux --target artifacts \
+                  -o type=local,dest=./linux-dist .
+              -> linux-dist/  (.deb + .AppImage)
+
+    The Docker path is the one these files were built with and needs nothing
+    installed but Docker Desktop: the container brings its own Debian, Node,
+    Rust and Linux Piper voices, and never touches the Windows node_modules or
+    target directories. It also avoids the WSL trap below.
+
+    Building in WSL instead works, but use a PURELY LINUX PATH — WSL's interop
+    appends the Windows PATH, and linuxdeploy walks every entry and dies on
+    /mnt/c/WINDOWS/... permission errors:
       export PATH="$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
     Run scripts/fetch-tts.sh first if src-tauri/resources/tts-linux is missing.
+    Note the AppImage comes out ~231 MB from Debian bookworm (Docker) against
+    ~211 MB from Ubuntu 24.04 (WSL) — linuxdeploy bundles a slightly different
+    GTK stack. Both run; only the stated size on the page needs to match.
   * When you ship a new version, copy the new setup .exe here, rename it to
     match, and update the version number + file name in index.html
     (it appears in the version strip, the download button, and step 01).

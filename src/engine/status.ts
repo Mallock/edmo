@@ -310,3 +310,36 @@ export function isScoopableStar(starClass: string | undefined): boolean {
   if (!starClass) return false;
   return SCOOPABLE.has(starClass.trim().charAt(0).toUpperCase());
 }
+
+// ---------------------------------------------------------------------------
+// Plotted route progress
+// ---------------------------------------------------------------------------
+
+/**
+ * How many jumps of a plotted route are still ahead of the commander.
+ *
+ * `NavRoute.json` lists the WHOLE route, starting with the system it was
+ * plotted FROM — and Elite does not rewrite it as the commander flies. So the
+ * file's length is only correct at the moment of plotting, and stale from the
+ * first jump onward. A copilot reading it directly told a commander with one
+ * jump left that they had two, for every jump of the trip.
+ *
+ * Remaining jumps therefore have to be derived from where the ship actually
+ * is. Returns null when the current system is not on the route at all — the
+ * commander has deviated, or has not reached it yet — so the caller can keep
+ * its last-good figure rather than assert a wrong one.
+ */
+export function remainingRouteJumps(
+  route: readonly string[],
+  currentSystem: string,
+): number | null {
+  if (!route.length) return 0; // no route plotted — nothing still to run
+  const here = currentSystem.trim().toLowerCase();
+  if (!here || here === 'unknown') return null;
+  // Search from the END: a route may pass through a system twice (a loop, or a
+  // scooping detour), and the commander is at the LATER of the two.
+  for (let i = route.length - 1; i >= 0; i--) {
+    if ((route[i] ?? '').trim().toLowerCase() === here) return route.length - 1 - i;
+  }
+  return null; // off-route
+}

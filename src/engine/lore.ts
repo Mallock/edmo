@@ -27,3 +27,79 @@ export const OPERATOR_VOICE =
   'Voice: a seasoned operations officer on a private comm channel — dry, understated frontier ' +
   'humor; warm but professional, never slapstick. Prefer one concrete detail from the facts ' +
   'over three speculations. Keep it tight.';
+
+/**
+ * The persona for the ask path — the operator ANSWERING a direct question.
+ *
+ * The commander is talking to one person all session, so the voice that
+ * answers has to be the voice that has been muttering in their ear. What it
+ * must NOT inherit from the ambient copilot is that copilot's job: brevity to
+ * six words, refusing to coach, staying silent. Here a real answer is the
+ * whole point, so only the identity carries over.
+ */
+export const ASK_PERSONA =
+  'You are that commander\'s Mission Operator — the same voice that talks to them all session: ' +
+  'a dry, unhurried veteran of this frontier who has flown a lot of contracts with them. ' +
+  'You are your OWN person at the other end of the channel: say "I" for yourself and "you" for ' +
+  'them, and NEVER "we", "our" or "us" — they fly the ship, you run the comms. ' +
+  'Answer the question properly — that is the job here, so be useful first and dry second. ' +
+  'One wry aside is welcome when the facts earn it; never at the cost of the answer, and never ' +
+  'invented. No pep talk, no "good luck", no restating the question back at them.';
+
+/**
+ * Canonical lore the operator is allowed to KNOW.
+ *
+ * GROUNDING_RULES suppresses invention, but it suppresses true knowledge with
+ * it: asked "who founded Jaques Station?" while the commander was DOCKED AT
+ * Jaques Station, the operator answered "the specific founder is not part of
+ * the current manifest data" — and asked about the Pilots Federation, the guild
+ * every commander belongs to, it claimed no intel on any group by that name.
+ * The model hedges rather than invents (measured 0 fabrications across the
+ * lore sweep), which is the right failure mode — but the fiction starves.
+ *
+ * So canon is provided the same way every other fact is: curated here, in
+ * code, and handed over as material. This is also true fuel for the place
+ * angle — the habitual-atmosphere tic ("always smells like recycled air") was
+ * measured to fire almost exclusively on beats with nothing real to say.
+ * Everything below is established Elite Dangerous canon, kept deliberately
+ * short and spoilable-free; when unsure a fact was left out.
+ */
+export const UNIVERSAL_LORE =
+  'Common knowledge every commander shares: all licensed pilots — the commander included — belong ' +
+  'to the PILOTS FEDERATION, the independent guild that issues flight licences, ranks pilots from ' +
+  'Harmless up to the coveted Elite, and runs the Galnet news network. THARGOIDS are real: an ' +
+  'ancient, hostile, insectoid alien species encountered in and around the core Bubble — they have ' +
+  'never troubled Colonia, which is part of why settlers came. The superpowers (Federation, Empire, ' +
+  'Alliance) hold no territory out here.';
+
+/** Canonical stories of famous Colonia-region places, keyed by lowercase system name. */
+const PLACE_LORE: Readonly<Record<string, string>> = {
+  colonia:
+    'Jaques Station, the heart of Colonia, belongs to Jaques — a cyborg bartender centuries old ' +
+    'who fitted his station with a frame shift drive and jumped for the far side of the galaxy in ' +
+    '3302. Thargoid-corrupted fuel threw the jump 22,000 light-years off course and left the ' +
+    'station crippled here; commanders crossed the galaxy to resupply it, settlers followed, and ' +
+    'the Colonia Region grew up around his bar. Jaques still serves drinks aboard.',
+  luchtaine:
+    "Luchtaine is home to The Brig and engineer Mel Brandon, an escapee of the core systems who " +
+    "tunes frame shift drives, lasers and shields for Colonia's pilots.",
+  asura:
+    'Asura holds Sanctuary, the workshop of engineer Petra Olmanova, who survived a war-torn ' +
+    'childhood and now hardens hulls, armour and countermeasures.',
+  tir:
+    'Tir hosts The Watchtower of engineer Marsha Hicks, late of the Dangerous Games, who works ' +
+    'fuel scoops, refineries and limpet controllers.',
+  los: "Los is home to Kraken's Retreat and engineer Etienne Dorn, an exile from Imperial space who trades in sensors, power plants and weaponry.",
+  ratraii:
+    'Ratraii is the seat of the Colonia Citizens Network at Colonia Dream station — the first ' +
+    'waypoint most new arrivals from the Bubble ever see.',
+  carcosa:
+    "Carcosa's Robardin Rock is a working asteroid base — a hard-bitten mining community carved " +
+    'out during the Colonia expansion.',
+};
+
+/** Canonical lore for a system, or null when we have none. Never guesses. */
+export function loreForSystem(system: string | null | undefined): string | null {
+  if (!system) return null;
+  return PLACE_LORE[system.trim().toLowerCase()] ?? null;
+}

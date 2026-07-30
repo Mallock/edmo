@@ -588,3 +588,35 @@ export class MissionStateManager {
     return changes;
   }
 }
+
+/**
+ * The community-goal board, already reasoned about.
+ *
+ * The operator must not be asked to work this out itself. Handed four goals and
+ * their contributor counts — with "FEWER pilots means a BIGGER share" stated in
+ * the same breath — it recommended the most contested goal on 6 of 6 beats
+ * ("the Carcosa run, with 825 pilots, looks like the most immediate payout
+ * opportunity"). It reaches for the biggest number because bigger reads as
+ * better, and a confidently wrong recommendation is worse than no recommendation.
+ *
+ * Sorting four numbers is not a job for a language model. It does reliably
+ * REPEAT a conclusion it is handed, so the conclusion is computed here.
+ */
+export interface GoalRanking {
+  /** Least contested — the biggest share of the payout. */
+  quietest: CommunityGoal;
+  /** Most contested; null when only one goal is running. */
+  busiest: CommunityGoal | null;
+  count: number;
+}
+
+export function rankCommunityGoals(goals: readonly CommunityGoal[]): GoalRanking | null {
+  const live = goals.filter((g) => !g.complete);
+  if (!live.length) return null;
+  const sorted = [...live].sort((a, b) => a.contributors - b.contributors);
+  return {
+    quietest: sorted[0],
+    busiest: sorted.length > 1 ? sorted[sorted.length - 1] : null,
+    count: live.length,
+  };
+}

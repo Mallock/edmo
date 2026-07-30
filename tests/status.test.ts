@@ -6,6 +6,7 @@ import {
   parseStatus,
   isScoopableStar,
   isBusyFocus,
+  remainingRouteJumps,
   FLAG,
   FLAG2,
 } from '../src/engine/status.ts';
@@ -104,4 +105,51 @@ test('isBusyFocus flags menus, not the flight HUD', () => {
   assert.equal(isBusyFocus(6), true); // galaxy map
   assert.equal(isBusyFocus(9), true); // FSS
   assert.equal(isBusyFocus(1), false); // right panel
+});
+
+// --- plotted-route progress --------------------------------------------------
+// Reported from a live session: the operator said "Two jumps left" to a
+// commander who had ONE. NavRoute.json lists the whole route starting from the
+// system it was plotted FROM, and Elite never rewrites it as you fly — so its
+// length is right only at the instant of plotting. Progress has to come from
+// where the ship actually is.
+
+test('jumps left are counted from the ship position, not the route length', () => {
+  // Plotted Colonia → Deriso: 3 hops written to the file, 4 entries.
+  const route = ['Colonia', 'Kojeara', 'Luchtaine', 'Deriso'];
+  assert.equal(remainingRouteJumps(route, 'Colonia'), 3); // still at the origin
+  assert.equal(remainingRouteJumps(route, 'Kojeara'), 2); // one jump flown
+  assert.equal(remainingRouteJumps(route, 'Luchtaine'), 1); // the live-session bug
+  assert.equal(remainingRouteJumps(route, 'Deriso'), 0); // arrived
+});
+
+test('the count is case- and whitespace-insensitive, as journal names vary', () => {
+  const route = ['Colonia', "Jaques's Rest", 'Deriso'];
+  assert.equal(remainingRouteJumps(route, 'colonia'), 2);
+  assert.equal(remainingRouteJumps(route, '  DERISO  '), 0);
+  assert.equal(remainingRouteJumps(route, "jaques's rest"), 1);
+});
+
+test('a route that revisits a system counts from the LATER visit', () => {
+  // A scooping detour back through a system already passed: the commander is at
+  // the second occurrence, so 1 jump remains — not 3.
+  const route = ['Colonia', 'Kojeara', 'Colonia', 'Deriso'];
+  assert.equal(remainingRouteJumps(route, 'Colonia'), 1);
+});
+
+test('off-route and unknown positions report null, so a stale count is kept over a wrong one', () => {
+  const route = ['Colonia', 'Kojeara', 'Deriso'];
+  assert.equal(remainingRouteJumps(route, 'Sol'), null); // deviated
+  assert.equal(remainingRouteJumps(route, 'unknown'), null); // position not yet known
+  assert.equal(remainingRouteJumps(route, ''), null);
+});
+
+test('no route plotted means nothing still to run', () => {
+  assert.equal(remainingRouteJumps([], 'Colonia'), 0);
+  assert.equal(remainingRouteJumps([], 'unknown'), 0);
+});
+
+test('a single-entry route is already complete', () => {
+  // Elite writes the origin alone when a plot is cleared to the current system.
+  assert.equal(remainingRouteJumps(['Colonia'], 'Colonia'), 0);
 });

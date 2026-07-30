@@ -4,7 +4,12 @@
  * engine (MissionStateManager, Heartbeat, Operator) and exposes an immutable
  * snapshot for React via subscribe/getSnapshot.
  */
-import { MissionStateManager, normalizeCommodity, type StateChange } from '../engine/state.ts';
+import {
+  MissionStateManager,
+  normalizeCommodity,
+  rankCommunityGoals,
+  type StateChange,
+} from '../engine/state.ts';
 import { Heartbeat, type Nudge, type NudgeSeverity } from '../engine/heartbeat.ts';
 import { parseJournalLine, parseJournalLines } from '../engine/parse.ts';
 import {
@@ -17,6 +22,7 @@ import {
   livelyBriefing,
   redirectNotice,
   ruleBasedAdvice,
+  IDLE_ASK_SYSTEM,
 } from '../engine/operator.ts';
 import {
   afterglowFlavor,
@@ -34,7 +40,13 @@ import {
   type TradeOpportunity,
 } from '../engine/trade.ts';
 import { BioTracker, type BioLead } from '../engine/exobio.ts';
-import { StatusTracker, isBusyFocus, isScoopableStar, type StatusAlert } from '../engine/status.ts';
+import {
+  StatusTracker,
+  isBusyFocus,
+  isScoopableStar,
+  remainingRouteJumps,
+  type StatusAlert,
+} from '../engine/status.ts';
 import { ShipTracker, describeShip, shipRequiresLargePad } from '../engine/ship.ts';
 import { MaterialsTracker } from '../engine/materials.ts';
 import { CarrierTracker } from '../engine/carrier.ts';
@@ -52,8 +64,10 @@ import {
   extractPlaces,
   findCollectivePronoun,
   findFabricatedPlace,
+  findHabitualGenerality,
   findLiftedExample,
 } from '../engine/factcheck.ts';
+import { loreForSystem } from '../engine/lore.ts';
 import {
   DEFAULT_FILTERS,
   applyOwnObservations,
@@ -98,10 +112,17 @@ import {
 import {
   CopilotConversation,
   buildCopilotSystem,
+  buildBeatGateChat,
+  parseBeatGate,
+  pickBeatAngle,
+  beatAngleHint,
+  speakableCredits,
+  roundCreditsForSpeech,
   copilotReactsTo,
   copilotDensityGapMs,
   isNearDuplicate,
   copilotSilenceGapMs,
+  type BeatAngle,
   type ReactionTier,
 } from '../engine/copilot.ts';
 import { ConvoBuffer, cleanTranscript, toolExchangeOf } from '../engine/convo.ts';
@@ -113,6 +134,7 @@ import {
   isTauri,
   llmCancel,
   llmChat,
+  llmQuick,
   llmModels,
   llmModelTypes,
   ardentMarket,
@@ -157,6 +179,7 @@ import {
   sttStart,
   sttStop,
   systemSpecs,
+  type ChatMessageWire,
   type ToolCallWire,
 } from './bridge.ts';
 import { classifyModel, gpuBudgetGb, type ModelFit, type SystemSpecs } from './modelfit.ts';
@@ -353,6 +376,10 @@ export class AppCore {
   private voiceDownloading: string | null = null;
   private specs: SystemSpecs | null = null;
 
+  /** The whole plotted route, in order, as NavRoute.json listed it (element 0 is
+   *  the system it was plotted FROM). Kept because Elite never rewrites that
+   *  file mid-route, so progress must be derived from the ship's position. */
+  private navRoute: string[] = [];
   private navRouteJumps = 0;
   private navRouteDest: string | null = null;
 
@@ -424,6 +451,15 @@ export class AppCore {
   /** True while an in-flight commentary beat came from the copilot conversation
    *  (so its reply is recorded back as the assistant turn). */
   private copilotBeatInFlight = false;
+  /** The newest event handed to the copilot — the line the speak/skip gate is
+   *  asked about when a reaction follows. */
+  private lastCopilotEventLine = '';
+  /** True while the speak/skip gate is deciding, so a burst of events cannot
+   *  stack several gate calls (and several beats) on top of each other. */
+  private beatGateInFlight = false;
+  /** Beats since the running tally was last put in front of the model — it is
+   *  background, and shown every beat it becomes the only subject there is. */
+  private beatsSinceTally = 0;
   /** The exact messages of the in-flight copilot beat, kept so a beat that
    *  invents a place can be resampled once before we give up on it. */
   private copilotRetryMsgs: ChatMessage[] | null = null;
@@ -1028,6 +1064,14 @@ export class AppCore {
       // Teach the status tracker the fuel-tank size so it can report fuel %.
       if (ev.event === 'Loadout' && this.ship.current?.fuelCapacity) {
         this.statusTracker.setFuelCapacity(this.ship.current.fuelCapacity);
+      }
+      // Route cancelled in-game. Without this the last plotted route lingered
+      // and the operator kept counting down jumps to a destination the commander
+      // had already abandoned.
+      if (ev.event === 'NavRouteClear') {
+        this.navRoute = [];
+        this.navRouteJumps = 0;
+        this.navRouteDest = null;
       }
       // Long-term memory folds everything too — its watermark makes bootstrap
       // replays no-ops, while genuinely new history (first run) is inherited.
@@ -1698,8 +1742,12 @@ export class AppCore {
       try {
         const nav = JSON.parse(text) as { Route?: Array<{ StarSystem?: string }> };
         const route = nav.Route ?? [];
-        this.navRouteJumps = Math.max(0, route.length - 1);
-        this.navRouteDest = route.length ? (route[route.length - 1].StarSystem ?? null) : null;
+        // Keep the WHOLE route: Elite does not rewrite this file as the
+        // commander flies, so the count has to be derived from where the ship
+        // actually is on each jump, not from the file's length.
+        this.navRoute = route.map((r) => r.StarSystem ?? '').filter(Boolean);
+        this.navRouteDest = this.navRoute.length ? this.navRoute[this.navRoute.length - 1] : null;
+        this.recomputeNavRoute();
       } catch {
         /* keep last-good route */
       }
@@ -1935,6 +1983,31 @@ export class AppCore {
     this.emit();
   }
 
+  /**
+   * Recount the jumps left on the plotted route from the ship's actual position.
+   *
+   * Must run on every jump, not just when NavRoute.json is re-read: the file is
+   * written once at plot time and never updated, so anything derived from its
+   * length alone is wrong from the first jump onward. Off-route (the commander
+   * deviated, or has not joined the route yet) keeps the last-good figure —
+   * better a slightly old count than a confidently wrong one.
+   */
+  private recomputeNavRoute(): void {
+    if (!this.navRoute.length) {
+      this.navRouteJumps = 0;
+      this.navRouteDest = null;
+      return;
+    }
+    const left = remainingRouteJumps(this.navRoute, this.sm.location.system);
+    if (left === null) return;
+    this.navRouteJumps = left;
+    // Arrived: drop the route so nothing keeps counting down from zero.
+    if (left === 0) {
+      this.navRoute = [];
+      this.navRouteDest = null;
+    }
+  }
+
   /** Advance route progress when the commander jumps into the next waypoint. */
   private onJumpForRoute(): void {
     const r = this.route;
@@ -1984,6 +2057,9 @@ export class AppCore {
       if (c.kind === 'jump') {
         this.jumpsSinceDock += 1;
         this.onJumpForRoute();
+        // Recount BEFORE the beat fires — the copilot reads navRouteJumps out of
+        // the STATE line, so a stale count becomes a wrong spoken number.
+        this.recomputeNavRoute();
         this.copilotEvent(`EVENT: FSD jump to ${this.sm.location.system}.`);
         this.copilotReact('travel', 'copilot — reacting to the jump…');
       }
@@ -2358,7 +2434,17 @@ export class AppCore {
   private copilotEvent(line: string): void {
     if (!this.settings.vision.commentary) return;
     this.ensureCopilot();
-    this.copilot?.recordEvent(line);
+    // Events are built from the same notice strings the feed shows, so they
+    // arrive carrying exact figures ("971,646 cr") — which this model size
+    // garbles into a wrong spoken number ("ninety-seven grand" for that one).
+    // The feed and Piper keep the exact figure; only the prompt is rounded.
+    this.copilot?.recordEvent(roundCreditsForSpeech(line));
+    // The event the speak/skip gate will be asked about, if a reaction follows.
+    // Only a real EVENT is gateable: the gate classifies things that HAPPENED,
+    // and handing it "COMMANDER SAID: …" or the operator's own briefing would
+    // ask it a question it was never calibrated on.
+    // Rounded, so the gate judges exactly the text the operator will be shown.
+    if (line.startsWith('EVENT:')) this.lastCopilotEventLine = roundCreditsForSpeech(line);
   }
 
   /** Compact authoritative "current state" line sent with each copilot beat so
@@ -2383,8 +2469,9 @@ export class AppCore {
     // inventing atmosphere on thin moments, and survives history trimming.
     // Rounded, speakable credits — a small local model garbles exact figures
     // ("2,424,592" → "twenty-four point two million"), stating wrong numbers.
-    const money = (n: number): string =>
-      n >= 1e6 ? `~${(n / 1e6).toFixed(n >= 1e7 ? 0 : 1)}M cr` : n >= 1e4 ? `~${Math.round(n / 1e3)}k cr` : `${n} cr`;
+    // Shared with the event stream via speakableCredits, so both say it the
+    // same way and neither can drift from the other.
+    const money = speakableCredits;
     const jobs = this.sm
       .activeMissions()
       .slice(0, 3)
@@ -2411,6 +2498,116 @@ export class AppCore {
     return 'LENGTH: up to two sentences, only if it earns them.';
   }
 
+  /**
+   * Non-money material for this beat: an angle, plus the facts that angle needs.
+   *
+   * Only angles we can actually FEED are offered — asking for the ship angle
+   * with no loadout on file is an invitation to invent one. Everything here is
+   * journal truth the app already folds; this is a curated slice, deliberately
+   * not contextExtras(), whose background lines (CGs, trade leads) once gave the
+   * model places to hallucinate the commander into.
+   */
+  private copilotAngleBlock(): string {
+    const available: BeatAngle[] = [];
+    const facts: string[] = [];
+
+    const ship = this.ship.current ? describeShip(this.ship.current) : null;
+    if (ship) {
+      available.push('ship');
+      facts.push(`SHIP: ${ship}${this.ship.liveCargo != null ? `, ${this.ship.liveCargo} t in the hold` : ''}.`);
+    }
+
+    // The clock is only an angle when something is actually running down.
+    const soonest = this.sm
+      .activeMissions()
+      .map((m) => (m.expiry ? Date.parse(m.expiry) - Date.now() : NaN))
+      .filter((ms) => Number.isFinite(ms) && ms > 0)
+      .sort((a, b) => a - b)[0];
+    const hours = this.sessionStartAt ? (Date.now() - this.sessionStartAt) / 3_600_000 : 0;
+    if (soonest !== undefined || hours >= 2) available.push('clock');
+
+    const client = this.sm.activeMissions().find((m) => m.faction)?.faction;
+    if (client) {
+      available.push('client');
+      facts.push(`CLIENT: this work was posted by ${client}.`);
+    }
+
+    // What this place actually IS — the antidote to reading a station's name as
+    // a description of it, which the prompt bans and the fact fence cannot catch.
+    const intel = describeSystemIntel(this.sm.getState());
+    if (intel) {
+      available.push('place');
+      facts.push(intel);
+    }
+    // ...and what this place is FAMOUS for, when it is famous. Curated canon
+    // (lore.ts): the one true story a place carries beats any amount of
+    // invented atmosphere, and the habitual-claim tic was measured to fire
+    // almost only on beats that had nothing real to say about a place.
+    const lore = loreForSystem(this.sm.location.system);
+    if (lore) {
+      if (!available.includes('place')) available.push('place');
+      facts.push(`LOCAL LORE (true, common knowledge): ${lore}`);
+    }
+
+    if (this.copilot?.hasHistory()) available.push('callback');
+    if (this.navRouteJumps > 0 && this.navRouteDest) available.push('ahead');
+
+    // Community Goals — the only board-level opportunity the app tracks, and
+    // until now the ambient voice never saw one: they lived in contextExtras(),
+    // which only the ask path reads, and even there only the FIRST of them
+    // survived, stripped of the contributor counts. With four running at once
+    // the comparison IS the insight, so hand over all of them with the numbers.
+    //
+    // The direction of the comparison ships with the facts, not just with the
+    // angle: shown the raw counts alone the model treated the busiest goal as
+    // the best one ("Einheriar's doing well on the community board") — exactly
+    // backwards. A number the model cannot interpret is worse than no number.
+    // Community Goals — the only board-level opportunity the app tracks, and
+    // until now the ambient voice never saw one: they lived in contextExtras(),
+    // which only the ask path reads, and even there only the FIRST of them
+    // survived, stripped of the contributor counts.
+    //
+    // The CONCLUSION is handed over, never the raw board. Given the four goals
+    // and the rule for reading them, the model recommended the most contested
+    // one on 6 of 6 beats — bigger number reads as better. Given the answer, it
+    // simply says it. Ranking belongs in rankCommunityGoals(), not in a prompt.
+    const rank = rankCommunityGoals(this.sm.communityGoals);
+    if (rank) {
+      available.push('opening');
+      const q = rank.quietest;
+      const mine = q.playerContribution > 0 ? ' The commander has already put work into this one.' : '';
+      facts.push(
+        `COMMUNITY GOAL WORTH TAKING: of the ${rank.count} running, ${q.system} is the least contested — ` +
+          `hand in at ${q.market}, only ${q.contributors.toLocaleString('en-US')} pilots on it, so the biggest ` +
+          `share of the payout.${mine}` +
+          (rank.busiest
+            ? ` The crowded one is ${rank.busiest.system} with ${rank.busiest.contributors.toLocaleString('en-US')}.`
+            : ''),
+      );
+    }
+
+    // Long-term memory — who the commander is to these people, and what has
+    // happened to them here before. The single richest non-money source there
+    // is, and until now the ambient voice never saw any of it.
+    if (this.settings.memory.enabled) {
+      const m = this.selectedMission();
+      const recall = this.memory
+        .recallForContext(
+          {
+            system: this.sm.location.system !== 'unknown' ? this.sm.location.system : undefined,
+            faction: m?.faction,
+            targetFaction: m?.targetFaction,
+          },
+          Date.now(),
+        )
+        .slice(0, 3);
+      if (recall.length) facts.push(...recall.map((r) => `HISTORY: ${r}`));
+    }
+
+    const hint = beatAngleHint(pickBeatAngle(available, Math.random));
+    return [...facts, hint].filter(Boolean).join('\n');
+  }
+
   /** A compact STATE line so the same event reads differently under different
    *  conditions — how the session has gone, and the pressure of the run ahead.
    *  Gives the model something to be a person ABOUT, not just an event to echo. */
@@ -2431,8 +2628,15 @@ export class AppCore {
           // the lot to their carrier. State the hold alongside it.
           `${s.refinedOre ? `, ${s.refinedOre} t refined this session (hold right now: ${this.ship.liveCargo ?? 0} t)` : ''}, ${s.jumps} jump(s)`
         : '';
-    if (tally && tally !== this.lastStateTally) {
+    // "Changed since last beat" was too weak a filter: on a hand-in run the
+    // tally moves EVERY beat, so it was present every beat, and the takings
+    // became the only subject the operator had. Show it every fourth beat at
+    // most — a scoreboard is not news, and the angle block now carries the
+    // material it was standing in for.
+    this.beatsSinceTally += 1;
+    if (tally && tally !== this.lastStateTally && this.beatsSinceTally >= 4) {
       this.lastStateTally = tally;
+      this.beatsSinceTally = 0;
       parts.push(tally);
     }
     // Fatigue — a long shift, and a long haul between docking bays.
@@ -2538,7 +2742,13 @@ export class AppCore {
     // Compose the beat context: current NOW + a STATE line + a length target
     // (+ an optional framing note, e.g. a quiet stretch with no event behind it).
     // These ride in the ephemeral turn (only events are committed to history).
-    const ctx = [note, this.copilotNowLine(), this.copilotStateLine(), this.copilotLengthHint()]
+    const ctx = [
+      note,
+      this.copilotNowLine(),
+      this.copilotStateLine(),
+      this.copilotAngleBlock(),
+      this.copilotLengthHint(),
+    ]
       .filter(Boolean)
       .join('\n');
     // Keep the exact messages + the places it may name, so a beat that invents
@@ -2547,6 +2757,13 @@ export class AppCore {
     this.copilotRetryMsgs = msgs;
     this.copilotRetried = false;
     this.copilotAllowedPlaces = this.buildAllowedPlaces();
+    // Anything we deliberately told it THIS beat is fair game to name. The
+    // committed transcript covers past beats, but the ephemeral context — the
+    // lore line's "The Brig", a memory note's system, a screen reading's OCR'd
+    // station — would otherwise be flagged as fabrication for repeating what
+    // we just said.
+    for (const p of extractPlaces(ctx)) this.copilotAllowedPlaces.add(p);
+    if (scene) for (const p of extractPlaces(scene)) this.copilotAllowedPlaces.add(p);
     this.startLlm(
       entry,
       'commentary',
@@ -2638,13 +2855,50 @@ export class AppCore {
    *  what makes the copilot feel present between screen glances. */
   private copilotReact(tier: ReactionTier, note: string): void {
     if (!this.settings.vision.commentary || !isTauri) return;
-    if (!this.lmOk || this.lmBusy || this.glanceInFlight) return;
+    if (!this.lmOk || this.lmBusy || this.glanceInFlight || this.beatGateInFlight) return;
     if (Date.now() - this.lastGameActivity >= GAME_LIVE_WINDOW_MS) return;
     if (Date.now() - this.lastCombatAt < 60_000) return; // don't cut into a fight
     const inv = this.settings.vision.involvement;
     if (!copilotReactsTo(inv, tier)) return;
     // Density, not a metronome: the tenser the run, the closer the beats.
     if (Date.now() - this.lastCopilotBeatAt < copilotDensityGapMs(inv, this.copilotPressure())) return;
+    // A contract accepted, redirected, handed in or lost always earns a word —
+    // and the gate is measurably wrong about that one class (it voted SKIP on
+    // an accepted delivery), so it never gets to rule on it.
+    if (tier === 'mission' || !this.lastCopilotEventLine) {
+      this.noteGlance(note);
+      this.fireCopilotBeat(null);
+      return;
+    }
+    void this.gateThenReact(note);
+  }
+
+  /** Ask the cheap classifier whether this moment is worth a line, then beat.
+   *  ~90 ms against the ~530 ms beat it can save, so it pays for itself the
+   *  first time it says no. Fire-and-forget: nothing awaits a copilot beat. */
+  private async gateThenReact(note: string): Promise<void> {
+    const line = this.lastCopilotEventLine;
+    this.beatGateInFlight = true;
+    let speak = true;
+    try {
+      const verdict = await llmQuick({
+        ...this.lmTarget(),
+        model: this.activeModel()!,
+        messages: buildBeatGateChat(line) as unknown as ChatMessageWire[],
+      });
+      speak = parseBeatGate(verdict);
+    } finally {
+      this.beatGateInFlight = false;
+    }
+    if (!speak) {
+      // Stay quiet, and leave the event pending — it rides into whatever the
+      // operator does say next, exactly as an unspoken beat always has.
+      this.noteGlance('copilot — nothing worth saying about that.');
+      return;
+    }
+    // The world moved while we were asking; re-check what the gate raced past.
+    if (!this.settings.vision.commentary || !this.lmOk || this.lmBusy || this.glanceInFlight) return;
+    if (Date.now() - this.lastGameActivity >= GAME_LIVE_WINDOW_MS) return;
     this.noteGlance(note);
     this.fireCopilotBeat(null);
   }
@@ -2782,8 +3036,29 @@ export class AppCore {
   private contextExtras(): string[] {
     const out: string[] = [];
     if (this.sm.commanderName) out.push(`The commander's name is ${this.sm.commanderName}.`);
-    const cg = this.sm.communityGoals.find((g) => !g.complete);
-    if (cg) out.push(`Community Goal running: "${cg.title}" at ${cg.market} in ${cg.system}.`);
+    // Canonical lore for where the commander is and where the job points —
+    // asked about Jaques Station while docked AT Jaques Station, the operator
+    // used to answer "the founder is not part of the current manifest data".
+    const localLore = loreForSystem(this.sm.location.system);
+    if (localLore) out.push(`Local lore (true): ${localLore}`);
+    const destSystem = this.selectedMission()?.destination?.system;
+    if (destSystem && destSystem.toLowerCase() !== this.sm.location.system.toLowerCase()) {
+      const destLore = loreForSystem(destSystem);
+      if (destLore) out.push(`Destination lore (true): ${destLore}`);
+    }
+    // Ranked, not raw: asked "what should I do?" with four goals running, the
+    // old line named one at random and dropped the counts. Handing over the raw
+    // board instead makes the model recommend the busiest goal — so hand over
+    // the answer (see rankCommunityGoals).
+    const rank = rankCommunityGoals(this.sm.communityGoals);
+    if (rank) {
+      const q = rank.quietest;
+      out.push(
+        `Community Goals: ${rank.count} running. Least contested is "${q.title}" at ${q.market} in ${q.system} ` +
+          `(${q.contributors.toLocaleString('en-US')} pilots — the biggest share of the payout)` +
+          (rank.busiest ? `; most contested is ${rank.busiest.system} (${rank.busiest.contributors.toLocaleString('en-US')} pilots).` : '.'),
+      );
+    }
     const risk = this.stats.riskNote();
     if (risk) out.push(risk);
     // Carrier ownership changes what a hold full of tritium MEANS.
@@ -3220,12 +3495,9 @@ export class AppCore {
       if (happening) messages[1].content = `${happening}${messages[1].content}`;
     } else {
       messages = [
-        {
-          role: 'system',
-          content:
-            'You are the Mission Operator for an Elite Dangerous commander. No mission is active. ' +
-            'Answer briefly and practically (2-4 sentences, speakable, no markdown).',
-        },
+        // Same operator, contract board empty — the commander is talking to one
+        // person all session, not to a mission planner and a stranger.
+        { role: 'system', content: IDLE_ASK_SYSTEM },
         {
           role: 'user',
           content: `${happening}Current location: ${state.location.station ? `${state.location.station}, ` : ''}${state.location.system}${state.docked ? ' (docked)' : ''}.${(() => {
@@ -3570,6 +3842,26 @@ export class AppCore {
       responseFormat,
       presencePenalty: penalties?.presence,
       frequencyPenalty: penalties?.frequency,
+      // Skip the hidden reasoning pass on every path that just TALKS. Measured
+      // on the bundled gemma-4-e4b: a spoken beat costs ~5.1 s / 450 tokens
+      // with it and ~0.5 s / 16 without, and the reasoned lines were WORSE —
+      // the model writes itself a plan and a constraint checklist, ticks off
+      // "no 'Looks like' openings (Check)", then opens with "Looks like".
+      //
+      // Two kinds keep it, because both have something to get RIGHT rather than
+      // something to say, and neither is felt as latency:
+      //   * a responseFormat (reflect/describe/glance) — filling a JSON shape;
+      //   * 'ai', the ask path — which answers with a PLAN, and a plan has an
+      //     order. Without thinking, "what should I do right now?" on a contract
+      //     in another system came back "scan the Nav Beacon at Barsanti
+      //     Landing, then travel to CPD-23 501" on 3 of 3 questions: the right
+      //     steps in the wrong order, at the place the commander is standing
+      //     rather than the one the target is in. With it, 3 of 3 travelled
+      //     first — and it was the only arm that noticed the VIP's gift
+      //     commodity. A wrong route delivered in half a second is not a win.
+      // The tool-calling ask keeps thinking as well; it builds its own llmChat
+      // call in runAgent(), not this one.
+      noThinking: !responseFormat && kind !== 'ai',
     }).catch((e) => this.onAiError(id, String(e)));
   }
 
@@ -3582,7 +3874,9 @@ export class AppCore {
       this.finishBriefFallback(entry, m);
       return;
     }
-    this.startLlm(entry, 'brief', buildBriefingChat(m, state), 0.7);
+    // The briefing hears the session too, so a fourth identical courier run is
+    // not introduced with the same fresh face as the first.
+    this.startLlm(entry, 'brief', buildBriefingChat(m, state, this.copilot?.recentEvents(10) ?? []), 0.7);
   }
 
   private finishBriefFallback(entry: FeedEntry, m: Mission): void {
@@ -3766,6 +4060,27 @@ export class AppCore {
           this.emit();
           return;
         }
+        // Atmosphere fence: "Jaques Station always smells like recycled air" —
+        // a habitual claim it cannot know, in the exact shape of the example the
+        // prompt warns it off. The place name is real, so the fact fence below
+        // cannot see it. Measured to fire on ~0 of 16 beats when the context
+        // carried real material and on most of them when it did not, so this is
+        // really a detector for an empty beat.
+        const habitual = findHabitualGenerality(groundedText);
+        if (habitual && !this.copilotRetried && this.copilotRetryMsgs) {
+          this.copilotRetried = true;
+          this.copilotBeatInFlight = true;
+          this.noteGlance(`resampling — invented an atmosphere: "${habitual}"`);
+          this.startLlm(entry, 'commentary', this.copilotRetryMsgs, 0.85, 1800, undefined, { presence: 0.7, frequency: 0.5 });
+          return;
+        }
+        if (habitual) {
+          this.noteGlance(`dropped a beat — nothing to say but "${habitual}"`);
+          this.copilot?.recordSilent();
+          this.feed = this.feed.filter((e) => e !== entry);
+          this.emit();
+          return;
+        }
         const invented = findFabricatedPlace(groundedText, this.copilotAllowedPlaces);
         if (invented && !this.copilotRetried && this.copilotRetryMsgs) {
           this.copilotRetried = true;
@@ -3814,6 +4129,10 @@ export class AppCore {
         this.lastStoryText = finalText;
         this.rememberStory(finalText);
       }
+      // A briefing is the operator speaking, so the operator should remember
+      // saying it: without this the copilot could introduce a contract and then,
+      // two beats later, remark on it as if hearing about it for the first time.
+      if (kind === 'brief') this.copilotEvent(`OPERATOR SAID: ${finalText}`);
       this.speak(finalText);
       this.emit();
     } else if (kind === 'saga') {

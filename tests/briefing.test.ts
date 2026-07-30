@@ -78,3 +78,56 @@ test('commander name folds from LoadGame and Commander events', () => {
   sm.apply(ev({ timestamp: '2026-07-19T09:00:00Z', event: 'Commander', Name: "M'Allock" }));
   assert.equal(sm.getState().cmdr, "M'Allock");
 });
+// --- the operator is one person ---------------------------------------------
+// A live sweep against the bundled model caught this path saying "we have a
+// transport run for six passengers" — the operator climbing into a cockpit it
+// is not in, which is the exact voice rule the ambient copilot is held to.
+// Both paths now share it.
+
+test('no briefing path ever speaks in the first person plural', () => {
+  const now = '2026-07-19T09:52:00Z';
+  const cats: MissionCategory[] = [
+    'PassengerBulk', 'PassengerVIP', 'Courier', 'Delivery',
+    'Mining', 'Assassinate', 'Massacre', 'Other',
+  ];
+  const banned = /\b(we|we're|we've|our|ours|us|let's)\b/i;
+  for (const cat of cats) {
+    // Every template variant, not a lucky seed.
+    for (let seed = 0; seed < 24; seed++) {
+      const line = livelyBriefing(mission(cat), now, "M'Allock", mulberry32(seed));
+      assert.doesNotMatch(line, banned, `${cat} seed ${seed}: ${line}`);
+    }
+  }
+  const sys = buildBriefingChat(mission('PassengerVIP'), {
+    ...new MissionStateManager().getState(),
+    activeMissions: [mission('PassengerVIP')],
+    now,
+  }).map((m) => m.content).join(' ');
+  assert.match(sys, /NEVER "we", "our" or "us"/);
+  assert.match(sys, /They fly the ship; you run the comms/);
+});
+
+test('a briefing hears the session, so a repeat run is not introduced cold', () => {
+  const st = {
+    ...new MissionStateManager().getState(),
+    activeMissions: [mission('Courier')],
+    now: '2026-07-19T09:52:00Z',
+  };
+  const msgs = buildBriefingChat(st.activeMissions[0], st, [
+    'EVENT: Mission complete: Expansion Data Couriering. 195,681 cr paid.',
+    'EVENT: FSD jump to HIP 71120.',
+  ]);
+  assert.match(msgs[1].content, /already happened this session/);
+  assert.match(msgs[1].content, /195,681 cr paid/);
+  assert.doesNotMatch(msgs[1].content, /- EVENT:/); // prefix stripped for reading
+  assert.match(msgs[0].content, /echoes the session so far/);
+});
+
+test('a briefing with no session yet reads exactly as it always did', () => {
+  const st = {
+    ...new MissionStateManager().getState(),
+    activeMissions: [mission('Courier')],
+    now: '2026-07-19T09:52:00Z',
+  };
+  assert.doesNotMatch(buildBriefingChat(st.activeMissions[0], st)[1].content, /already happened this session/);
+});

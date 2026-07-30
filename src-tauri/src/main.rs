@@ -605,6 +605,23 @@ struct ChatTurn {
     tool_calls: Vec<serde_json::Value>,
 }
 
+/// POST one chat body, attaching the bundled engine's per-session key when we
+/// have one (LM Studio needs no auth and passes None).
+async fn send_chat(
+    client: &reqwest::Client,
+    url: &str,
+    body: &serde_json::Value,
+    api_key: Option<&str>,
+) -> Result<reqwest::Response, String> {
+    let mut req = client.post(url).json(body);
+    if let Some(key) = api_key.filter(|k| !k.is_empty()) {
+        req = req.bearer_auth(key);
+    }
+    req.send()
+        .await
+        .map_err(|e| format!("LM Studio unreachable: {e}"))
+}
+
 async fn stream_chat(
     app: &AppHandle,
     id: &str,
@@ -617,6 +634,7 @@ async fn stream_chat(
     tools: Option<serde_json::Value>,
     presence_penalty: Option<f32>,
     frequency_penalty: Option<f32>,
+    no_thinking: bool,
     api_key: Option<String>,
     cancel: Arc<AtomicBool>,
 ) -> Result<ChatTurn, String> {
@@ -647,16 +665,25 @@ async fn stream_chat(
     if let Some(fp) = frequency_penalty {
         body["frequency_penalty"] = json!(fp);
     }
-    let mut req = client.post(url).json(&body);
-    // The bundled engine is started with its own per-session key (see engine.rs);
-    // LM Studio needs no auth and passes None.
-    if let Some(key) = api_key.filter(|k| !k.is_empty()) {
-        req = req.bearer_auth(key);
+    // Skip the model's hidden reasoning pass on the conversational paths.
+    // Measured on the bundled gemma-4-e4b: a spoken beat costs ~5.1 s and 450
+    // tokens with it and ~0.5 s and 16 without, because the model writes a
+    // "Plan + Constraint Checklist" against our own system prompt before every
+    // line — and then still opens with the phrasings that prompt forbids. It is
+    // pure latency on chatter; tool calls and schema-constrained JSON keep it.
+    if no_thinking {
+        body["chat_template_kwargs"] = json!({ "enable_thinking": false });
     }
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| format!("LM Studio unreachable: {e}"))?;
+
+    // `chat_template_kwargs` is a llama.cpp/LM Studio extension, so a backend
+    // that does not know it can reject the whole request. Losing the operator's
+    // voice would be a bad trade for a latency optimisation: on a 4xx, drop the
+    // field and send the request again exactly as we always did.
+    let mut resp = send_chat(&client, &url, &body, api_key.as_deref()).await?;
+    if !resp.status().is_success() && no_thinking && resp.status().is_client_error() {
+        body.as_object_mut().map(|b| b.remove("chat_template_kwargs"));
+        resp = send_chat(&client, &url, &body, api_key.as_deref()).await?;
+    }
     let status = resp.status();
     if !status.is_success() {
         return Err(match status.as_u16() {
@@ -770,6 +797,7 @@ async fn llm_chat(
     tools: Option<serde_json::Value>,
     presence_penalty: Option<f32>,
     frequency_penalty: Option<f32>,
+    no_thinking: Option<bool>,
     api_key: Option<String>,
 ) -> Result<(), String> {
     let cancel = Arc::new(AtomicBool::new(false));
@@ -786,6 +814,7 @@ async fn llm_chat(
         tools,
         presence_penalty,
         frequency_penalty,
+        no_thinking.unwrap_or(false),
         api_key,
         cancel,
     )
@@ -810,6 +839,57 @@ fn llm_cancel(ctl: State<LlmCtl>, id: String) {
     if let Some(flag) = ctl.cancels.lock().unwrap().get(&id) {
         flag.store(true, Ordering::SeqCst);
     }
+}
+
+/// One-shot, non-streaming completion for the tiny internal questions the app
+/// asks itself — currently only the copilot's speak/skip gate.
+///
+/// Deliberately outside the `llm_chat` machinery: no cancel registry, no
+/// `llm-done` event, no feed entry, no busy flag. This is a ~90 ms yes/no asked
+/// BEFORE we decide a beat is worth generating, not a turn the commander ever
+/// sees, and routing it through the streaming path would make it contend with
+/// the very request it exists to avoid.
+#[tauri::command]
+async fn llm_quick(
+    endpoint: String,
+    model: String,
+    messages: Vec<ChatMsg>,
+    max_tokens: Option<u32>,
+    api_key: Option<String>,
+) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(3))
+        // Short on purpose: a gate that has not answered in a few seconds has
+        // already cost more than the beat it was meant to save.
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let url = format!("{}/v1/chat/completions", endpoint.trim_end_matches('/'));
+    let mut body = json!({
+        "model": model,
+        "messages": messages,
+        "temperature": 0,
+        "max_tokens": max_tokens.unwrap_or(8),
+        "stream": false,
+        "chat_template_kwargs": { "enable_thinking": false },
+    });
+    let mut resp = send_chat(&client, &url, &body, api_key.as_deref()).await?;
+    // Same fallback as stream_chat: an older backend may not know the field.
+    if !resp.status().is_success() && resp.status().is_client_error() {
+        if let Some(b) = body.as_object_mut() {
+            b.remove("chat_template_kwargs");
+        }
+        resp = send_chat(&client, &url, &body, api_key.as_deref()).await?;
+    }
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status().as_u16()));
+    }
+    let v: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    Ok(v["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or("")
+        .trim()
+        .to_string())
 }
 
 /// Model capabilities from LM Studio's richer REST API (`/api/v0/models`):
@@ -2141,6 +2221,7 @@ fn main() {
             edastro_system,
             copy_text,
             llm_cancel,
+            llm_quick,
             set_click_through,
             close_app,
             engine::engine_status,

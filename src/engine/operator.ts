@@ -9,6 +9,7 @@
  */
 import type { ChatMessage } from './lmstudio.ts';
 import type { Mission, MissionCategory, OperatorState } from './types.ts';
+import { ASK_PERSONA, LORE_PRIMER, UNIVERSAL_LORE } from './lore.ts';
 
 export function formatCredits(n: number): string {
   return `${n.toLocaleString('en-US')} cr`;
@@ -100,13 +101,13 @@ export function livelyBriefing(
   switch (m.category) {
     case 'PassengerBulk':
       lines = [
-        `${m.passengers?.count ?? 'A load of'} ${m.passengers?.type ?? ''} souls boarding, ${name}. Get them to ${dest} in one piece and ${pay} is ours.${timer}`,
+        `${m.passengers?.count ?? 'A load of'} ${m.passengers?.type ?? ''} souls boarding, ${name}. Get them to ${dest} in one piece and ${pay} is yours.${timer}`,
         `Cabins are filling up — ${m.passengers?.count ?? ''} ${m.passengers?.type ?? 'passengers'} bound for ${dest}. Fly smooth, collect ${pay}.${timer}`,
       ];
       break;
     case 'PassengerVIP':
       lines = [
-        `VIP aboard, ${name}: "${m.title}". ${pay} says we keep them smiling all the way to ${dest}.${gift}${timer}`,
+        `VIP aboard, ${name}: "${m.title}". ${pay} says you keep them smiling all the way to ${dest}.${gift}${timer}`,
         `White-glove run: ${m.passengers?.count ?? 'a'} ${m.passengers?.type ?? 'VIP'} party to ${dest} for ${pay}. No interdictions on my watch.${gift}${timer}`,
       ];
       break;
@@ -154,9 +155,27 @@ export function livelyBriefing(
   return pickT(lines, rng);
 }
 
-/** LLM prompt for a personal acceptance briefing (temperature ~0.7). */
-export function buildBriefingChat(m: Mission, state: OperatorState): ChatMessage[] {
+/**
+ * LLM prompt for a personal acceptance briefing (temperature ~0.7).
+ *
+ * `recentEvents` is the living copilot's session digest. A briefing used to be
+ * the one thing the operator said with no idea what the last hour had been —
+ * so a fourth identical courier run got the same fresh-faced introduction as
+ * the first. Handing it the session lets a new contract land as part of the run
+ * the commander is actually having.
+ */
+export function buildBriefingChat(
+  m: Mission,
+  state: OperatorState,
+  recentEvents: readonly string[] = [],
+): ChatMessage[] {
   const name = state.cmdr ? `Commander ${state.cmdr}` : 'the commander';
+  const happening = recentEvents.length
+    ? `What has already happened this session (newest last):\n${recentEvents
+        .slice(-10)
+        .map((e) => `- ${e.replace(/^EVENT: /, '')}`)
+        .join('\n')}\n\n`
+    : '';
   return [
     {
       role: 'system',
@@ -167,12 +186,20 @@ export function buildBriefingChat(m: Mission, state: OperatorState): ChatMessage
         'acceptance briefing: two to three spoken sentences. Use ONLY the facts provided — never ' +
         'invent factions, companies, places or people; always include the destination and the ' +
         'pay; mention the time limit if it is under six hours; mention a required gift commodity ' +
-        'or WANTED passengers if listed. Address the commander personally. Correct Elite ' +
-        'Dangerous terminology; no modern-Earth idioms. No markdown, no preamble.',
+        'or WANTED passengers if listed. Address the commander personally. ' +
+        // The same voice rule the ambient copilot lives by. Without it this path
+        // produced "we have a transport run for six passengers" — the operator
+        // climbing into a cockpit it is not in.
+        'You are your OWN person at the other end of the channel, not a voice in their head: say ' +
+        '"I" for yourself and "you" for them, and NEVER "we", "our" or "us". They fly the ship; ' +
+        'you run the comms. ' +
+        'If this contract echoes the session so far — the same run again, the same client, the ' +
+        'same port — say so in passing rather than introducing it cold. ' +
+        'Correct Elite Dangerous terminology; no modern-Earth idioms. No markdown, no preamble.',
     },
     {
       role: 'user',
-      content: `${missionContext(m, state)}\n\nDeliver the acceptance briefing now.`,
+      content: `${happening}${missionContext(m, state)}\n\nDeliver the acceptance briefing now.`,
     },
   ];
 }
@@ -291,7 +318,8 @@ const CATEGORY_GUIDANCE: Record<MissionCategory, string> = {
 };
 
 const BASE_SYSTEM =
-  'You are the Mission Operator for an Elite Dangerous commander. Give a grounded, ordered plan ' +
+  `${ASK_PERSONA} ${LORE_PRIMER} ${UNIVERSAL_LORE} ` +
+  'Give a grounded, ordered plan ' +
   'for the ACTIVE mission using ONLY facts in the provided context (mission data, steps, detected ' +
   'signals, stations). Start with what the commander should do right now from the current ' +
   'location, then the next actions to finish or hand in. Use exact system/station/signal names ' +
@@ -299,6 +327,12 @@ const BASE_SYSTEM =
   'unknown, say exactly what to scan next (Nav Beacon or FSS) to reveal it. Never tell the pilot ' +
   'to "check the map" or "check nearby systems" when the destination is already named. Correct ED ' +
   'terminology. Output 2-4 short speakable sentences, plain text only, and always return an answer.';
+
+/** The same operator, with no contract on the board to plan around. */
+export const IDLE_ASK_SYSTEM =
+  `${ASK_PERSONA} ${LORE_PRIMER} ${UNIVERSAL_LORE} ` +
+  'No mission is active. Answer from the facts provided — never invent places, prices, ' +
+  'mechanics or events. Output 2-4 short speakable sentences, plain text only, no markdown.';
 
 export function systemPromptFor(category: MissionCategory): ChatMessage {
   return { role: 'system', content: `${BASE_SYSTEM} ${CATEGORY_GUIDANCE[category]}` };

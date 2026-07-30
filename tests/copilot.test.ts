@@ -5,11 +5,18 @@ import assert from 'node:assert/strict';
 import {
   CopilotConversation,
   buildCopilotSystem,
+  buildBeatGateChat,
+  parseBeatGate,
+  pickBeatAngle,
+  beatAngleHint,
+  speakableCredits,
+  roundCreditsForSpeech,
   copilotReactsTo,
   copilotReactionGapMs,
   copilotDensityGapMs,
   copilotSilenceGapMs,
   isNearDuplicate,
+  type BeatAngle,
 } from '../src/engine/copilot.ts';
 import { stripFillerTics } from '../src/engine/glance.ts';
 import { parseProspectTarget, matchesProspect } from '../src/engine/mining.ts';
@@ -17,8 +24,11 @@ import {
   extractPlaces,
   findCollectivePronoun,
   findFabricatedPlace,
+  findHabitualGenerality,
   findLiftedExample,
 } from '../src/engine/factcheck.ts';
+import { loreForSystem, UNIVERSAL_LORE } from '../src/engine/lore.ts';
+import { IDLE_ASK_SYSTEM } from '../src/engine/operator.ts';
 
 test('copilot system prompt carries the persona and the event-stream contract', () => {
   const sys = buildCopilotSystem("M'allock");
@@ -273,4 +283,245 @@ test('filler stripping handles hedges and casing past the first sentence', () =>
   );
   // Decimals must survive untouched.
   assert.equal(stripFillerTics('Jump is 22.5 ly out.'), 'Jump is 22.5 ly out.');
+});
+
+// --- the speak/skip gate -----------------------------------------------------
+// The operator will not stay quiet in character (measured: it spoke on 16/16
+// events in a replayed session, and on 5/5 routine jumps even with an explicit
+// "always NO_BEAT on a routine jump" rule in its prompt). Silence is therefore
+// decided by a separate, personaless classification call — these tests cover
+// the shape of that call and, above all, its failure mode.
+
+test('beat gate is asked cold — no persona, no transcript, one event', () => {
+  const msgs = buildBeatGateChat('EVENT: FSD jump to HIP 71120.');
+  assert.equal(msgs.length, 2);
+  assert.equal(msgs[0].role, 'system');
+  assert.equal(msgs[1].role, 'user');
+  assert.equal(msgs[1].content, 'EVENT: FSD jump to HIP 71120.');
+  const sys = String(msgs[0].content);
+  assert.match(sys, /SPEAK or SKIP/);
+  assert.match(sys, /when in doubt, SKIP/i);
+  // The operator's own voice rules must NOT leak in: being handed the persona
+  // is exactly what stops the model reaching for silence.
+  assert.doesNotMatch(sys, /NO_BEAT|dry, unhurried veteran|Commander/);
+});
+
+test('beat gate trims the event line it is handed', () => {
+  const msgs = buildBeatGateChat('  EVENT: Mission FAILED: Transport Essence Emerson.  \n');
+  assert.equal(msgs[1].content, 'EVENT: Mission FAILED: Transport Essence Emerson.');
+});
+
+test('beat gate reads a verdict in either direction', () => {
+  assert.equal(parseBeatGate('SKIP'), false);
+  assert.equal(parseBeatGate('skip'), false);
+  assert.equal(parseBeatGate(' SKIP\n'), false);
+  assert.equal(parseBeatGate('SPEAK'), true);
+  assert.equal(parseBeatGate('speak'), true);
+});
+
+test('beat gate defaults to SPEAK when the model is unreachable or incoherent', () => {
+  // A gate that cannot answer must never be able to mute the operator for a
+  // whole session — the tier and density gates upstream still hold the line,
+  // so falling open lands on the behaviour that shipped before the gate.
+  assert.equal(parseBeatGate(''), true);
+  assert.equal(parseBeatGate('   '), true);
+  assert.equal(parseBeatGate('I think this one is worth a mention'), true);
+  assert.equal(parseBeatGate('{"verdict": null}'), true);
+});
+
+test('beat gate does not read SKIP out of an unrelated word', () => {
+  // Substring matching would turn "skipper"/"skipping" into silence.
+  assert.equal(parseBeatGate('The skipper called it in'), true);
+  assert.equal(parseBeatGate('Skipping the beacon'), true);
+});
+
+// --- what a beat is allowed to be about --------------------------------------
+// Every ambient line came out about money because money was all the beat
+// context held (7 of 8 lines over a replayed session). The angle picker exists
+// to hand the model something else to be a person about — but only ever an
+// angle we can actually feed, since an angle without facts is an invitation to
+// invent them.
+
+test('an angle is only ever offered when there is material for it', () => {
+  const always = () => 0.99; // never takes the "leave it open" branch
+  assert.equal(pickBeatAngle([], always), null);
+  assert.equal(pickBeatAngle(['ship'], always), 'ship');
+  assert.equal(pickBeatAngle(['clock'], always), 'clock');
+});
+
+test('roughly one beat in four is left open, with no angle at all', () => {
+  // An angle on every beat would be its own formula.
+  assert.equal(pickBeatAngle(['ship', 'clock'], () => 0.1), null);
+  assert.notEqual(pickBeatAngle(['ship', 'clock'], () => 0.5), null);
+});
+
+test('the picker only ever returns an angle from the offered set', () => {
+  const offered: BeatAngle[] = ['ship', 'client'];
+  for (let i = 0; i < 40; i++) {
+    const r = i / 40;
+    const got = pickBeatAngle(offered, () => 0.3 + r * 0.69);
+    if (got !== null) assert.ok(offered.includes(got), `${got} was never offered`);
+  }
+});
+
+test('every angle carries an instruction; an open beat carries none', () => {
+  assert.equal(beatAngleHint(null), '');
+  for (const a of ['ship', 'clock', 'client', 'place', 'callback', 'ahead'] as const) {
+    assert.match(beatAngleHint(a), /^ANGLE: /);
+  }
+  // The place angle must repeat the name-is-not-a-fact rule where it bites:
+  // it is the one angle that invites a claim about somewhere.
+  assert.match(beatAngleHint('place'), /ONLY from what you have actually been told/);
+  assert.match(beatAngleHint('place'), /pick another angle/);
+  // Looking forward, not restating what just happened.
+  assert.match(beatAngleHint('ahead'), /not the one just finished/);
+});
+
+// --- credits the model can actually say --------------------------------------
+// From a live session: a 971,646 cr hand-in was announced to the commander as
+// "Ninety-seven grand for moving some VIPs" — an order of magnitude out. The
+// NOW line was already rounded for exactly this reason, but EVENT lines are
+// built from the feed's notice strings and still carried "971,646 cr".
+
+test('speakableCredits rounds to something a 7.5B model reads correctly', () => {
+  assert.equal(speakableCredits(971_646), '~972k cr'); // the live-session figure
+  assert.equal(speakableCredits(561_646), '~562k cr');
+  assert.equal(speakableCredits(2_424_592), '~2.4M cr'); // the figure in the old comment
+  assert.equal(speakableCredits(1_564_280), '~1.6M cr');
+  assert.equal(speakableCredits(12_500_000), '~13M cr'); // no decimal past 10M
+  assert.equal(speakableCredits(10_000), '~10k cr');
+  // Below 10k the exact figure is short enough to be safe.
+  assert.equal(speakableCredits(9_999), '9999 cr');
+  assert.equal(speakableCredits(0), '0 cr');
+  assert.equal(speakableCredits(-50_000), '-~50k cr');
+  assert.equal(speakableCredits(Number.NaN), '0 cr');
+});
+
+test('roundCreditsForSpeech rewrites the real notice lines that caused this', () => {
+  assert.equal(
+    roundCreditsForSpeech('EVENT: You\'ve arrived. You can hand in "Transport Tesla Santos" here for 971,646 cr.'),
+    'EVENT: You\'ve arrived. You can hand in "Transport Tesla Santos" here for ~972k cr.',
+  );
+  assert.equal(
+    roundCreditsForSpeech('EVENT: Mission complete: Transport Tesla Santos. 561,646 cr paid. You took a reduced package — 410,000 cr under the board price.'),
+    'EVENT: Mission complete: Transport Tesla Santos. ~562k cr paid. You took a reduced package — ~410k cr under the board price.',
+  );
+  assert.equal(
+    roundCreditsForSpeech("EVENT: Target eliminated. You're redirected — return to Malchiodi City to collect 1,564,280 cr."),
+    "EVENT: Target eliminated. You're redirected — return to Malchiodi City to collect ~1.6M cr.",
+  );
+  assert.equal(
+    roundCreditsForSpeech('EVENT: You\'ve arrived. 4 missions can be handed in here for 383,317 cr total.'),
+    'EVENT: You\'ve arrived. 4 missions can be handed in here for ~383k cr total.',
+  );
+});
+
+test('roundCreditsForSpeech touches ONLY credit figures', () => {
+  // Tonnage, percentages, pad numbers, distances, body names, dates: all safe.
+  const keep = 'EVENT: Prospected 24% Tritium on pad 15; 206 t refined, 55.9 ly run, body 1 a, in 3312.';
+  assert.equal(roundCreditsForSpeech(keep), keep);
+  // A figure under 10k is left exact even with the cr suffix.
+  assert.equal(roundCreditsForSpeech('paid 9,500 cr'), 'paid 9,500 cr');
+  // Nothing to do is a no-op, not a mangling.
+  assert.equal(roundCreditsForSpeech('EVENT: FSD jump to HIP 71120.'), 'EVENT: FSD jump to HIP 71120.');
+  assert.equal(roundCreditsForSpeech(''), '');
+});
+
+test('the NOW line and the event stream agree on how a figure is said', () => {
+  // They used to have separate implementations; a figure must not be "~972k cr"
+  // in one place and something else in the other, or the model sees a conflict.
+  for (const n of [971_646, 2_424_592, 12_500_000, 45_000]) {
+    assert.equal(roundCreditsForSpeech(`for ${n.toLocaleString('en-US')} cr.`), `for ${speakableCredits(n)}.`);
+  }
+});
+
+// --- the atmosphere tic ------------------------------------------------------
+// From a live session: "Jaques Station is always a good place to drop in." The
+// prompt bans habitual claims twice over and even supplies "pad seven smells of
+// synth-coffee" as the bad example — and the model reproduced that example's
+// shape on 3 of 3 glance beats at one station. Instructions do not stop it, so
+// a fence does.
+
+test('habitual claims about a place are caught however they are phrased', () => {
+  const caught = [
+    'Jaques Station always smells like recycled air.',
+    'Jaques Station is always a good place to drop in.',
+    'Paxton Landing always has a decent flow to it.',
+    "Pad seven always gets the traffic, doesn't it.",
+    'The Forge of Vulcan. Always a good spot to catch your breath.',
+    'Luchtaine always seems to have a payday lined up for you.',
+    'Malchiodi City always pays the bills.',
+    'Robardin Rock never disappoints.',
+    // Smuggled mid-sentence after a comma, on top of TRUE lore — a live catch.
+    "Jaques Station, built around a bartender's jump in 3302, always smells faintly of old synth-whiskey.",
+  ];
+  for (const b of caught) assert.ok(findHabitualGenerality(b), `should have flagged: ${b}`);
+});
+
+test('the fence leaves real observations alone', () => {
+  // Every one of these is a line the model actually produced when its beat
+  // context carried real material — none may be dropped.
+  const kept = [
+    'Better keep that Python running smooth.',
+    'Three runs queued up.',
+    'GR Virginis Dominion has kept its word on the payout this run.',
+    'Five resource sites and a beacon. Everything out here is for sale or ready to blow up.',
+    'Pad twenty-two. Quiet berth.',
+    'Eighteen bodies. A proper sprawl.',
+    'That history with HIP 71120 is something to keep clear of.',
+    'Einheriar is running the smallest goal with just 601 pilots chipping in.',
+    "You don't want another repeat of that lost ship run.",
+    'The clock is ticking on three hauls for that one poster.',
+  ];
+  for (const b of kept) assert.equal(findHabitualGenerality(b), null, `false positive on: ${b}`);
+});
+
+test('the offending phrase is returned, so the log says what was dropped', () => {
+  assert.match(String(findHabitualGenerality('Jaques Station always smells like recycled air.')), /always smells/i);
+  assert.match(String(findHabitualGenerality('Always a good spot to rest.')), /^Always a good/i);
+});
+
+test('the "opening" angle voices a conclusion and is forbidden from reaching one', () => {
+  // Asked to work out which of four goals was least contested, the model chose
+  // the MOST contested on 6 of 6 beats. Ranking moved into rankCommunityGoals();
+  // this angle must never invite the model back into doing it itself.
+  const hint = beatAngleHint('opening');
+  assert.match(hint, /^ANGLE: the opening/);
+  assert.match(hint, /pass on the opportunity the facts have already picked out/);
+  assert.match(hint, /never rank or compare anything yourself/);
+});
+
+// --- canonical lore ----------------------------------------------------------
+// The grounding rules suppress invention, but they suppressed true knowledge
+// with it: docked AT Jaques Station, the operator answered "the founder is not
+// part of the current manifest data", and it claimed no intel on the Pilots
+// Federation — the guild every commander belongs to. Canon is now curated in
+// lore.ts and handed over as material, like every other fact.
+
+test('loreForSystem knows the famous places and never guesses at the rest', () => {
+  assert.match(String(loreForSystem('Colonia')), /Jaques/);
+  assert.match(String(loreForSystem('Colonia')), /3302/);
+  assert.match(String(loreForSystem('Colonia')), /22,000 light-years/);
+  // The engineer systems from live sessions (Luchtaine and Asura both appeared).
+  assert.match(String(loreForSystem('Luchtaine')), /Mel Brandon/);
+  assert.match(String(loreForSystem('Asura')), /Petra Olmanova/);
+  assert.match(String(loreForSystem('Carcosa')), /Robardin Rock/);
+  // Case- and whitespace-insensitive, as journal names vary.
+  assert.equal(loreForSystem(' COLONIA '), loreForSystem('Colonia'));
+  // Unknown places return null — a gazetteer that guesses is worse than none.
+  assert.equal(loreForSystem('HIP 71120'), null);
+  assert.equal(loreForSystem(''), null);
+  assert.equal(loreForSystem(null), null);
+});
+
+test('universal lore covers the two questions the operator got wrong', () => {
+  assert.match(UNIVERSAL_LORE, /PILOTS FEDERATION/);
+  assert.match(UNIVERSAL_LORE, /Harmless up to the coveted Elite/);
+  assert.match(UNIVERSAL_LORE, /THARGOIDS/);
+  // ...and stays in-fiction while doing it.
+  assert.doesNotMatch(UNIVERSAL_LORE, /game|player|Frontier/i);
+});
+
+test('the ask prompts carry the universal lore', () => {
+  assert.match(IDLE_ASK_SYSTEM, /PILOTS FEDERATION/);
 });
