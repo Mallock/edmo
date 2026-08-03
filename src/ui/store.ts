@@ -15,7 +15,8 @@ import { parseJournalLine, parseJournalLines } from '../engine/parse.ts';
 import {
   arrivalNotice,
   buildBriefingChat,
-  buildChat,
+  missionContext,
+  systemPromptFor,
   cargoNotice,
   completionNotice,
   describeSystemIntel,
@@ -493,6 +494,8 @@ export class AppCore {
   /** True while the speak/skip gate is deciding, so a burst of events cannot
    *  stack several gate calls (and several beats) on top of each other. */
   private beatGateInFlight = false;
+  /** The next beat is the chatter cadence's story, not an event reaction. */
+  private storyBeatPending = false;
   /** Beats since the running tally was last put in front of the model — it is
    *  background, and shown every beat it becomes the only subject there is. */
   private beatsSinceTally = 0;
@@ -2755,7 +2758,18 @@ export class AppCore {
       if (recall.length) facts.push(...recall.map((r) => `HISTORY: ${r}`));
     }
 
-    const angle = pickBeatAngle(available, Math.random);
+    // A story beat asks for scuttlebutt explicitly; ordinary beats never draw
+    // it, so the long form only appears on the chatter cadence.
+    const angle = this.storyBeatPending ? 'story' : pickBeatAngle(available, Math.random);
+    this.storyBeatPending = false;
+    if (angle === 'story') {
+      const seeds = this.freshSeeds();
+      if (seeds.length) {
+        facts.push(['RECENT TRUE EVENTS:', ...seeds.slice(-6).map((x) => `- ${x}`)].join('\n'));
+      }
+      const comms = this.freshComms();
+      if (comms.length) facts.push(`OVERHEARD ON LOCAL COMMS (real): ${comms.slice(-3).join(' · ')}`);
+    }
     if (angle === 'opening' && rank) {
       const q = rank.quietest;
       const mine = q.playerContribution > 0 ? ' The commander has already put work into this one.' : '';
@@ -2889,6 +2903,12 @@ export class AppCore {
         : []),
       ...(missionLines.length ? ['Active missions:', ...missionLines] : []),
     ].join('\n');
+  }
+
+  /** Is the living copilot the voice right now? When it is, nothing else may
+   *  speak in the operator's name — one channel, one person. */
+  private copilotIsLive(): boolean {
+    return this.settings.vision.commentary && isTauri && this.lmOk;
   }
 
   /** Fire one copilot beat into the running conversation — the shared path for
@@ -3693,43 +3713,54 @@ export class AppCore {
       this.pushFeed('system', `⛏ Watching for ${target.commodity} at ${target.minPct}%+ — I'll flag the rocks.`);
     }
 
-    // One session, one view of it. The copilot's event stream is what the
-    // operator has actually been living through, so the assistant the commander
-    // TALKS to gets it too — otherwise a bare "what?" lands in a prompt full of
-    // commodity prices and gets answered about the market.
+    // Build this as an ORDINARY CHAT: a system prompt that carries the persona
+    // AND everything the app knows about the live game, then real user/assistant
+    // turns, then whatever the commander actually typed — verbatim.
+    //
+    // It used to jam the whole fact-blob into the user turn on every question,
+    // so each message read as if the commander had recited the market at
+    // themselves before speaking. That is what made a bare "yes" answer about
+    // commodity prices: the biggest thing in the "user" message was a price
+    // list, so that is what got answered. Facts belong in the system prompt as
+    // standing knowledge the operator simply HAS; the user turn is speech.
     const events = this.copilot?.recentEvents(20) ?? [];
-    const happening = events.length
-      ? `What has just been happening (newest last):\n${events
-          .map((e) => `- ${e.replace(/^EVENT: /, '')}`)
-          .join('\n')}\n\n`
-      : '';
-
-    let messages: ChatMessage[];
-    if (mission) {
-      messages = buildChat(mission, state, q);
-      if (this.navRouteJumps > 0 && this.navRouteDest) {
-        messages[1].content += `\n(Plotted route: ${this.navRouteJumps} jump(s) to ${this.navRouteDest}.)`;
-      }
-      for (const line of this.contextExtras()) messages[1].content += `\n(${line})`;
-      if (happening) messages[1].content = `${happening}${messages[1].content}`;
-    } else {
-      messages = [
-        // Same operator, contract board empty — the commander is talking to one
-        // person all session, not to a mission planner and a stranger.
-        // Named, so the operator answers a greeting like the person who has
-        // been talking to them all session rather than a status console.
-        { role: 'system', content: idleAskSystem(this.sm.commanderName || undefined) },
-        {
-          role: 'user',
-          content: `${happening}Current location: ${state.location.station ? `${state.location.station}, ` : ''}${state.location.system}${state.docked ? ' (docked)' : ''}.${(() => {
-            const intel = describeSystemIntel(state);
-            return intel ? `\n${intel}` : '';
-          })()}${this.contextExtras()
-            .map((l) => `\n(${l})`)
-            .join('')}\n\nCommander asks: ${q}`,
-        },
-      ];
+    const knowledge: string[] = [];
+    if (events.length) {
+      knowledge.push(
+        ['WHAT HAS BEEN HAPPENING (newest last):', ...events.map((e) => `- ${e.replace(/^EVENT: /, '')}`)].join('\n'),
+      );
     }
+    knowledge.push(
+      `WHERE THEY ARE: ${state.location.station ? `${state.location.station}, ` : ''}${state.location.system}${state.docked ? ' (docked)' : ''}.`,
+    );
+    if (mission) knowledge.push(`THE ACTIVE CONTRACT:
+${missionContext(mission, state)}`);
+    const intel = describeSystemIntel(state);
+    if (intel) knowledge.push(intel);
+    if (this.navRouteJumps > 0 && this.navRouteDest) {
+      knowledge.push(`Plotted route: ${this.navRouteJumps} jump(s) to ${this.navRouteDest}.`);
+    }
+    knowledge.push(...this.contextExtras());
+
+    const persona = mission
+      ? String(systemPromptFor(mission.category, state.cmdr).content)
+      : idleAskSystem(this.sm.commanderName || undefined);
+    const system =
+      `${persona}
+
+` +
+      `LIVE GAME DATA — everything below is true right now and is YOURS to use freely. ` +
+      `Bring up whatever is actually relevant to what they said; you do not need permission ` +
+      `to talk about their ship, their cargo, the market, the contracts or the system. ` +
+      `Just do not recite it when they were only making conversation.
+
+` +
+      knowledge.join('\n');
+
+    const messages: ChatMessage[] = [
+      { role: 'system', content: system },
+      { role: 'user', content: q },
+    ];
 
     // Splice the dialogue between the system prompt and the fresh question,
     // with the previous question's tool results just before it.
@@ -3741,6 +3772,9 @@ export class AppCore {
       this.finishAiWithFallback(entry, mission, nowIso, 'LM Studio is offline');
       return;
     }
+    // Tools stay available on every turn and the model decides — the same
+    // "auto" behaviour a chat client gives it. Gating them by question shape
+    // only ever guessed wrong about what the commander might want looked up.
     if (this.toolsActive(model)) this.startAgentic(entry, messages);
     else this.startLlm(entry, 'ai', messages, this.settings.lm.temperature);
   }
@@ -3915,6 +3949,24 @@ export class AppCore {
       return;
     }
     if (this.lmBusy) return;
+    // ONE operator. When the living copilot is running it already has the
+    // session, the persona and the memory, so a story is just a longer beat
+    // from it — not a second voice.
+    //
+    // Reported live: the copilot was mid-run calling the commander by name
+    // while a separate stateless story opened "Commander, the word travels…"
+    // about the very community goals the copilot's own opening angle covers.
+    // Two operators, one channel. The standalone prompts below stay for when
+    // the copilot is off (commentary disabled, or the model is down), which is
+    // exactly when a second voice cannot collide with a first.
+    if (this.copilotIsLive()) {
+      this.lastStoryAt = Date.now();
+      this.seedCountAtLastStory = this.seeds.length;
+      this.storyBeatPending = true;
+      this.noteGlance('copilot — a bit of dock talk…');
+      this.fireCopilotBeat(null, 'STORY BEAT: tell a piece of scuttlebutt from this run.');
+      return;
+    }
     this.lastStoryAt = Date.now();
     this.seedCountAtLastStory = this.seeds.length;
     const state = { ...this.sm.getState(), now: new Date().toISOString() };

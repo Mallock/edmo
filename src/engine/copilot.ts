@@ -90,7 +90,16 @@ export function copilotReactsTo(inv: CopilotInvolvement, tier: ReactionTier): bo
  * on every beat would be its own formula, and the best lines in testing were
  * the unprompted ones.
  */
-export type BeatAngle = 'ship' | 'clock' | 'client' | 'place' | 'callback' | 'ahead' | 'opening' | 'self';
+export type BeatAngle =
+  | 'ship'
+  | 'clock'
+  | 'client'
+  | 'place'
+  | 'callback'
+  | 'ahead'
+  | 'opening'
+  | 'self'
+  | 'story';
 
 export interface CopilotSystemOptions {
   /** Epic cadence: same factual grounding, but with larger-purpose framing. */
@@ -123,6 +132,17 @@ const ANGLE_HINTS: Readonly<Record<BeatAngle, string>> = {
     'Perseus Arm runs and the old Lave lanes, before the interdiction that put you at this desk). ' +
     'The memory is YOURS: say it as "I" — never hand your past to the commander, who has their ' +
     'own. One line of you, tied back to their run.',
+  // Scuttlebutt, told by the SAME operator rather than a second one.
+  //
+  // Ambient stories used to come from their own stateless prompt with its own
+  // persona and no memory of the session, so the commander heard two people:
+  // the copilot calling them by name mid-run, and a stranger opening
+  // "Commander, the word travels…" about a topic the copilot had already
+  // covered. Same voice, same thread, same memory — it is just a longer beat.
+  story: 'ANGLE: scuttlebutt — one piece of dock talk that grows out of what has actually ' +
+    'happened on this run: who noticed, what the word is, what it means for the commander. ' +
+    'Two or three sentences, and frame any speculation plainly as rumour ("word is…", ' +
+    '"they say…"). Never invent a place, a faction or an event you were not told about.',
 };
 
 /**
@@ -328,8 +348,16 @@ export function buildCopilotSystem(cmdr?: string, opts: CopilotSystemOptions = {
     'have fallen into a formula; break it. NEVER use the crutch word "certainly", and never reuse a frame ' +
     'from an earlier beat ("[X] certainly knows how to…", "knows how to build a deadline into a payday") — ' +
     'fresh words every time. ' +
-    'No coaching or filler ("keep an eye out", "stay safe", "nice work", "all systems nominal"), no ' +
-    'rhetorical questions, no predictions about what happens next. ' +
+    'No coaching or filler ("keep an eye out", "stay safe", "nice work", "all systems nominal"), and no ' +
+    'predictions about what happens next. ' +
+    // Questions were banned outright, on the theory that they were filler. In
+    // play they turn out to be the opposite: "Jaques is still running this
+    // show, isn't he?" got a real answer back from the commander, which is the
+    // channel working. A GENUINE question is an invitation; what stays banned
+    // is the empty kind that expects nothing.
+    'You may put a real question to the commander now and then — something you would actually like ' +
+    'an answer to, about the run, the place or them. Not every beat, and never the empty rhetorical ' +
+    'kind that answers itself. When they reply, take it as part of the same conversation. ' +
     'Do not repeat a line or an observation you already made — but every NEW event is a fresh moment that ' +
     'earns its own reaction: a second hand-in, a return to a system you passed earlier, another job. A new ' +
     'payout is a new payout. Stay present as the run goes on; the history above is material to build on and ' +
