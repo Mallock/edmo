@@ -658,3 +658,54 @@ test('an ordinary beat is untouched by either helper', () => {
   assert.equal(isSilenceVerdict(beat), false);
   assert.equal(stripVerdict(beat), beat);
 });
+
+// --- one thread ---------------------------------------------------------------
+// Reported live twice: the operator said "That old thing has seen some miles",
+// the commander asked "what thing?", and the answer was about the market. The
+// ask path was assembling its own conversation from a separate buffer, so the
+// remark being asked about was never the previous assistant turn.
+
+test('a spoken exchange joins the same transcript as the beats', () => {
+  const cp = new CopilotConversation('SYS');
+  cp.recordEvent('EVENT: Docking granted — pad 4 at Paxton Landing.');
+  cp.messagesForBeat('now', null);
+  cp.recordSpoken('That old thing has seen some miles.');
+  cp.recordExchange('what thing?', 'The Python. Twenty-one runs and counting.');
+  const t = cp.transcript();
+  assert.deepEqual(t.map((x) => x.role), ['user', 'assistant', 'user', 'assistant']);
+  assert.equal(t[1].content, 'That old thing has seen some miles.');
+  assert.match(t[2].content, /COMMANDER SAID: what thing\?/);
+  assert.equal(t[3].content, 'The Python. Twenty-one runs and counting.');
+});
+
+test('the thread hands back the beats as real turns for the ask path', () => {
+  const cp = new CopilotConversation('SYS');
+  cp.recordEvent('EVENT: A'); cp.messagesForBeat('n', null); cp.recordSpoken('first');
+  cp.recordEvent('EVENT: B'); cp.messagesForBeat('n', null); cp.recordSpoken('second');
+  const turns = cp.recentTurns(16);
+  // The last thing the operator said must be the last assistant turn, so a
+  // follow-up resolves against it.
+  assert.equal(turns[turns.length - 1].role, 'assistant');
+  assert.equal(turns[turns.length - 1].content, 'second');
+  // Bounded, oldest first.
+  assert.equal(cp.recentTurns(2).length, 2);
+  assert.equal(cp.recentTurns(2)[1].content, 'second');
+});
+
+test('events still pending ride into the exchange as context', () => {
+  const cp = new CopilotConversation('SYS');
+  cp.recordEvent('EVENT: Docking granted — pad 38 at Jaques Station.');
+  cp.recordExchange('yeah getting another load', 'Right — third run through today.');
+  const t = cp.transcript();
+  assert.match(t[0].content, /Docking granted — pad 38/);
+  assert.match(t[0].content, /COMMANDER SAID: yeah getting another load/);
+  assert.equal(cp.pendingCount(), 0); // consumed, not left to repeat
+});
+
+test('an empty answer never commits a half exchange', () => {
+  const cp = new CopilotConversation('SYS');
+  cp.recordEvent('EVENT: A');
+  cp.recordExchange('hello', '   ');
+  assert.equal(cp.transcript().length, 0);
+  assert.equal(cp.pendingCount(), 1); // the event survives for the next beat
+});

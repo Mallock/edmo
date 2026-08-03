@@ -488,6 +488,39 @@ export class CopilotConversation {
     this.proposed = null;
   }
 
+  /**
+   * Commit a spoken exchange with the commander into the SAME transcript the
+   * ambient beats live in.
+   *
+   * Without this the app kept two conversations: the copilot's, and whatever
+   * the ask path assembled from a separate dialogue buffer. They shared some
+   * text but not a thread, so the operator could say "That old thing has seen
+   * some miles", be asked "what thing?", and answer about the market — the
+   * question reached a prompt where its own remark was not the previous turn.
+   *
+   * Any events still pending ride in as the commander's context, exactly as
+   * they would for a beat, so nothing the operator has seen is lost.
+   */
+  recordExchange(commanderSaid: string, operatorReplied: string): void {
+    const said = commanderSaid.trim();
+    const replied = operatorReplied.trim();
+    if (!replied) return;
+    const pending = this.pending.length ? `${this.pending.join('\n')}\n` : '';
+    this.turns.push({ role: 'user', content: `${pending}COMMANDER SAID: ${said}` });
+    this.turns.push({ role: 'assistant', content: replied });
+    this.pending = [];
+    this.proposed = null;
+    this.trim();
+  }
+
+  /**
+   * The tail of the conversation as chat turns, for a path that needs the
+   * thread but brings its own system prompt (the ask path). Oldest first.
+   */
+  recentTurns(max = 16): CopilotTurn[] {
+    return this.turns.slice(-max);
+  }
+
   /** Snapshot for debugging/tests. */
   transcript(): CopilotTurn[] {
     return this.turns.slice();

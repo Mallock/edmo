@@ -494,6 +494,9 @@ export class AppCore {
   /** True while the speak/skip gate is deciding, so a burst of events cannot
    *  stack several gate calls (and several beats) on top of each other. */
   private beatGateInFlight = false;
+  /** The question an in-flight ask is answering, so the reply can be
+   *  committed into the copilot thread as a matching exchange. */
+  private lastAskedQuestion: string | null = null;
   /** The next beat is the chatter cadence's story, not an event reaction. */
   private storyBeatPending = false;
   /** Beats since the running tally was last put in front of the model — it is
@@ -3704,6 +3707,8 @@ export class AppCore {
     this.convo.push('user', q, Date.now());
     // The living copilot hears the commander too — record what they said so its
     // ambient beats take it on board (goals, preferences, whatever it is).
+    // Held so the ANSWER can be committed beside it as one exchange.
+    this.lastAskedQuestion = q;
     this.copilotEvent(`COMMANDER SAID: ${q}`);
     // A spoken prospecting goal ("looking for tritium at 20%") becomes a target
     // the operator watches for as they mine.
@@ -3757,14 +3762,27 @@ ${missionContext(mission, state)}`);
 ` +
       knowledge.join('\n');
 
+    // ONE THREAD. The conversation the model sees is the copilot's own
+    // transcript — the beats it actually spoke and the events behind them —
+    // not a parallel dialogue buffer that merely shares some text.
+    //
+    // This is what "what thing?" needs: the operator said "That old thing has
+    // seen some miles", and unless that line is literally the previous
+    // assistant turn, the question has no antecedent and the model reaches for
+    // whatever else it can act on (a market lookup, every time).
+    const thread: ChatMessage[] = this.copilotIsLive()
+      ? (this.copilot?.recentTurns(16) ?? []).map((t) => ({ role: t.role, content: t.content }))
+      : (this.convo.recent(Date.now()) as ChatMessage[]);
     const messages: ChatMessage[] = [
       { role: 'system', content: system },
+      ...thread,
       { role: 'user', content: q },
     ];
 
-    // Splice the dialogue between the system prompt and the fresh question,
-    // with the previous question's tool results just before it.
-    messages.splice(messages.length - 1, 0, ...history, ...priorLookups);
+    // The thread above already carries the dialogue; only the previous
+    // question's tool results still need to ride in front of the new one, so a
+    // follow-up about those figures can read them off rather than re-fetch.
+    if (priorLookups.length) messages.splice(messages.length - 1, 0, ...priorLookups);
 
     const entry = this.pushFeed('ai', '', { streaming: true, missionId: mission?.id });
     const model = this.activeModel();
@@ -4391,6 +4409,14 @@ ${missionContext(mission, state)}`);
       // saying it: without this the copilot could introduce a contract and then,
       // two beats later, remark on it as if hearing about it for the first time.
       if (kind === 'brief') this.copilotEvent(`OPERATOR SAID: ${finalText}`);
+      // An answer to the commander belongs in the SAME thread the beats live
+      // in — otherwise the next question ("what thing?", "why?") arrives with
+      // the exchange it refers to missing, which is exactly how a follow-up
+      // ended up answered with market data.
+      if (kind === 'ai' && this.lastAskedQuestion) {
+        this.copilot?.recordExchange(this.lastAskedQuestion, finalText);
+        this.lastAskedQuestion = null;
+      }
       this.speak(finalText);
       this.emit();
     } else if (kind === 'saga') {

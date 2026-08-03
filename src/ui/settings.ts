@@ -104,7 +104,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
     bundledModel: null,
     endpoint: 'http://127.0.0.1:1234',
     model: null,
-    temperature: 0.3,
+    // 0.3 was a guidance-era default, from when the ask path mostly recited
+    // procedure. The operator is a conversation now, and 0.3 reads flat.
+    temperature: 0.8,
     // Reasoning models (gemma-4, qwen3.x) burn hidden "thinking" tokens before
     // any visible answer — measured on gemma-4-e4b: a 2-sentence chatter beat
     // spends 800-1,700 chars of hidden reasoning first. The model is local, so
@@ -215,6 +217,9 @@ export function loadSettings(): AppSettings {
     // set a custom value keep it; old defaults ride up to the new one.
     if (s.lm.maxTokens === 512 || s.lm.maxTokens === 2048)
       s.lm.maxTokens = DEFAULT_SETTINGS.lm.maxTokens;
+    // Migration: the old 0.3 guidance-era temperature rides up to the
+    // conversational default. A custom value is left alone.
+    if (s.lm.temperature === 0.3) s.lm.temperature = DEFAULT_SETTINGS.lm.temperature;
     // Migration: chatter default moved 10 → 6 min ("more operator talking").
     if (s.chatter.intervalMin === 10) s.chatter.intervalMin = DEFAULT_SETTINGS.chatter.intervalMin;
     return s;
