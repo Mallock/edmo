@@ -232,7 +232,7 @@ export function suppressRoutineCoaching(text: string, allowSafetyAdvice = false)
   // that jump countdown to Tir, it's clear you're banking on the established
   // work at Paxton Landing" — a conclusion about the commander, wrapped around
   // two facts that had nothing to do with each other.
-  const coaching = /\b(?:keep an eye|maintain (?:this|the|our|your)|watch (?:our|the|your)|make sure|be careful|hold steady|keep it steady|remember to|you (?:need|should|must)|we (?:need|should|must)|it['’]?s clear (?:that )?you|you['’]?re (?:clearly|obviously|evidently))\b/i;
+  const coaching = /\b(?:keep an eye|maintain (?:this|the|our|your)|watch (?:our|the|your)|make sure|be careful|hold steady|keep it steady|remember to|you (?:need|should|must)|we (?:need|should|must)|it['’]?s clear|you['’]?re (?:clearly|obviously|evidently))\b/i;
   const speculation = /\b(?:hopefully|probably|might|could|should be|we(?:'re| are) going to|enough\b.*\bfor (?:a |the )?refit|complications?)\b/i;
   const clauses = clean.match(/[^.!?;]+(?:[.!?;]+|$)/g) ?? [clean];
   return clauses

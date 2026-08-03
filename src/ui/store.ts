@@ -121,6 +121,7 @@ import {
 import {
   CopilotConversation,
   buildCopilotSystem,
+  estimateTokens,
   buildBeatGateChat,
   parseBeatGate,
   pickBeatAngle,
@@ -494,6 +495,10 @@ export class AppCore {
   /** True while the speak/skip gate is deciding, so a burst of events cannot
    *  stack several gate calls (and several beats) on top of each other. */
   private beatGateInFlight = false;
+  /** Automatic engine restarts since the last successful one, and when the last
+   *  was attempted — bounds a crash loop without capping a long night. */
+  private engineRestarts = 0;
+  private lastEngineRestartAt = 0;
   /** The question an in-flight ask is answering, so the reply can be
    *  committed into the copilot thread as a matching exchange. */
   private lastAskedQuestion: string | null = null;
@@ -2537,12 +2542,21 @@ export class AppCore {
   // ------------------------------------------------------- living copilot
   /** Lazily create the session conversation with the current commander's name. */
   private ensureCopilot(): void {
-    if (!this.copilot)
-      this.copilot = new CopilotConversation(
-        buildCopilotSystem(this.sm.commanderName || undefined, {
-          epic: this.settings.chatter.epic,
-        }),
-      );
+    if (this.copilot) return;
+    const system = buildCopilotSystem(this.sm.commanderName || undefined, {
+      epic: this.settings.chatter.epic,
+    });
+    // Bound the transcript against the window the engine is ACTUALLY running,
+    // not a fixed turn count. The system prompt is ~2,900 tokens and an 8 GB
+    // card runs at ctx 8192, so a long session there would otherwise walk the
+    // prompt past the window; the old 400-turn cap allowed ~10,400 tokens of
+    // transcript with no idea how big a turn was.
+    //
+    // Half the remaining room, so the per-beat context (NOW, STATE, arc, mood,
+    // angle, lore, a screen reading) and the reply both have somewhere to live.
+    const ctx = this.engineCtxSize();
+    const budget = Math.max(1000, Math.floor((ctx - estimateTokens(system) - 600) / 2));
+    this.copilot = new CopilotConversation(system, 400, budget);
   }
 
   /** Drop the running conversation (new session / journal restart). */
@@ -2716,10 +2730,7 @@ export class AppCore {
     // invented atmosphere, and the habitual-claim tic was measured to fire
     // almost only on beats that had nothing real to say about a place.
     const lore = loreForSystem(this.sm.location.system);
-    if (lore) {
-      if (!available.includes('place')) available.push('place');
-      facts.push(`LOCAL LORE (true, common knowledge): ${lore}`);
-    }
+    if (lore && !available.includes('place')) available.push('place');
 
     if (this.copilot?.hasHistory()) {
       available.push('callback');
@@ -2772,6 +2783,17 @@ export class AppCore {
       }
       const comms = this.freshComms();
       if (comms.length) facts.push(`OVERHEARD ON LOCAL COMMS (real): ${comms.slice(-3).join(' · ')}`);
+    }
+    // The lore rides ONLY on a place beat. Pushed as a standing fact it became
+    // the subject of everything: a live session mentioned Jaques the cyborg
+    // bartender in five separate beats — "the whole region runs off a story
+    // about a bartender", "the sheer audacity of a bartender jumpstarting a
+    // colony", "it's a strange life for a cyborg bartender". True, and still
+    // the same anecdote four times too often. A fact present on every beat
+    // becomes the only subject; that is now three separate proofs of the same
+    // law (the tally, the community goals, and this).
+    if (angle === 'place' && lore) {
+      facts.push(`LOCAL LORE (true, common knowledge): ${lore}`);
     }
     if (angle === 'opening' && rank) {
       const q = rank.quietest;
@@ -3648,13 +3670,58 @@ export class AppCore {
     return this.lmModels.find((id) => !/embed/i.test(id)) ?? this.lmModels[0] ?? null;
   }
 
+  /** Restart a crashed engine and report what killed it. Separate from pollLm
+   *  so the poll is never blocked behind a model load. */
+  private async reviveEngine(modelId: string): Promise<void> {
+    // Say WHY, if it left a reason. Without this the only record of the last
+    // crash was a Windows fault bucket.
+    const why = await engineLog().catch(() => '');
+    const fatal = why
+      .split('\n')
+      .filter((l: string) => /error|failed|out of memory|oom|assert|abort|exception/i.test(l))
+      .slice(-2);
+    if (fatal.length) this.pushFeed('system', `Engine log: ${fatal.join(' | ').slice(0, 300)}`);
+    try {
+      await this.engineStartModel(modelId);
+      // A restart that sticks resets the budget: an eight-hour session should
+      // get three attempts per crash, not three for the whole night.
+      if (this.engine?.running) this.engineRestarts = 0;
+    } catch {
+      this.pushFeed('system', 'Could not restart the engine — Settings → AI engine, or switch to LM Studio.');
+    }
+  }
+
   private async pollLm(): Promise<void> {
     // The bundled engine can die under us (driver crash, OOM) — notice it here
     // so the HUD's LM dot tells the truth instead of every request timing out.
     if (this.settings.lm.engine === 'bundled' && this.engine?.running && isTauri) {
       const alive = await engineAlive().catch(() => false);
       if (!alive) {
+        const crashedModel = this.settings.lm.bundledModel;
         this.engine = { ...this.engine, running: false, port: null, api_key: null };
+        // Bring it back by itself.
+        //
+        // llama.cpp dies of a stack overflow (Windows 0xC00000FD) after hours
+        // of a long session — confirmed from a live crash whose engine.log ends
+        // mid-decode with no error at all, and whose only trace is the Windows
+        // fault bucket naming ntdll.dll. That is a fault inside the engine, not
+        // something this app can prevent; what it CAN do is stop making the
+        // commander notice. Before this they opened Settings and restarted by
+        // hand, twice in one session, mid-flight.
+        //
+        // Bounded and spaced so a genuinely broken install (missing model, bad
+        // runtime) surfaces as a message instead of an infinite restart loop.
+        const canRetry =
+          !!crashedModel &&
+          this.engineRestarts < 3 &&
+          Date.now() - this.lastEngineRestartAt > 60_000;
+        if (canRetry) {
+          this.engineRestarts += 1;
+          this.lastEngineRestartAt = Date.now();
+          this.pushFeed('system', '⚙ The local AI engine stopped — bringing it back…');
+          void this.reviveEngine(crashedModel!);
+          return;
+        }
         this.pushFeed('system', 'The local AI engine stopped — restart it in Settings, or switch to LM Studio.');
         // Say WHY, if it left a reason. Without this the only record of the
         // last crash was a Windows fault bucket.

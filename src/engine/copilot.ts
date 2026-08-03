@@ -18,6 +18,13 @@
 import type { VisionMessage } from './glance.ts';
 import { GROUNDING_RULES, LORE_PRIMER, OPERATOR_VOICE } from './lore.ts';
 
+/** Rough token count for a prompt fragment. English averages ~4 chars a token;
+ *  this only ever decides when to trim, so a cheap estimate beats a tokenizer
+ *  round-trip on every beat. */
+export function estimateTokens(text: string): number {
+  return Math.ceil((text ?? '').length / 4);
+}
+
 export interface CopilotTurn {
   role: 'user' | 'assistant';
   content: string;
@@ -463,9 +470,13 @@ export class CopilotConversation {
    *  Only bites in a marathon session; ordinary play never reaches it. */
   private readonly maxTurns: number;
 
-  constructor(system: string, maxTurns = 400) {
+  /** Hard ceiling on the transcript's estimated tokens; Infinity = turns only. */
+  private readonly tokenBudget: number;
+
+  constructor(system: string, maxTurns = 400, tokenBudget = Number.POSITIVE_INFINITY) {
     this.system = system;
     this.maxTurns = maxTurns;
+    this.tokenBudget = tokenBudget;
   }
 
   /** Swap the system contract without discarding session history. */
@@ -600,13 +611,41 @@ export class CopilotConversation {
     return lines.slice(-max);
   }
 
-  /** Keep the session opener (the first spoken exchange) as an anchor and drop
-   *  the oldest middle turns once the window is full. */
+  /**
+   * Keep the session opener as an anchor and drop the oldest middle turns once
+   * the window is full — bounded by TOKENS as well as by turn count.
+   *
+   * The turn cap alone could not do this job: 400 turns is ~10,400 tokens of
+   * transcript, and an 8 GB card runs the engine at ctx 8192, where the system
+   * prompt alone is ~2,900. A long session on a small card would have walked
+   * the prompt straight past the window.
+   *
+   * Nothing is summarised on the way out, deliberately. The narrative is
+   * already carried by the computed ARC line that rides in every beat
+   * (arc.ts), so old turns are redundant rather than lost — and a deterministic
+   * summary cannot hallucinate the session's history the way an LLM one could.
+   */
   private trim(): void {
-    if (this.turns.length <= this.maxTurns) return;
-    const head = this.turns.slice(0, 2);
-    const tail = this.turns.slice(this.turns.length - (this.maxTurns - 2));
-    this.turns = [...head, ...tail];
+    // Whole exchanges leave together, so the seam always lands on a user turn
+    // and the alternation the chat format needs survives.
+    const dropOldestExchange = (): boolean => {
+      if (this.turns.length <= 4) return false; // opener + one live exchange
+      this.turns.splice(2, 2);
+      return true;
+    };
+    while (this.turns.length > this.maxTurns && dropOldestExchange()) {
+      /* bounded by turn count */
+    }
+    if (!Number.isFinite(this.tokenBudget)) return;
+    let total = this.turns.reduce((n, t) => n + estimateTokens(t.content), 0);
+    while (total > this.tokenBudget && dropOldestExchange()) {
+      total = this.turns.reduce((n, t) => n + estimateTokens(t.content), 0);
+    }
+  }
+
+  /** Estimated tokens the transcript will cost — for tests and diagnostics. */
+  estimatedTokens(): number {
+    return this.turns.reduce((n, t) => n + estimateTokens(t.content), 0);
   }
 }
 

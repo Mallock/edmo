@@ -15,6 +15,7 @@ import {
   copilotReactionGapMs,
   copilotDensityGapMs,
   copilotSilenceGapMs,
+  estimateTokens,
   isNearDuplicate,
   isSilenceVerdict,
   stripVerdict,
@@ -756,4 +757,74 @@ test('beat mode keeps the event-stream contract', () => {
 
 test('mode defaults to beat, so existing callers are unchanged', () => {
   assert.equal(buildCopilotSystem("M'allock"), buildCopilotSystem("M'allock", { mode: 'beat' }));
+});
+
+// --- the analyst clause, widened ----------------------------------------------
+// The rule only caught "it's clear that YOU"; a live beat said "It's clear that
+// that freighter is built for more than just a memory" and sailed through.
+
+test('an analyst clause is stripped whatever it is clear ABOUT', () => {
+  const live =
+    "It's clear that freighter is built for more than just a memory. Thirty-one runs in fifteen days means it knows how to earn its keep.";
+  const out = suppressRoutineCoaching(live);
+  assert.doesNotMatch(out, /clear/i);
+  assert.match(out, /Thirty-one runs/); // the real observation survives
+  assert.equal(suppressRoutineCoaching("It's clear you're settling in."), '');
+  // "clear" as an ordinary adjective is not an analyst clause.
+  assert.equal(suppressRoutineCoaching('The lane is clear ahead.'), 'The lane is clear ahead.');
+});
+
+// --- the transcript cannot outgrow the window ---------------------------------
+// A 400-turn cap has no idea how big a turn is: 400 turns is ~10,400 tokens of
+// transcript, and an 8 GB card runs the engine at ctx 8192 where the system
+// prompt alone is ~2,900. A long session there would have walked the prompt
+// past the window. Nothing is summarised on the way out — the computed ARC line
+// carries the narrative, so old turns are redundant rather than lost.
+
+test('the transcript stays inside its token budget however long the session runs', () => {
+  const cp = new CopilotConversation('SYS', 400, 500);
+  for (let i = 0; i < 200; i++) {
+    cp.recordEvent(`EVENT: Mission complete: a courier run number ${i}, paid ~196k cr at a station.`);
+    cp.messagesForBeat('now', null);
+    cp.recordSpoken(`Another one banked, that is number ${i} through here today and the ledger shows it.`);
+  }
+  assert.ok(cp.estimatedTokens() <= 500, `budget blown: ${cp.estimatedTokens()}`);
+  // Still a usable conversation, not trimmed to nothing.
+  assert.ok(cp.transcript().length >= 4);
+});
+
+test('trimming keeps the opener, the newest turns, and clean alternation', () => {
+  const cp = new CopilotConversation('SYS', 400, 300);
+  cp.recordEvent('EVENT: FIRST');
+  cp.messagesForBeat('n', null);
+  cp.recordSpoken('opening line');
+  for (let i = 0; i < 60; i++) {
+    cp.recordEvent(`EVENT: filler event ${i} with enough text to cost real tokens here`);
+    cp.messagesForBeat('n', null);
+    cp.recordSpoken(`filler beat ${i} with enough text to cost real tokens here as well`);
+  }
+  const t = cp.transcript();
+  // The session opener survives as an anchor.
+  assert.match(t[0].content, /FIRST/);
+  assert.equal(t[1].content, 'opening line');
+  // The newest exchange is intact and last.
+  assert.match(t[t.length - 1].content, /filler beat 59/);
+  // Alternation holds — the chat format depends on it.
+  t.forEach((turn, i) => assert.equal(turn.role, i % 2 === 0 ? 'user' : 'assistant'));
+});
+
+test('an unbounded conversation is still allowed (the default)', () => {
+  const cp = new CopilotConversation('SYS');
+  for (let i = 0; i < 30; i++) {
+    cp.recordEvent(`EVENT: ${i}`);
+    cp.messagesForBeat('n', null);
+    cp.recordSpoken(`beat ${i}`);
+  }
+  assert.equal(cp.transcript().length, 60); // nothing dropped
+});
+
+test('estimateTokens is cheap and roughly right', () => {
+  assert.equal(estimateTokens(''), 0);
+  assert.equal(estimateTokens('abcd'), 1);
+  assert.ok(Math.abs(estimateTokens('x'.repeat(4000)) - 1000) <= 1);
 });
