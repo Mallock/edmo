@@ -123,8 +123,10 @@ export function buildFlavorChat(
   seeds: string[] = [],
   avoid?: string | string[],
   comms: string[] = [],
+  opts: { epic?: boolean } = {},
 ): ChatMessage[] {
   const facts = plan.subjects.map(factLine).join('\n');
+  const epic = !!opts.epic;
   const commsBlock = comms.length
     ? `\nOverheard on local comms recently (all real transmissions):\n${comms
         .slice(-4)
@@ -144,6 +146,11 @@ export function buildFlavorChat(
       content:
         "You are the ship's Mission Operator on a private comm channel with your commander" +
         `${state.cmdr ? ` (Commander ${state.cmdr})` : ''}. ${LORE_PRIMER} ${OPERATOR_VOICE} ` +
+        (epic
+          ? 'EPIC MODE is enabled: keep the same short spoken style, but frame this contract as part of a wider campaign. ' +
+            'Anchor that purpose to named facts only: mission giver, target faction, destination system, and real numbers. ' +
+            'Never invent lore, houses, prophecies, places or outcomes. '
+          : '') +
         'Tell one piece of scuttlebutt from the angle given — about the passengers aboard, ' +
         'a place on the route, or the job itself. Two to four spoken sentences, first person, ' +
         'addressed to the commander. When two recent true events connect — cause and effect, or ' +
@@ -293,9 +300,15 @@ export function buildAfterglowChat(
   seeds: string[],
   state: OperatorState,
   rng: () => number,
-  opts: { activity?: string | null; avoid?: string | string[]; comms?: string[] } = {},
+  opts: {
+    activity?: string | null;
+    avoid?: string | string[];
+    comms?: string[];
+    epic?: boolean;
+  } = {},
 ): ChatMessage[] {
   const mining = !!opts.activity && /mining/i.test(opts.activity);
+  const epic = !!opts.epic;
   const angle = pick(mining ? MINING_ANGLES : AFTERGLOW_ANGLES, rng);
   const avoid = avoidBlock(opts.avoid);
   return [
@@ -305,6 +318,10 @@ export function buildAfterglowChat(
         "You are the ship's Mission Operator during downtime between contracts" +
         `${state.cmdr ? `, on a private comm channel with Commander ${state.cmdr}` : ''}. ` +
         `${LORE_PRIMER} ${OPERATOR_VOICE} ` +
+        (epic
+          ? 'EPIC MODE is enabled: keep the beat compact, but make the downtime feel like the pause between campaign movements. ' +
+            'Tie purpose to named real factions, systems and deeds only; no invented legend. '
+          : '') +
         (mining
           ? 'The commander is out mining for themselves right now — talk about THAT: the rocks, ' +
             'the haul, the rhythm of the work, ring lore. Recent deeds are background at most. '

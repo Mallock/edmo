@@ -176,3 +176,61 @@ export function recommendationLabel(specs: SystemSpecs): string {
   }
   return 'Very limited memory — stick to sub-1B models.';
 }
+
+// ---------------------------------------------------------------------------
+// Leaving room for the game
+// ---------------------------------------------------------------------------
+
+/**
+ * How many transformer layers to put on the GPU, so the operator never starves
+ * the renderer it exists to sit beside.
+ *
+ * `engine_start` has always accepted a layer count and never been given one:
+ * the bridge passed only a context size, so every model loaded with `-ngl 99`
+ * — every layer on the card, whatever was left over. On a 16 GB card that is
+ * fine; on an 8 GB card a 5 GB model plus Elite's renderer is a stutter, and
+ * the advisor above was already saying so in the settings panel while the
+ * launcher ignored it.
+ *
+ * Measured on an RX 7800 XT (llama.cpp b10107, Vulkan): a 9B Q4_K_M costs
+ * ~8.2 GB fully offloaded and ~130 MB per layer on the way down, and each
+ * layer moved to the CPU costs roughly 25 ms a beat. So we spend the whole
+ * budget when it fits and step down only when it does not.
+ *
+ * Returns 99 (all layers) when the model fits the budget — llama.cpp's own
+ * "everything" sentinel, and the behaviour that shipped.
+ */
+export function gpuLayerBudget(
+  specs: SystemSpecs | null,
+  modelGb: number,
+  totalLayers: number,
+  gameRunning = true,
+): number {
+  if (!specs || !Number.isFinite(modelGb) || modelGb <= 0 || totalLayers <= 0) return 99;
+  const budget = gpuBudgetGb(specs, gameRunning);
+  if (budget <= 0) return 0; // no room at all — CPU only, still works, just slow
+  if (modelGb <= budget) return 99;
+  // Partial: keep the runtime's own overhead out of the per-layer maths.
+  const perLayerGb = modelGb / totalLayers;
+  const layers = Math.floor((budget - RUNTIME_OVERHEAD_GB) / perLayerGb);
+  return Math.max(0, Math.min(totalLayers, layers));
+}
+
+/** Compute/KV buffers llama.cpp allocates beyond the weights themselves. */
+const RUNTIME_OVERHEAD_GB = 0.8;
+
+/**
+ * Whether the vision projector should stay on the CPU.
+ *
+ * Measured: moving it off the GPU saved 921 MB on gemma-4-e4b and 2,172 MB on
+ * a 9B, with NO measurable change to text-beat latency (152→146 ms and
+ * 252→249 ms) — because the projector only runs when a screen glance actually
+ * fires, which is opt-in and off by default. It is the cheapest VRAM the app
+ * can give back to the game, so it is given back whenever the game is running
+ * and the budget is not generous.
+ */
+export function shouldKeepVisionOnCpu(specs: SystemSpecs | null, gameRunning = true): boolean {
+  if (!specs) return true;
+  // With a very large card there is no reason to slow glances down at all.
+  return gpuBudgetGb(specs, gameRunning) < 12;
+}

@@ -10,6 +10,8 @@ import {
   parseModelParams,
   recommendationLabel,
   type SystemSpecs,
+  gpuLayerBudget,
+  shouldKeepVisionOnCpu,
 } from '../src/ui/modelfit.ts';
 
 test('parses dense model sizes from real LM Studio ids', () => {
@@ -81,4 +83,58 @@ test('budgets and recommendation text are sane', () => {
   assert.match(rec, /while flying: up to ~5B/); // floor((5−1.5)/0.6) = 5
   assert.match(rec, /ED closed: up to ~15B/); // floor((11−1.5)/0.6) = 15
   assert.match(recommendationLabel(RIG_16GB_NOGPU), /CPU/);
+});
+
+// --- leaving room for the game ------------------------------------------------
+// engine_start always accepted a layer count and was never given one: the
+// bridge sent only a context size, so every model loaded with -ngl 99 while the
+// settings panel's own advisor warned about the very fit it was ignoring.
+// Figures below are measured on an RX 7800 XT, llama.cpp b10107, Vulkan.
+
+const rig = (vramGb: number, ramGb = 32): SystemSpecs => ({
+  totalRamMb: ramGb * 1024,
+  cpuCores: 8,
+  cpuName: 'test',
+  gpus: [{ name: 'test gpu', vramMb: vramGb * 1024 }],
+});
+
+test('a model that fits beside the game keeps every layer on the card', () => {
+  // 16 GB card: 16 - 1 driver - 6 for ED = 9 GB budget; gemma-4-e4b is ~5.9 GB.
+  assert.equal(gpuLayerBudget(rig(16), 5.9, 40), 99);
+  // ...and the same model on a 24 GB card, obviously.
+  assert.equal(gpuLayerBudget(rig(24), 5.9, 40), 99);
+});
+
+test('a model that does NOT fit steps down instead of starving the renderer', () => {
+  // 8 GB card: 8 - 1 - 6 = 1 GB budget. A 5.9 GB model cannot have the card.
+  const layers = gpuLayerBudget(rig(8), 5.9, 40);
+  assert.ok(layers < 40 && layers >= 0, `expected a partial offload, got ${layers}`);
+  // 12 GB card: 12 - 1 - 6 = 5 GB. Most of a 5.9 GB model, but not all of it.
+  const mid = gpuLayerBudget(rig(12), 5.9, 40);
+  assert.ok(mid > 0 && mid < 40, `expected partial, got ${mid}`);
+  // More headroom must never mean fewer layers.
+  assert.ok(mid >= layers);
+});
+
+test('with the game closed the whole card is available', () => {
+  // Same 8 GB rig, game not running: 8 - 1 = 7 GB, so a 5.9 GB model fits.
+  assert.equal(gpuLayerBudget(rig(8), 5.9, 40, false), 99);
+});
+
+test('the layer budget degrades safely rather than guessing', () => {
+  assert.equal(gpuLayerBudget(null, 5.9, 40), 99); // specs unknown → ship's default
+  assert.equal(gpuLayerBudget(rig(16), 0, 40), 99); // size unknown → default
+  assert.equal(gpuLayerBudget(rig(16), Number.NaN, 40), 99);
+  assert.equal(gpuLayerBudget(rig(16), 5.9, 0), 99); // layer count unknown
+  assert.equal(gpuLayerBudget(rig(4), 5.9, 40), 0); // 4 - 1 - 6 < 0 → CPU only
+});
+
+test('vision stays on the CPU unless the card is roomy', () => {
+  // Measured: 921 MB back on gemma, 2,172 MB on a 9B, no text-latency cost.
+  assert.equal(shouldKeepVisionOnCpu(rig(8)), true);
+  assert.equal(shouldKeepVisionOnCpu(rig(16)), true); // 9 GB budget — still worth it
+  assert.equal(shouldKeepVisionOnCpu(rig(24)), false); // 17 GB — no need to slow glances
+  assert.equal(shouldKeepVisionOnCpu(null), true); // unknown rig → be polite to the game
+  // Game closed on a big card: plenty of room, keep glances fast.
+  assert.equal(shouldKeepVisionOnCpu(rig(16), false), false);
 });

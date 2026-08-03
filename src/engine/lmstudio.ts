@@ -130,6 +130,16 @@ export class LmStudioClient {
 }
 
 /** Some local reasoning models emit <think>...</think>; drop it for speech. */
-function stripThink(text: string): string {
-  return text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+export function stripThink(text: string): string {
+  return (
+    text
+      .replace(/<think>[\s\S]*?<\/think>/gi, '')
+      // Orphan tags: a server-side thinking cap (--reasoning-budget 0) ends the
+      // thought without an opener, so the pair rule misses it and the reasoning
+      // is spoken aloud. Drop everything up to a lone close, and everything
+      // after a lone open.
+      .replace(/^[\s\S]*?<\/think>/i, '')
+      .replace(/<think>[\s\S]*$/i, '')
+      .trim()
+  );
 }

@@ -227,7 +227,12 @@ export function suppressUngroundedFuelConcern(
 export function suppressRoutineCoaching(text: string, allowSafetyAdvice = false): string {
   const clean = text.trim();
   if (!clean || allowSafetyAdvice) return clean;
-  const coaching = /\b(?:keep an eye|maintain (?:this|the|our|your)|watch (?:our|the|your)|make sure|be careful|hold steady|keep it steady|remember to|you (?:need|should|must)|we (?:need|should|must))\b/i;
+  // "it's clear you're…" is the analyst voice the prompt bans — reporting ON
+  // the commander instead of talking to them. A live session produced "Seeing
+  // that jump countdown to Tir, it's clear you're banking on the established
+  // work at Paxton Landing" — a conclusion about the commander, wrapped around
+  // two facts that had nothing to do with each other.
+  const coaching = /\b(?:keep an eye|maintain (?:this|the|our|your)|watch (?:our|the|your)|make sure|be careful|hold steady|keep it steady|remember to|you (?:need|should|must)|we (?:need|should|must)|it['’]?s clear (?:that )?you|you['’]?re (?:clearly|obviously|evidently))\b/i;
   const speculation = /\b(?:hopefully|probably|might|could|should be|we(?:'re| are) going to|enough\b.*\bfor (?:a |the )?refit|complications?)\b/i;
   const clauses = clean.match(/[^.!?;]+(?:[.!?;]+|$)/g) ?? [clean];
   return clauses

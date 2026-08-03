@@ -16,9 +16,11 @@ import {
   copilotDensityGapMs,
   copilotSilenceGapMs,
   isNearDuplicate,
+  isSilenceVerdict,
+  stripVerdict,
   type BeatAngle,
 } from '../src/engine/copilot.ts';
-import { stripFillerTics } from '../src/engine/glance.ts';
+import { stripFillerTics, suppressRoutineCoaching } from '../src/engine/glance.ts';
 import { parseProspectTarget, matchesProspect } from '../src/engine/mining.ts';
 import {
   extractPlaces,
@@ -28,6 +30,7 @@ import {
   findLiftedExample,
 } from '../src/engine/factcheck.ts';
 import { loreForSystem, UNIVERSAL_LORE } from '../src/engine/lore.ts';
+import { stripThink } from '../src/engine/lmstudio.ts';
 import { IDLE_ASK_SYSTEM } from '../src/engine/operator.ts';
 
 test('copilot system prompt carries the persona and the event-stream contract', () => {
@@ -45,6 +48,16 @@ test('copilot system prompt carries the persona and the event-stream contract', 
   assert.match(sys, /never what you talk about/); // the screen-narration ban
   assert.match(sys, /colour must\s+hang on REAL facts/);
   assert.match(sys, /never a reason to fall silent/);
+});
+
+test('epic mode adds purpose framing without dropping grounding', () => {
+  const sys = buildCopilotSystem("M'allock", { epic: true });
+  assert.match(sys, /EPIC REGISTER is enabled/);
+  assert.match(sys, /larger frontier campaign/);
+  assert.match(sys, /No grand lore inventions/);
+  // Core guardrails still present in epic mode.
+  assert.match(sys, /What you must NEVER do is NARRATE/);
+  assert.match(sys, /STRICT grounding/);
 });
 
 test('a beat request is ephemeral — nothing is committed until the operator speaks', () => {
@@ -524,4 +537,124 @@ test('universal lore covers the two questions the operator got wrong', () => {
 
 test('the ask prompts carry the universal lore', () => {
   assert.match(IDLE_ASK_SYSTEM, /PILOTS FEDERATION/);
+});
+
+// --- the babble session ------------------------------------------------------
+// A live mining session surfaced three leaks at once: the raw-image fallback
+// path skipped every fence ("We'll pick a bearing off those formations"), the
+// analyst voice slipped through ("it's clear you're banking on..."), and the
+// gate never saw screen sightings, so every glance at a rock field spoke.
+// These pin the exact lines from that session.
+
+test('the coaching suppressor removes the analyst clause from the live word-salad', () => {
+  const salad =
+    "Seeing that jump countdown to Tir, it's clear you're banking on the established work here at Paxton Landing for the next payday.";
+  // The whole clause is analyst-speak; nothing worth keeping survives.
+  assert.equal(stripFillerTics(suppressRoutineCoaching(salad)), '');
+  assert.equal(suppressRoutineCoaching("You're clearly settling into the rhythm out here."), '');
+  // A plain observation is untouched.
+  assert.equal(
+    suppressRoutineCoaching('That refiner is built for this kind of steady trickle.'),
+    'That refiner is built for this kind of steady trickle.',
+  );
+});
+
+test('the collective fence catches the live glance line', () => {
+  assert.equal(findCollectivePronoun("Asteroid boulders scattered across the void. We'll pick a bearing off those formations."), "we'll");
+});
+
+test('the gate knows scenery is not news', () => {
+  const sys = String(buildBeatGateChat('SCREEN SIGHTING: an asteroid field.')[0].content);
+  assert.match(sys, /screen sighting/i);
+  assert.match(sys, /ordinary scenery/);
+  assert.match(sys, /rocks are not news/);
+  assert.match(sys, /genuinely arresting sight/); // a real view can still earn a word
+});
+
+// --- the living operator ------------------------------------------------------
+// A/B-tested (see arc.ts): persona licence alone produced ZERO self-reference
+// in 17 beats; with the 'self' angle inviting it, the inner life landed
+// reliably with no discipline cost. These pin the recipe's prompt half.
+
+test('the system prompt gives the operator a life, a witness role, and the contracts', () => {
+  const sys = buildCopilotSystem('Hadfield');
+  assert.match(sys, /a PERSON with a post and a life/);
+  assert.match(sys, /twenty years flying these lanes/);
+  assert.match(sys, /plain small\s+truths about YOURSELF are yours to say/);
+  assert.match(sys, /the only witness keeping the log/);
+  assert.match(sys, /never flattery, never coaching/);
+  assert.match(sys, /"ARC:"/);
+  assert.match(sys, /never recite it back/);
+  assert.match(sys, /"OPERATOR MOOD:"/);
+  assert.match(sys, /never announce it/);
+  assert.match(sys, /"EVENT: Chapter turn"/);
+});
+
+test("the 'self' angle invites the inner life and its backstory clears the fence", () => {
+  const hint = beatAngleHint('self');
+  assert.match(hint, /^ANGLE: yourself/);
+  assert.match(hint, /Perseus Arm/);
+  assert.match(hint, /Lave/);
+  assert.match(hint, /tied back to their run/);
+  // The place fence is suffix-scoped (Station/Dock/City…), so the operator's
+  // own regions — "the Perseus Arm", "the old Lave lanes" — can never be
+  // flagged as fabrications. A typical self-beat must pass it untouched.
+  const beat = 'I remember a stretch like this near the Perseus Arm, back on the old Lave lanes.';
+  assert.equal(findFabricatedPlace(beat, ['Jaques Station']), null);
+});
+
+// --- reasoning tags that arrive without their pair ---------------------------
+// Capping thinking at the server (--reasoning-budget 0, how LM Studio does it)
+// ends the thought without ever opening one, so the pair rule missed it and the
+// reasoning was spoken. Observed on GLM-4.6V: the beat, a stray close tag, and
+// the real verdict all in one string.
+
+test('an orphan </think> takes the leaked reasoning with it', () => {
+  assert.equal(
+    stripThink("That's a good haul for a single run. Keep moving.</think>NO_BEAT"),
+    'NO_BEAT',
+  );
+  assert.equal(stripThink('planning the line…</think>Pad seven.'), 'Pad seven.');
+});
+
+test('an orphan <think> drops everything after it', () => {
+  assert.equal(stripThink('Pad seven.<think>now let me consider'), 'Pad seven.');
+});
+
+test('a well-formed pair still strips, and clean text is untouched', () => {
+  assert.equal(stripThink('<think>reasoning here</think>Pad seven.'), 'Pad seven.');
+  assert.equal(stripThink('Pad seven. Quiet berth.'), 'Pad seven. Quiet berth.');
+  assert.equal(stripThink(''), '');
+});
+
+// --- a decline is only a decline when it IS the reply -------------------------
+// Reported live on a hauling beat: the model produced "That's a good haul. Keep
+// moving." and appended NO_BEAT, and the token matched anywhere in the string,
+// so the whole line was dropped and the commander heard nothing — "I was
+// hauling, why no beat?". A model that composed a remark and then second-
+// guessed itself has still composed the remark.
+
+test('a bare decline is silence', () => {
+  assert.equal(isSilenceVerdict('NO_BEAT'), true);
+  assert.equal(isSilenceVerdict('  NO_BEAT.  '), true);
+  assert.equal(isSilenceVerdict('NOT_IN_GAME'), true);
+  assert.equal(isSilenceVerdict(''), true);
+  assert.equal(isSilenceVerdict('   '), true);
+  // A couple of stray words around the token is still a refusal.
+  assert.equal(isSilenceVerdict('NO_BEAT — nothing'), true);
+});
+
+test('a real beat with the token stuck on is a BEAT, not silence', () => {
+  const live = "That's a good haul. Keep moving. NO_BEAT";
+  assert.equal(isSilenceVerdict(live), false);
+  assert.equal(stripVerdict(live), "That's a good haul. Keep moving.");
+  // ...and the shape the server-side thinking cap produced.
+  assert.equal(isSilenceVerdict('Pad seven. Quiet berth. NO_BEAT'), false);
+  assert.equal(stripVerdict('Pad seven. Quiet berth. NO_BEAT'), 'Pad seven. Quiet berth.');
+});
+
+test('an ordinary beat is untouched by either helper', () => {
+  const beat = "Einheriar's the quiet one, only 601 pilots on it.";
+  assert.equal(isSilenceVerdict(beat), false);
+  assert.equal(stripVerdict(beat), beat);
 });

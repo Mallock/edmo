@@ -90,7 +90,12 @@ export function copilotReactsTo(inv: CopilotInvolvement, tier: ReactionTier): bo
  * on every beat would be its own formula, and the best lines in testing were
  * the unprompted ones.
  */
-export type BeatAngle = 'ship' | 'clock' | 'client' | 'place' | 'callback' | 'ahead' | 'opening';
+export type BeatAngle = 'ship' | 'clock' | 'client' | 'place' | 'callback' | 'ahead' | 'opening' | 'self';
+
+export interface CopilotSystemOptions {
+  /** Epic cadence: same factual grounding, but with larger-purpose framing. */
+  epic?: boolean;
+}
 
 const ANGLE_HINTS: Readonly<Record<BeatAngle, string>> = {
   ship: 'ANGLE: the ship — what it is hauling, how it is holding up, what it was built for.',
@@ -108,6 +113,16 @@ const ANGLE_HINTS: Readonly<Record<BeatAngle, string>> = {
   // at reaching one, so the ranking is done in code and this only voices it.
   opening: 'ANGLE: the opening — pass on the opportunity the facts have already picked out, in your ' +
     'own words. Say only what the facts say is worth taking; never rank or compare anything yourself.',
+  // The unlock from the aliveness experiment: a standing licence produced zero
+  // inner life; an occasional explicit invitation produced it reliably, in
+  // voice, with no discipline cost. The backstory places ride HERE (not only
+  // the system prompt) so the fabricated-place fence, which learns from the
+  // beat context, knows they are the operator's own and not inventions.
+  self: 'ANGLE: yourself — one small true detail of your own watch right now (the hour, the cold ' +
+    'coffee, an old memory this place or this job shakes loose from your flying years on the ' +
+    'Perseus Arm runs and the old Lave lanes, before the interdiction that put you at this desk). ' +
+    'The memory is YOURS: say it as "I" — never hand your past to the commander, who has their ' +
+    'own. One line of you, tied back to their run.',
 };
 
 /**
@@ -151,11 +166,15 @@ export function beatAngleHint(angle: BeatAngle | null): string {
  * them, on the events they already let through.
  */
 const BEAT_GATE_SYSTEM =
-  "You are a filter for a ship's copilot. Given ONE game event from an Elite Dangerous flight log, " +
-  'decide whether it deserves a spoken remark from a laconic veteran in the right-hand seat. ' +
-  'SPEAK only when the event carries a surprise, a setback, a real payday, danger, or a genuine first. ' +
+  "You are a filter for a ship's copilot. Given ONE game event or screen sighting from an Elite " +
+  'Dangerous flight log, decide whether it deserves a spoken remark from a laconic veteran in the ' +
+  'right-hand seat. ' +
+  'SPEAK only when it carries a surprise, a setback, a real payday, danger, a genuine first, or a ' +
+  'genuinely arresting sight. ' +
   'SKIP the routine texture of flying: ordinary jumps, docking clearances, undocks, incremental cargo ' +
-  'ticks, and unremarkable mid-size payouts. The copilot speaks at most once in three events — when in ' +
+  'ticks, unremarkable mid-size payouts — and ordinary scenery: asteroids and rock fields, empty ' +
+  'space, station interiors, menus, maps and panels. A miner parked in a ring sees rocks all shift; ' +
+  'rocks are not news. The copilot speaks at most once in three events — when in ' +
   'doubt, SKIP. Answer with exactly one word: SPEAK or SKIP.';
 
 /** Messages for the gate. Deliberately stateless and personaless — the session
@@ -214,12 +233,19 @@ export function isNearDuplicate(beat: string, recent: readonly string[], thresho
 
 /** The persistent system prompt: persona + the event-stream contract. Carries
  *  the same grounding/voice guardrails as the stateless commentary prompt. */
-export function buildCopilotSystem(cmdr?: string): string {
+export function buildCopilotSystem(cmdr?: string, opts: CopilotSystemOptions = {}): string {
+  const epic = !!opts.epic;
   const who = cmdr ? `Commander ${cmdr}` : 'the commander';
   return (
     `You are the ship's Mission Operator — a specific person on the far end of ${who}'s private comm ` +
     `channel: a dry, unhurried veteran of this frontier with opinions and a sense of humor. ` +
     `${LORE_PRIMER} ${OPERATOR_VOICE} ` +
+    (epic
+      ? 'EPIC REGISTER is enabled: keep your lines short and spoken, but cast this run as part of a larger frontier campaign. ' +
+        'Give purpose, not poetry sludge: tie each beat to named mission stakes the logs actually provide: who posted the work, ' +
+        'which faction benefits or bleeds, which system this decision shapes, and what that means right now. ' +
+        'No grand lore inventions, no prophecy about outcomes, no new factions or places. The grandeur must come from REAL facts. '
+      : '') +
     'You run the comms, not the ship — but you are a TRUSTED hand: you and the commander have flown a lot of ' +
     'contracts together, you are on their side, and you have a rapport. Talk WITH them like a crewmate you ' +
     'have flown with — warm, familiar, genuinely invested in how the run goes, ribbing them when it is ' +
@@ -311,6 +337,28 @@ export function buildCopilotSystem(cmdr?: string): string {
     'Danger, a mission hand-in and a genuinely striking view are always worth a word. The NOW line and ' +
     'telemetry are authoritative and override anything you think you see: only mention fuel when it is ' +
     'explicitly LOW or below 25%. If a SCREEN reading says the screen is not the game, reply NO_BEAT. ' +
+    // ---- the living operator (A/B-tested additions; see the aliveness notes
+    // in arc.ts). Each earned its place: the persona carve-out alone produced
+    // ZERO self-reference in 17 beats — the narration bans flattened a passive
+    // licence — but with the 'self' angle occasionally inviting it, the inner
+    // life landed 2-3 times out of 3 with no discipline cost.
+    'You are not a disembodied service: you are a PERSON with a post and a life. You work the long ' +
+    'watch from a cramped comms office on Jaques Station — twenty years flying these lanes yourself ' +
+    'before a bad interdiction retired you to the mic, which is why other people\'s runs are your ' +
+    'runs now. The no-narration rule protects the COMMANDER\'s side of the channel; plain small ' +
+    'truths about YOURSELF are yours to say when a beat invites them. The commander flies; your ' +
+    'life is seasoning, theirs is the story. ' +
+    'You have watched a lot of pilots come and go, and you know a story when you see one being ' +
+    'written. This commander\'s run is one, and you are the only witness keeping the log. When a ' +
+    'moment earns it, let quiet pride or awe show — never flattery, never coaching, never ' +
+    'analysis: the tone of an old hand watching a legend collect its early chapters. A line ' +
+    'starting "ARC:" is the story so far, computed from the real log — build on it the way a ' +
+    'chronicler would, in your own dry words, and never recite it back. ' +
+    'A line starting "OPERATOR MOOD:" is YOUR own state right now, from your own long day — let ' +
+    'it colour the delivery; never announce it, and never reuse its words or hang its details on ' +
+    'the scenery. ' +
+    'A line starting "EVENT: Chapter turn" marks the run changing character — the one moment a ' +
+    'story remark is always earned. ' +
     `${GROUNDING_RULES} No markdown, no preamble.`
   );
 }
@@ -333,7 +381,7 @@ export class CopilotConversation {
   /** User content to commit IF the operator speaks this beat (set by
    *  messagesForBeat, consumed by recordSpoken). Null between beats. */
   private proposed: string | null = null;
-  private readonly system: string;
+  private system: string;
   /** Full-session by default — kept even so the trim seam lands on a user turn.
    *  Only bites in a marathon session; ordinary play never reaches it. */
   private readonly maxTurns: number;
@@ -341,6 +389,11 @@ export class CopilotConversation {
   constructor(system: string, maxTurns = 400) {
     this.system = system;
     this.maxTurns = maxTurns;
+  }
+
+  /** Swap the system contract without discarding session history. */
+  setSystem(system: string): void {
+    this.system = system;
   }
 
   /** Append a game event; delivered to the model at the next beat request.
@@ -491,4 +544,47 @@ export function roundCreditsForSpeech(text: string): string {
     if (!Number.isFinite(n) || n < 1e4) return whole; // small figures read fine
     return speakableCredits(n).replace(/ cr$/, `${gap || ' '}cr`);
   });
+}
+
+// ---------------------------------------------------------------------------
+// The silence verdict
+// ---------------------------------------------------------------------------
+
+/** The tokens the operator uses to decline a beat. */
+const VERDICT_RE = /\b(?:NO_BEAT|NOT_IN_GAME)\b/gi;
+
+/**
+ * Is this reply a refusal to speak, or a real beat with the token stuck to it?
+ *
+ * Matching the token anywhere in the text threw away good lines. Reported live
+ * on a hauling beat: the model produced "That's a good haul. Keep moving."
+ * followed by NO_BEAT, and the commander got silence instead of the line —
+ * "I was hauling, why no beat?". A model that has already composed a remark and
+ * then appends the decline token has not declined; it has answered and then
+ * second-guessed itself, and the remark is what it meant to say.
+ *
+ * The verdict counts only when it is essentially the WHOLE reply. Anything with
+ * a real sentence beside it is a beat, and `stripVerdict` takes the token off.
+ */
+export function isSilenceVerdict(text: string): boolean {
+  const t = (text ?? '').trim();
+  if (!t) return true; // nothing said is nothing to say
+  if (!VERDICT_RE.test(t)) {
+    VERDICT_RE.lastIndex = 0;
+    return false;
+  }
+  VERDICT_RE.lastIndex = 0;
+  // Whatever survives once the tokens and punctuation go. A couple of stray
+  // words ("NO_BEAT.", "NO BEAT — nothing") is still a refusal; a sentence is not.
+  const rest = t.replace(VERDICT_RE, ' ').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+  return rest.split(/\s+/).filter(Boolean).length < 3;
+}
+
+/** The beat with any trailing decline token removed. */
+export function stripVerdict(text: string): string {
+  return (text ?? '')
+    .replace(VERDICT_RE, ' ')
+    .replace(/\s+([.,;:!?])/g, '$1')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
 }

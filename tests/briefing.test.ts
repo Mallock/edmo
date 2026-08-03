@@ -2,7 +2,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { MissionStateManager } from '../src/engine/state.ts';
-import { buildBriefingChat, livelyBriefing } from '../src/engine/operator.ts';
+import { buildBriefingChat, buildChat, idleAskSystem, livelyBriefing, systemPromptFor } from '../src/engine/operator.ts';
+import { askPersona } from '../src/engine/lore.ts';
 import { mulberry32 } from '../src/engine/flavor.ts';
 import type { JournalEvent, Mission, MissionCategory } from '../src/engine/types.ts';
 
@@ -130,4 +131,51 @@ test('a briefing with no session yet reads exactly as it always did', () => {
     now: '2026-07-19T09:52:00Z',
   };
   assert.doesNotMatch(buildBriefingChat(st.activeMissions[0], st)[1].content, /already happened this session/);
+});
+
+// --- the ask path knows who it is talking to ---------------------------------
+// Reported live: GLM greeted the commander by name and gemma did not. The cause
+// was neither model — the copilot's system prompt has always said "Commander
+// <name>", but the ask path only received it as a parenthetical context line
+// among market data, so "hello" got a docking report. With the name in the
+// persona, both models greet: gemma 5/5, GLM 4/5, up from 1/5 each.
+
+test('the ask persona introduces the commander by name', () => {
+  const named = askPersona('Hadfield');
+  assert.match(named, /You are Commander Hadfield's Mission Operator/);
+  assert.match(named, /Their name is Hadfield; use it the way an old colleague does/);
+  // Naturally, not as a tic — every line opening "Hadfield," reads like a bot.
+  assert.match(named, /naturally, not in every line/);
+  // No name known: no dangling instruction about one.
+  const anon = askPersona();
+  assert.match(anon, /You are the commander's Mission Operator/);
+  assert.doesNotMatch(anon, /Their name is/);
+});
+
+test('a greeting is answered socially, not with telemetry', () => {
+  const p = askPersona('Hadfield');
+  assert.match(p, /"hello", "how are you", "still there\?"/);
+  assert.match(p, /greet them back/);
+  assert.match(p, /leave the telemetry alone unless they ask for it/);
+  // GLM ended three of five replies on "What's next?" — a rhetorical close the
+  // prompt already banned in spirit, now in letter.
+  assert.match(p, /never end on a bare "What's next\?"/);
+});
+
+test('both ask prompts carry the name through to the model', () => {
+  assert.match(idleAskSystem('Hadfield'), /Commander Hadfield/);
+  assert.match(String(systemPromptFor('Courier', 'Hadfield').content), /Commander Hadfield/);
+  // ...and still work anonymously.
+  assert.match(idleAskSystem(), /the commander's Mission Operator/);
+  assert.match(String(systemPromptFor('Courier').content), /the commander's Mission Operator/);
+});
+
+test('buildChat threads the commander name from live state', () => {
+  const st = {
+    ...new MissionStateManager().getState(),
+    activeMissions: [mission('Courier')],
+    now: '2026-07-19T09:52:00Z',
+    cmdr: 'Hadfield',
+  };
+  assert.match(String(buildChat(st.activeMissions[0], st, 'hello')[0].content), /Commander Hadfield/);
 });

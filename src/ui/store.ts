@@ -22,7 +22,7 @@ import {
   livelyBriefing,
   redirectNotice,
   ruleBasedAdvice,
-  IDLE_ASK_SYSTEM,
+  idleAskSystem,
 } from '../engine/operator.ts';
 import {
   afterglowFlavor,
@@ -68,6 +68,14 @@ import {
   findLiftedExample,
 } from '../engine/factcheck.ts';
 import { loreForSystem } from '../engine/lore.ts';
+import { momentOf, CombatStreak } from '../engine/moments.ts';
+import { SessionArc } from '../engine/arc.ts';
+import {
+  profileFor,
+  suppressThinkingFor,
+  suppressThinkingForGate,
+  reasoningBudgetFor,
+} from '../engine/modelprofile.ts';
 import {
   DEFAULT_FILTERS,
   applyOwnObservations,
@@ -121,6 +129,8 @@ import {
   copilotReactsTo,
   copilotDensityGapMs,
   isNearDuplicate,
+  isSilenceVerdict,
+  stripVerdict,
   copilotSilenceGapMs,
   type BeatAngle,
   type ReactionTier,
@@ -182,7 +192,20 @@ import {
   type ChatMessageWire,
   type ToolCallWire,
 } from './bridge.ts';
-import { classifyModel, gpuBudgetGb, type ModelFit, type SystemSpecs } from './modelfit.ts';
+import {
+  classifyModel,
+  gpuBudgetGb,
+  gpuLayerBudget,
+  shouldKeepVisionOnCpu,
+  type ModelFit,
+  type SystemSpecs,
+} from './modelfit.ts';
+
+/** Layer count assumed when sizing a partial GPU offload. The bundled tiers
+ *  are 4-9B transformers, which all sit in the 30-48 range; the estimate only
+ *  has to be close, because a wrong guess costs a few layers either way and
+ *  llama.cpp clamps the rest. */
+const MODEL_LAYERS_ESTIMATE = 40;
 import { loadSettings, saveSettings, type AppSettings } from './settings.ts';
 import { Speaker } from './tts.ts';
 
@@ -296,7 +319,20 @@ export interface AppSnapshot {
 const GAME_LIVE_WINDOW_MS = 90_000;
 
 function stripThink(text: string): string {
-  return text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+  return (
+    text
+      .replace(/<think>[\s\S]*?<\/think>/gi, '')
+      // An ORPHAN closing tag: when the server caps thinking itself
+      // (--reasoning-budget 0) the model is cut off mid-thought and emits the
+      // close with no opener, so the pair rule above misses it and everything
+      // before it is reasoning that leaked into the spoken line. Observed on
+      // GLM-4.6V: "That's a good haul. Keep moving.</think>NO_BEAT" — the beat
+      // AND the verdict, in one string, with the real answer after the tag.
+      .replace(/^[\s\S]*?<\/think>/i, '')
+      // ...and a stray opener with no close: everything after it is thought.
+      .replace(/<think>[\s\S]*$/i, '')
+      .trim()
+  );
 }
 
 /** Plain-English berth type from the journal's StationType. */
@@ -460,6 +496,14 @@ export class AppCore {
   /** Beats since the running tally was last put in front of the model — it is
    *  background, and shown every beat it becomes the only subject there is. */
   private beatsSinceTally = 0;
+  /** The session's story — chapters, turns, mood — computed in arc.ts. */
+  private sessionArc = new SessionArc();
+  /** The fight being fought right now, told once when it ends (moments.ts). */
+  private combatStreak = new CombatStreak();
+  /** Last new-vocabulary moment, so an identical one inside ten minutes
+   *  (every-leg fuel top-offs especially) stays unspoken. */
+  private lastMomentLine = '';
+  private lastMomentAt = 0;
   /** The exact messages of the in-flight copilot beat, kept so a beat that
    *  invents a place can be resampled once before we give up on it. */
   private copilotRetryMsgs: ChatMessage[] | null = null;
@@ -793,11 +837,64 @@ export class AppCore {
     this.emit();
   }
 
+  /**
+   * Refresh a stale llama.cpp runtime at startup, before the engine is asked
+   * to serve anything.
+   *
+   * The pinned build had been bumped exactly never in a way that reached an
+   * existing install: engine.rs wrote build.txt on every download and nothing
+   * ever read it back, so the first runtime a machine fetched was the one it
+   * kept. Runs BEFORE the model auto-resume below so the new binary is the one
+   * that starts, and stays silent unless there is actually something to do.
+   */
+  private async maybeUpdateRuntime(): Promise<void> {
+    if (!isTauri) return;
+    const e = this.engine;
+    if (!e?.runtime_installed || !e.runtime_outdated) return;
+    if (!this.settings.lm.autoUpdateRuntime) {
+      this.pushFeed(
+        'system',
+        `A newer inference runtime is available (${e.runtime_build ?? 'unknown'} → ${e.runtime_latest}). Settings → AI engine to update.`,
+      );
+      return;
+    }
+    const backend = e.runtime_backend ?? e.recommended_backend;
+    this.pushFeed('system', `⬇ Updating the inference runtime (${e.runtime_build ?? 'unknown'} → ${e.runtime_latest})…`);
+    try {
+      // Nothing has started the engine yet at this point in boot, but a
+      // resumed session could still be holding the exe — Windows will not let
+      // the archive overwrite a running binary.
+      if (e.running) await engineStop();
+      await engineDownloadRuntime(backend);
+      await this.refreshEngine();
+      this.pushFeed('system', `✅ Inference runtime updated to ${e.runtime_latest}.`);
+    } catch (err) {
+      // A failed update must never block the session: the old runtime is still
+      // on disk and still works.
+      this.pushFeed('system', `Runtime update skipped (${String(err)}) — keeping ${e.runtime_build ?? 'the current build'}.`);
+    }
+  }
+
   async engineSetup(backend: string, modelId: string): Promise<void> {
     if (!isTauri) return;
     try {
+      // Refresh a stale runtime on the same click that would have installed a
+      // missing one. build.txt has been written since the first release and
+      // never read, so a bumped pin only ever reached new installs — everyone
+      // else stayed on whatever they first downloaded. The archive is ~32 MB
+      // and extraction overwrites in place, so this is cheap and safe.
       if (!this.engine?.runtime_installed) {
         this.pushFeed('system', `⬇ Downloading the inference runtime (${backend})…`);
+        await engineDownloadRuntime(backend);
+      } else if (this.engine.runtime_outdated) {
+        this.pushFeed(
+          'system',
+          `⬇ Updating the inference runtime (${this.engine.runtime_build ?? 'unknown'} → ${this.engine.runtime_latest})…`,
+        );
+        // Windows will not let the archive overwrite llama-server.exe while it
+        // is running, and extraction would fail half-done. Stop first; the
+        // model start at the end of this function brings it back.
+        if (this.engine.running) await engineStop();
         await engineDownloadRuntime(backend);
       }
       const model = this.engine?.models.find((m) => m.id === modelId);
@@ -831,7 +928,18 @@ export class AppCore {
     if (!isTauri) return;
     this.pushFeed('system', '⚙ Starting the local AI engine…');
     try {
-      this.engine = await engineStart(modelId, this.engineCtxSize());
+      // Fit the engine around the game, not the other way round: the layer
+      // budget and the vision-on-CPU choice both come from the GPU headroom
+      // Elite leaves us. Before this the launcher always sent every layer to
+      // the card, whatever the settings panel's own advisor was warning.
+      const info = this.engine?.models.find((m) => m.id === modelId);
+      const modelGb = info ? info.bytes / 1e9 : 0;
+      const layers = gpuLayerBudget(this.specs, modelGb, MODEL_LAYERS_ESTIMATE, true);
+      const visionOnCpu = shouldKeepVisionOnCpu(this.specs, true);
+      // Some models cannot be told to skip reasoning per-request without
+      // crashing the driver; they get it capped at launch instead.
+      const budget = reasoningBudgetFor(profileFor(modelId));
+      this.engine = await engineStart(modelId, this.engineCtxSize(), layers, visionOnCpu, budget);
       this.settings = { ...this.settings, lm: { ...this.settings.lm, engine: 'bundled', bundledModel: modelId } };
       saveSettings(this.settings);
       this.pushFeed('system', '✅ Local AI engine ready — no LM Studio needed.');
@@ -980,7 +1088,9 @@ export class AppCore {
       void this.restartWatch();
       if (this.settings.hud.clickThrough) void setClickThrough(true).catch(() => undefined);
 
-      void this.refreshEngine().then(() => {
+      void this.refreshEngine()
+        .then(() => this.maybeUpdateRuntime())
+        .then(() => {
         // Auto-resume the bundled engine the user last chose, so the copilot is
         // ready without a visit to Settings.
         const { engine, bundledModel } = this.settings.lm;
@@ -1086,6 +1196,7 @@ export class AppCore {
       if (live && this.bootstrapped) {
         this.announce(changes, ev.timestamp);
         this.tactical(ev);
+        this.noteMoment(ev);
         // Session over → distill it into long-term memory once the
         // chronicler (saga, scheduled below) has had its turn.
         if (ev.event === 'Shutdown' && this.settings.memory.enabled) {
@@ -2207,6 +2318,7 @@ export class AppCore {
     this.maybeChatter();
     this.maybeReflect();
     this.maybeGlance();
+    this.maybeCombatAftermath();
     this.maybeCopilotIdle();
     this.speakMemoryEvents();
     if (this.memory.dirty) this.persistMemory();
@@ -2420,13 +2532,67 @@ export class AppCore {
   /** Lazily create the session conversation with the current commander's name. */
   private ensureCopilot(): void {
     if (!this.copilot)
-      this.copilot = new CopilotConversation(buildCopilotSystem(this.sm.commanderName || undefined));
+      this.copilot = new CopilotConversation(
+        buildCopilotSystem(this.sm.commanderName || undefined, {
+          epic: this.settings.chatter.epic,
+        }),
+      );
   }
 
   /** Drop the running conversation (new session / journal restart). */
   private resetCopilot(): void {
     this.copilot = null;
     this.copilotBeatInFlight = false;
+  }
+
+  /**
+   * The journal moments outside the curated vocabulary — interdictions,
+   * neutron boosts, promotions, deaths, wings, on-foot — plus the fight
+   * aggregator. Live-only by call site: a bootstrap replay must not narrate
+   * last month.
+   */
+  private noteMoment(ev: JournalEvent): void {
+    const now = Date.now();
+    // The session's story folds first — a chapter turn (mining shift → passenger
+    // work, the rings → the community goal) is the one moment a story remark is
+    // always earned, so it lands as a mission-tier beat of its own.
+    const turn = this.sessionArc.apply(ev, now);
+    if (turn) {
+      this.copilotEvent(turn);
+      this.copilotReact('mission', 'copilot — a chapter turns…');
+    }
+    // The fight folds silently; it is told ONCE, after it ends. Kills also
+    // arm the ambient combat-quiet gate, same as the tactical layer.
+    if (this.combatStreak.apply(ev, now)) {
+      this.lastCombatAt = now;
+      return;
+    }
+    // A jump, docking or death ends a fight by definition — file the aftermath
+    // as an event NOW so it rides into that beat instead of firing its own.
+    if (ev.event === 'FSDJump' || ev.event === 'Docked' || ev.event === 'Died') {
+      const fought = this.combatStreak.flush(now, true);
+      if (fought) this.copilotEvent(fought);
+    }
+    const m = momentOf(ev, { fuelCapacity: this.ship.current?.fuelCapacity });
+    if (!m) return;
+    // The same sight twice in a row is once too many — the tank refills every
+    // leg, and a wing rejoin after a relog is not news either.
+    if (m.line === this.lastMomentLine && now - this.lastMomentAt < 10 * 60_000) return;
+    this.lastMomentLine = m.line;
+    this.lastMomentAt = now;
+    this.copilotEvent(m.line);
+    this.copilotReact(m.tier, `copilot — reacting to ${ev.event}…`);
+  }
+
+  /** The fight went quiet on its own (no jump or docking ended it): tell it.
+   *  flush() unlocks at COMBAT_QUIET_MS — the same window as copilotReact's
+   *  combat gate, so the reaction is allowed at exactly the moment the
+   *  aftermath becomes tellable. */
+  private maybeCombatAftermath(): void {
+    const line = this.combatStreak.flush(Date.now());
+    if (!line) return;
+    this.copilotEvent(line);
+    this.copilotReact('mission', 'copilot — the dust settles…');
   }
 
   /** Record a game event into the living copilot's session context. Only kept
@@ -2549,42 +2715,27 @@ export class AppCore {
       facts.push(`LOCAL LORE (true, common knowledge): ${lore}`);
     }
 
-    if (this.copilot?.hasHistory()) available.push('callback');
+    if (this.copilot?.hasHistory()) {
+      available.push('callback');
+      // The operator's own watch — only once the session has some shape, so
+      // the first words of a session are about the commander, not the coffee.
+      available.push('self');
+    }
     if (this.navRouteJumps > 0 && this.navRouteDest) available.push('ahead');
 
-    // Community Goals — the only board-level opportunity the app tracks, and
-    // until now the ambient voice never saw one: they lived in contextExtras(),
-    // which only the ask path reads, and even there only the FIRST of them
-    // survived, stripped of the contributor counts. With four running at once
-    // the comparison IS the insight, so hand over all of them with the numbers.
-    //
-    // The direction of the comparison ships with the facts, not just with the
-    // angle: shown the raw counts alone the model treated the busiest goal as
-    // the best one ("Einheriar's doing well on the community board") — exactly
-    // backwards. A number the model cannot interpret is worse than no number.
-    // Community Goals — the only board-level opportunity the app tracks, and
-    // until now the ambient voice never saw one: they lived in contextExtras(),
-    // which only the ask path reads, and even there only the FIRST of them
-    // survived, stripped of the contributor counts.
-    //
-    // The CONCLUSION is handed over, never the raw board. Given the four goals
-    // and the rule for reading them, the model recommended the most contested
-    // one on 6 of 6 beats — bigger number reads as better. Given the answer, it
-    // simply says it. Ranking belongs in rankCommunityGoals(), not in a prompt.
+    // Community Goals — the CONCLUSION, never the raw board (given the board,
+    // the model recommended the MOST contested goal 6 of 6 times; ranking lives
+    // in rankCommunityGoals). Offered as an ANGLE, not a standing fact, and
+    // never mid-shift: as an every-beat fact it hijacked a whole live mining
+    // session — "you know the routine at Paxton Landing", "Einheriar work
+    // paying dividends again", beat after beat, a full ring system away from
+    // either place. Same law as the STATE tally: a fact present on every beat
+    // becomes the only subject. Opportunity talk belongs to the moments between
+    // work, not on top of it — the fact itself is attached below, only when the
+    // opening angle is actually drawn.
     const rank = rankCommunityGoals(this.sm.communityGoals);
-    if (rank) {
-      available.push('opening');
-      const q = rank.quietest;
-      const mine = q.playerContribution > 0 ? ' The commander has already put work into this one.' : '';
-      facts.push(
-        `COMMUNITY GOAL WORTH TAKING: of the ${rank.count} running, ${q.system} is the least contested — ` +
-          `hand in at ${q.market}, only ${q.contributors.toLocaleString('en-US')} pilots on it, so the biggest ` +
-          `share of the payout.${mine}` +
-          (rank.busiest
-            ? ` The crowded one is ${rank.busiest.system} with ${rank.busiest.contributors.toLocaleString('en-US')}.`
-            : ''),
-      );
-    }
+    const midShift = /mining/i.test(this.currentActivity() ?? '');
+    if (rank && !midShift) available.push('opening');
 
     // Long-term memory — who the commander is to these people, and what has
     // happened to them here before. The single richest non-money source there
@@ -2604,8 +2755,20 @@ export class AppCore {
       if (recall.length) facts.push(...recall.map((r) => `HISTORY: ${r}`));
     }
 
-    const hint = beatAngleHint(pickBeatAngle(available, Math.random));
-    return [...facts, hint].filter(Boolean).join('\n');
+    const angle = pickBeatAngle(available, Math.random);
+    if (angle === 'opening' && rank) {
+      const q = rank.quietest;
+      const mine = q.playerContribution > 0 ? ' The commander has already put work into this one.' : '';
+      facts.push(
+        `COMMUNITY GOAL WORTH TAKING: of the ${rank.count} running, ${q.system} is the least contested — ` +
+          `hand in at ${q.market}, only ${q.contributors.toLocaleString('en-US')} pilots on it, so the biggest ` +
+          `share of the payout.${mine}` +
+          (rank.busiest
+            ? ` The crowded one is ${rank.busiest.system} with ${rank.busiest.contributors.toLocaleString('en-US')}.`
+            : ''),
+      );
+    }
+    return [...facts, beatAngleHint(angle)].filter(Boolean).join('\n');
   }
 
   /** A compact STATE line so the same event reads differently under different
@@ -2742,10 +2905,15 @@ export class AppCore {
     // Compose the beat context: current NOW + a STATE line + a length target
     // (+ an optional framing note, e.g. a quiet stretch with no event behind it).
     // These ride in the ephemeral turn (only events are committed to history).
+    // The story and the operator's own state, computed (arc.ts) — the model
+    // colours them, it never derives them.
+    const hours = this.sessionStartAt ? (Date.now() - this.sessionStartAt) / 3_600_000 : 0;
     const ctx = [
       note,
       this.copilotNowLine(),
       this.copilotStateLine(),
+      this.sessionArc.arcLine() ?? '',
+      this.sessionArc.moodLine(Date.now(), hours),
       this.copilotAngleBlock(),
       this.copilotLengthHint(),
     ]
@@ -2771,9 +2939,10 @@ export class AppCore {
       0.7,
       1800,
       undefined,
-      // Full-session history feeds prior beats back; a modest penalty stops
-      // repetition-prone locals echoing a phrase beat after beat.
-      { presence: 0.5, frequency: 0.3 },
+      // Full-session history feeds prior beats back, and how hard a model
+      // echoes it varies by family: gemma needs a nudge, GLM and Qwen3-VL need
+      // roughly double. modelprofile.ts carries the measured strength.
+      profileFor(this.activeModel()).penalties,
     );
   }
 
@@ -2885,6 +3054,11 @@ export class AppCore {
         ...this.lmTarget(),
         model: this.activeModel()!,
         messages: buildBeatGateChat(line) as unknown as ChatMessageWire[],
+        // The gate is a one-word answer, so reasoning is pure cost (92 ms with
+        // the flag, seconds without) — but on families where the flag is unsafe
+        // it must still be omitted. That is a different question from what the
+        // spoken beats want, so it has its own rule.
+        noThinking: suppressThinkingForGate(profileFor(this.activeModel())),
       });
       speak = parseBeatGate(verdict);
     } finally {
@@ -2903,6 +3077,41 @@ export class AppCore {
     this.fireCopilotBeat(null);
   }
 
+  /** Gate a hazard-free screen glance before generating a beat for it. Judged
+   *  on the freshest pending EVENT when one is waiting (the beat will carry it,
+   *  and events are what the gate is calibrated on), else on the scene summary. */
+  private async gateThenGlance(scene: string): Promise<void> {
+    if (this.beatGateInFlight) return;
+    const pendingEvent = (this.copilot?.pendingCount() ?? 0) > 0 && this.lastCopilotEventLine;
+    const line = pendingEvent
+      ? this.lastCopilotEventLine
+      : `SCREEN SIGHTING: ${scene.match(/- Summary: (.+)/)?.[1] ?? scene.slice(0, 200)}`;
+    this.beatGateInFlight = true;
+    let speak = true;
+    try {
+      const verdict = await llmQuick({
+        ...this.lmTarget(),
+        model: this.activeModel()!,
+        messages: buildBeatGateChat(line) as unknown as ChatMessageWire[],
+        // The gate is a one-word answer, so reasoning is pure cost (92 ms with
+        // the flag, seconds without) — but on families where the flag is unsafe
+        // it must still be omitted. That is a different question from what the
+        // spoken beats want, so it has its own rule.
+        noThinking: suppressThinkingForGate(profileFor(this.activeModel())),
+      });
+      speak = parseBeatGate(verdict);
+    } finally {
+      this.beatGateInFlight = false;
+    }
+    if (!speak) {
+      this.noteGlance('glance — nothing on screen worth a word.');
+      return;
+    }
+    if (!this.settings.vision.commentary || !this.lmOk || this.lmBusy || this.glanceInFlight) return;
+    this.noteGlance('copilot — looking at the screen…');
+    this.fireCopilotBeat(scene);
+  }
+
   /** Fire the operator's stage-2 pass. `scene` is the rendered stage-1 reading
    *  (text-only, faster) or null to hand the raw image straight to the model. */
   private fireVisionStage(pv: PendingVision, scene: string | null): void {
@@ -2911,8 +3120,18 @@ export class AppCore {
       // session conversation — fireCopilotBeat owns the feed entry, seeding and
       // flags (shared with event reactions).
       if (scene) {
-        this.noteGlance('copilot — looking at the screen…');
-        this.fireCopilotBeat(scene);
+        // The same speak/skip gate the event path uses — glances went around
+        // it, and a mining session showed why that can't stand: parked in a
+        // ring, every glance sees rocks, and every glance spoke ("Asteroid
+        // boulders scattered across the void", "That cloud cover looks thick
+        // enough to chew through a freighter"). A visible hazard bypasses the
+        // gate; scenery has to earn a word.
+        if (!scene.includes('Visible hazards: none apparent')) {
+          this.noteGlance('copilot — looking at the screen…');
+          this.fireCopilotBeat(scene);
+          return;
+        }
+        void this.gateThenGlance(scene);
         return;
       }
       // describeFirst off / reading failed → stateless single-shot over the image.
@@ -3497,7 +3716,9 @@ export class AppCore {
       messages = [
         // Same operator, contract board empty — the commander is talking to one
         // person all session, not to a mission planner and a stranger.
-        { role: 'system', content: IDLE_ASK_SYSTEM },
+        // Named, so the operator answers a greeting like the person who has
+        // been talking to them all session rather than a status console.
+        { role: 'system', content: idleAskSystem(this.sm.commanderName || undefined) },
         {
           role: 'user',
           content: `${happening}Current location: ${state.location.station ? `${state.location.station}, ` : ''}${state.location.system}${state.docked ? ' (docked)' : ''}.${(() => {
@@ -3718,6 +3939,7 @@ export class AppCore {
           activity,
           avoid: this.recentStories,
           comms: this.freshComms(),
+          epic: this.settings.chatter.epic,
         }),
         0.9,
       );
@@ -3737,6 +3959,7 @@ export class AppCore {
         this.freshSeeds(),
         this.recentStories,
         this.freshComms(),
+        { epic: this.settings.chatter.epic },
       ),
       0.9,
     );
@@ -3842,26 +4065,16 @@ export class AppCore {
       responseFormat,
       presencePenalty: penalties?.presence,
       frequencyPenalty: penalties?.frequency,
-      // Skip the hidden reasoning pass on every path that just TALKS. Measured
-      // on the bundled gemma-4-e4b: a spoken beat costs ~5.1 s / 450 tokens
-      // with it and ~0.5 s / 16 without, and the reasoned lines were WORSE —
-      // the model writes itself a plan and a constraint checklist, ticks off
-      // "no 'Looks like' openings (Check)", then opens with "Looks like".
-      //
-      // Two kinds keep it, because both have something to get RIGHT rather than
-      // something to say, and neither is felt as latency:
-      //   * a responseFormat (reflect/describe/glance) — filling a JSON shape;
-      //   * 'ai', the ask path — which answers with a PLAN, and a plan has an
-      //     order. Without thinking, "what should I do right now?" on a contract
-      //     in another system came back "scan the Nav Beacon at Barsanti
-      //     Landing, then travel to CPD-23 501" on 3 of 3 questions: the right
-      //     steps in the wrong order, at the place the commander is standing
-      //     rather than the one the target is in. With it, 3 of 3 travelled
-      //     first — and it was the only arm that noticed the VIP's gift
-      //     commodity. A wrong route delivered in half a second is not a win.
-      // The tool-calling ask keeps thinking as well; it builds its own llmChat
-      // call in runAgent(), not this one.
-      noThinking: !responseFormat && kind !== 'ai',
+      // Hidden reasoning is decided per MODEL, not hardcoded (modelprofile.ts).
+      // Gemma wants it off for chatter (5.1 s -> 0.5 s a beat, and the reasoned
+      // lines were worse) but ON for the ask path, where a plan has an order to
+      // get right. Qwen3.5 needs it off for JSON too, or schema calls return
+      // nothing. GLM must never be sent this flag at all — that request crashes
+      // the AMD Vulkan driver, so its reasoning is capped at the engine instead.
+      noThinking: suppressThinkingFor(
+        profileFor(model),
+        responseFormat ? 'json' : kind === 'ai' ? 'ask' : 'chatter',
+      ),
     }).catch((e) => this.onAiError(id, String(e)));
   }
 
@@ -4014,90 +4227,80 @@ export class AppCore {
       // Fact fence: a copilot beat that names a station it was never told about
       // is confident fiction. Resample once, then drop to NO_BEAT rather than
       // let it through — trust matters more than a beat.
-      const speakable = !!groundedText && !/\b(?:NOT_IN_GAME|NO_BEAT)\b/.test(groundedText);
-      if (speakable && fromCopilot) {
+      // A decline only counts when it IS the reply. Matching the token anywhere
+      // threw away real beats: reported live on a hauling beat that came back
+      // "That's a good haul. Keep moving." with NO_BEAT stuck on the end, and
+      // the commander got silence instead of the line.
+      const speakable = !isSilenceVerdict(groundedText);
+      // Every fence runs on EVERY commentary beat. They used to run only on
+      // conversation-path beats — and the raw-image fallback (screen reading
+      // failed to parse, or describeFirst off) walked straight past all of
+      // them: a live session surfaced "We'll pick a bearing off those
+      // formations" (collective) and a Paxton-Landing word salad from exactly
+      // that path. A beat is a beat; the voice rules do not care which prompt
+      // produced it.
+      if (speakable) {
+        // One retry, and only for conversation beats: copilotRetryMsgs belongs
+        // to the LAST fireCopilotBeat, so resampling it for a raw-image beat
+        // would answer a different prompt than the one that misfired.
+        const resample = (note: string): boolean => {
+          if (!fromCopilot || this.copilotRetried || !this.copilotRetryMsgs) return false;
+          this.copilotRetried = true;
+          this.copilotBeatInFlight = true;
+          this.noteGlance(note);
+          this.startLlm(entry, 'commentary', this.copilotRetryMsgs, 0.85, 1800, undefined, profileFor(this.activeModel()).resamplePenalties);
+          return true;
+        };
+        const dropBeat = (note: string): void => {
+          this.noteGlance(note);
+          if (fromCopilot) this.copilot?.recordSilent();
+          this.feed = this.feed.filter((e) => e !== entry);
+          this.emit();
+        };
         // Say-it-again gate: the model re-serves the same fact in fresh words
         // when nothing new has happened. Dropping is better than repeating.
         if (isNearDuplicate(groundedText, this.recentStories)) {
-          this.noteGlance('dropped a beat — too close to one just spoken');
-          this.copilot?.recordSilent();
-          this.feed = this.feed.filter((e) => e !== entry);
-          this.emit();
+          dropBeat('dropped a beat — too close to one just spoken');
           return;
         }
-        // Voice fence: "we/us/our" is the model slipping out of its own skin and
-        // into play-by-play. Same treatment as an invented place — one resample,
-        // then silence.
         // Parrot fence: a phrase copied out of its own instructions is not an
         // observation, and lands wrong as often as not.
         const lifted = findLiftedExample(groundedText);
-        if (lifted && !this.copilotRetried && this.copilotRetryMsgs) {
-          this.copilotRetried = true;
-          this.copilotBeatInFlight = true;
-          this.noteGlance(`resampling — parroted the example "${lifted}"`);
-          this.startLlm(entry, 'commentary', this.copilotRetryMsgs, 0.85, 1800, undefined, { presence: 0.7, frequency: 0.5 });
-          return;
-        }
         if (lifted) {
-          this.noteGlance(`dropped a beat — parroted "${lifted}"`);
-          this.copilot?.recordSilent();
-          this.feed = this.feed.filter((e) => e !== entry);
-          this.emit();
+          if (resample(`resampling — parroted the example "${lifted}"`)) return;
+          dropBeat(`dropped a beat — parroted "${lifted}"`);
           return;
         }
+        // Voice fence: "we/us/our" is the model slipping out of its own skin
+        // and into play-by-play.
         const collective = findCollectivePronoun(groundedText);
-        if (collective && !this.copilotRetried && this.copilotRetryMsgs) {
-          this.copilotRetried = true;
-          this.copilotBeatInFlight = true;
-          this.noteGlance(`resampling — said "${collective}" instead of speaking for itself`);
-          this.startLlm(entry, 'commentary', this.copilotRetryMsgs, 0.85, 1800, undefined, { presence: 0.7, frequency: 0.5 });
-          return;
-        }
         if (collective) {
-          this.noteGlance(`dropped a beat — collective "${collective}"`);
-          this.copilot?.recordSilent();
-          this.feed = this.feed.filter((e) => e !== entry);
-          this.emit();
+          if (resample(`resampling — said "${collective}" instead of speaking for itself`)) return;
+          dropBeat(`dropped a beat — collective "${collective}"`);
           return;
         }
         // Atmosphere fence: "Jaques Station always smells like recycled air" —
-        // a habitual claim it cannot know, in the exact shape of the example the
-        // prompt warns it off. The place name is real, so the fact fence below
-        // cannot see it. Measured to fire on ~0 of 16 beats when the context
-        // carried real material and on most of them when it did not, so this is
-        // really a detector for an empty beat.
+        // a habitual claim it cannot know. Measured to fire almost only on
+        // beats with nothing real to say, so this really detects empty beats.
         const habitual = findHabitualGenerality(groundedText);
-        if (habitual && !this.copilotRetried && this.copilotRetryMsgs) {
-          this.copilotRetried = true;
-          this.copilotBeatInFlight = true;
-          this.noteGlance(`resampling — invented an atmosphere: "${habitual}"`);
-          this.startLlm(entry, 'commentary', this.copilotRetryMsgs, 0.85, 1800, undefined, { presence: 0.7, frequency: 0.5 });
-          return;
-        }
         if (habitual) {
-          this.noteGlance(`dropped a beat — nothing to say but "${habitual}"`);
-          this.copilot?.recordSilent();
-          this.feed = this.feed.filter((e) => e !== entry);
-          this.emit();
+          if (resample(`resampling — invented an atmosphere: "${habitual}"`)) return;
+          dropBeat(`dropped a beat — nothing to say but "${habitual}"`);
           return;
         }
-        const invented = findFabricatedPlace(groundedText, this.copilotAllowedPlaces);
-        if (invented && !this.copilotRetried && this.copilotRetryMsgs) {
-          this.copilotRetried = true;
-          this.copilotBeatInFlight = true; // the resample is still a copilot beat
-          this.noteGlance(`resampling — invented place "${invented}"`);
-          this.startLlm(entry, 'commentary', this.copilotRetryMsgs, 0.85, 1800, undefined, { presence: 0.7, frequency: 0.5 });
-          return;
-        }
-        if (invented) {
-          this.noteGlance(`dropped a beat — invented place "${invented}"`);
-          this.copilot?.recordSilent();
-          this.feed = this.feed.filter((e) => e !== entry);
-          this.emit();
-          return;
+        // Fact fence — conversation beats only: copilotAllowedPlaces is built
+        // per copilot beat, so judging a raw-image beat against it would flag
+        // places that beat WAS legitimately told about in its own prompt.
+        if (fromCopilot) {
+          const invented = findFabricatedPlace(groundedText, this.copilotAllowedPlaces);
+          if (invented) {
+            if (resample(`resampling — invented place "${invented}"`)) return;
+            dropBeat(`dropped a beat — invented place "${invented}"`);
+            return;
+          }
         }
       }
-      if (!groundedText || /\b(?:NOT_IN_GAME|NO_BEAT)\b/.test(groundedText)) {
+      if (isSilenceVerdict(groundedText)) {
         this.noteGlance(
           /NO_BEAT/.test(groundedText)
             ? 'nothing specific worth interrupting for — stayed quiet'
@@ -4109,14 +4312,17 @@ export class AppCore {
         this.feed = this.feed.filter((e) => e !== entry);
       } else {
         this.noteGlance('commentary spoken');
-        // The copilot conversation should carry the operator's OWN words, not
-        // the suppressor-filtered surface, so continuity reads naturally.
-        if (fromCopilot) this.copilot?.recordSpoken(finalText);
-        entry.text = `👁 ${groundedText}`;
+        // A real beat with the decline token stuck to it: say the beat, drop
+        // the token. Applied to what is SPOKEN and to what the conversation
+        // remembers, so "NO_BEAT" never lands in the transcript as the
+        // operator's own words and teaches it that is a thing it says.
+        const spoken = stripVerdict(groundedText);
+        if (fromCopilot) this.copilot?.recordSpoken(stripVerdict(finalText));
+        entry.text = `👁 ${spoken}`;
         entry.streaming = false;
-        this.lastStoryText = groundedText;
-        this.rememberStory(groundedText);
-        this.speak(groundedText);
+        this.lastStoryText = spoken;
+        this.rememberStory(spoken);
+        this.speak(spoken);
       }
       this.emit();
       return;
@@ -4362,6 +4568,13 @@ export class AppCore {
     const prev = this.settings;
     this.settings = next;
     saveSettings(next);
+    if (prev.chatter.epic !== next.chatter.epic) {
+      this.copilot?.setSystem(
+        buildCopilotSystem(this.sm.commanderName || undefined, {
+          epic: next.chatter.epic,
+        }),
+      );
+    }
     if (isTauri && prev.hud.clickThrough !== next.hud.clickThrough) {
       void setClickThrough(next.hud.clickThrough).catch(() => undefined);
     }

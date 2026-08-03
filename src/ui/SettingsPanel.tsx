@@ -399,6 +399,14 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
             />
             Fictional flavor stories about your missions
           </label>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={s.chatter.epic}
+              onChange={(e) => set({ ...s, chatter: { ...s.chatter, epic: e.target.checked } })}
+            />
+            Epic mode - grand, purpose-driven delivery for chatter and copilot beats
+          </label>
           <div className="row">
             <label>
               Minutes between stories

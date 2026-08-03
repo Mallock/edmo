@@ -2,6 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildAfterglowChat,
   buildFlavorChat,
   mulberry32,
   planStory,
@@ -70,6 +71,23 @@ test('buildFlavorChat grounds the prompt in mission facts + angle', () => {
   assert.match(msgs[1].content, /Contract 1/);
   assert.match(msgs[1].content, /Ramtop/);
   assert.match(msgs[1].content, /Angle: /);
+});
+
+test('buildFlavorChat epic mode asks for campaign-purpose framing', () => {
+  const plan = planStory([mission(1)], mulberry32(1))!;
+  const msgs = buildFlavorChat(plan, STATE, [], undefined, [], { epic: true });
+  assert.match(msgs[0].content, /EPIC MODE is enabled/);
+  assert.match(msgs[0].content, /wider campaign/);
+  assert.match(msgs[0].content, /Never invent lore/);
+});
+
+test('buildAfterglowChat epic mode carries downtime as campaign interlude', () => {
+  const msgs = buildAfterglowChat(['Handed in a courier run.'], STATE, mulberry32(2), {
+    activity: 'mining low-temperature diamonds',
+    epic: true,
+  });
+  assert.match(msgs[0].content, /EPIC MODE is enabled/);
+  assert.match(msgs[0].content, /campaign movements/);
 });
 
 test('offline templates: kill story names the target, no empty output', () => {

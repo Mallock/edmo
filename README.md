@@ -195,9 +195,14 @@ global shortcuts (incl. push-to-talk key) need X11 — on Wayland use the HUD's 
 - The ED journal directory is opened **read-only**; the app never writes there (X.3).
 - **Inference is always local.** With the bundled engine, chat traffic goes to `127.0.0.1` on a
   random loopback port, behind a per-session API key; with LM Studio it is `127.0.0.1:1234` (X.2).
-- **Downloads are explicit and pinned.** The inference runtime (llama.cpp releases) and the model
-  (an ungated GGUF mirror) are fetched only on a click, from URLs pinned in one manifest
-  (`src-tauri/src/engine.rs`). Nothing is fetched in the background.
+- **Downloads are pinned, and models are explicit.** The inference runtime (llama.cpp releases) and
+  the model (an ungated GGUF mirror) come only from URLs pinned in one manifest
+  (`src-tauri/src/engine.rs`). The multi-GB model is fetched only on a click, never automatically.
+  The one exception is the ~32 MB runtime archive: when the app ships against a newer pinned
+  llama.cpp build than the one on disk, it refreshes it at startup and says so in the feed — the
+  build marker was previously written and never read, so an install kept its first runtime forever
+  and silently missed every upstream fix. Turn it off with **Settings → AI engine → auto-update
+  runtime** to keep the strict nothing-unasked behaviour.
 - TTS is local by default (bundled Piper); cloud voices require an explicit opt-in and are labelled.
 - No telemetry, no analytics, no cloud sync.
 

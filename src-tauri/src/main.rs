@@ -13,7 +13,7 @@
 
 mod engine;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -605,6 +605,9 @@ struct ChatTurn {
     tool_calls: Vec<serde_json::Value>,
 }
 
+/// Safety rail for runaway tool-call bursts from some reasoning models.
+const MAX_TOOL_CALLS_PER_TURN: usize = 6;
+
 /// POST one chat body, attaching the bundled engine's per-session key when we
 /// have one (LM Studio needs no auth and passes None).
 async fn send_chat(
@@ -707,6 +710,7 @@ async fn stream_chat(
         reasoned: bool,
         tool_calls: Vec<serde_json::Value>,
     ) -> Result<ChatTurn, String> {
+        let tool_calls = dedupe_and_cap_tool_calls(tool_calls);
         // Only a reply with neither prose NOR tool calls, after visible
         // reasoning, means the model starved itself.
         if full.trim().is_empty() && tool_calls.is_empty() && reasoned {
@@ -783,6 +787,138 @@ fn accumulate_tool_calls(acc: &mut Vec<serde_json::Value>, deltas: &[serde_json:
     }
 }
 
+/// Canonical JSON string for tool args; None when args are invalid/incomplete.
+fn canonical_tool_args(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    let json_text = if trimmed.is_empty() { "{}" } else { trimmed };
+    serde_json::from_str::<serde_json::Value>(json_text)
+        .ok()
+        .and_then(|v| serde_json::to_string(&v).ok())
+}
+
+/// Drop duplicate tool calls (same function + equivalent args) and cap count.
+fn dedupe_and_cap_tool_calls(calls: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    for mut call in calls {
+        let Some(name) = call["function"]["name"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+        else {
+            continue;
+        };
+        let args = call["function"]["arguments"]
+            .as_str()
+            .map(str::trim)
+            .unwrap_or("")
+            .to_string();
+        let Some(args_json) = canonical_tool_args(&args) else {
+            // Streamed deltas can end mid-JSON; never forward malformed
+            // assistant tool calls because the next turn would 500.
+            continue;
+        };
+        let key = format!("{}\u{1f}{}", name.to_ascii_lowercase(), args_json);
+        if !seen.insert(key) {
+            continue;
+        }
+
+        // Keep the OpenAI tool-call shape explicit and usable.
+        call["type"] = json!("function");
+        call["function"]["name"] = json!(name);
+        call["function"]["arguments"] = json!(args_json);
+
+        // Some backends omit or intermittently drop ids in streamed deltas.
+        let id_missing = call["id"]
+            .as_str()
+            .map(str::trim)
+            .map(|s| s.is_empty())
+            .unwrap_or(true);
+        if id_missing {
+            call["id"] = json!(format!("call-{}", out.len() + 1));
+        }
+
+        out.push(call);
+        if out.len() >= MAX_TOOL_CALLS_PER_TURN {
+            break;
+        }
+    }
+
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{canonical_tool_args, dedupe_and_cap_tool_calls, MAX_TOOL_CALLS_PER_TURN};
+    use serde_json::json;
+
+    #[test]
+    fn dedupe_tool_calls_collapses_same_name_and_args() {
+        let calls = vec![
+            json!({"id":"a","type":"function","function":{"name":"find_trade_run","arguments":"{\"system\":\"Tir\"}"}}),
+            json!({"id":"b","type":"function","function":{"name":"find_trade_run","arguments":"{ \"system\" : \"Tir\" }"}}),
+            json!({"id":"c","type":"function","function":{"name":"find_trade_run","arguments":"{\"system\":\"Achenar\"}"}}),
+        ];
+
+        let out = dedupe_and_cap_tool_calls(calls);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0]["function"]["name"], "find_trade_run");
+        assert_eq!(out[1]["function"]["name"], "find_trade_run");
+    }
+
+    #[test]
+    fn dedupe_tool_calls_backfills_missing_id() {
+        let calls = vec![json!({
+            "id": "",
+            "function": { "name": "get_ship", "arguments": "{}" }
+        })];
+
+        let out = dedupe_and_cap_tool_calls(calls);
+        assert_eq!(out.len(), 1);
+        assert!(out[0]["id"].as_str().is_some_and(|s| !s.is_empty()));
+        assert_eq!(out[0]["type"], "function");
+    }
+
+    #[test]
+    fn dedupe_tool_calls_caps_runaway_call_count() {
+        let calls: Vec<_> = (0..20)
+            .map(|n| {
+                json!({
+                    "id": format!("c{n}"),
+                    "function": { "name": "find_trade_run", "arguments": format!("{{\"system\":\"S{n}\"}}") }
+                })
+            })
+            .collect();
+
+        let out = dedupe_and_cap_tool_calls(calls);
+        assert_eq!(out.len(), MAX_TOOL_CALLS_PER_TURN);
+    }
+
+    #[test]
+    fn canonical_tool_args_rejects_incomplete_json() {
+        assert!(canonical_tool_args("{\"system\":\"Tri\"").is_none());
+        assert_eq!(
+            canonical_tool_args("{\"system\":\"Tri\"}").as_deref(),
+            Some("{\"system\":\"Tri\"}")
+        );
+    }
+
+    #[test]
+    fn dedupe_tool_calls_drops_invalid_argument_json() {
+        let calls = vec![
+            json!({"id":"a","function":{"name":"find_trade_run","arguments":"{\"system\":\"Tri\""}}),
+            json!({"id":"b","function":{"name":"find_trade_run","arguments":"{\"system\":\"Tri\"}"}}),
+        ];
+
+        let out = dedupe_and_cap_tool_calls(calls);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["id"], "b");
+        assert_eq!(out[0]["function"]["arguments"], "{\"system\":\"Tri\"}");
+    }
+}
+
 #[tauri::command]
 async fn llm_chat(
     app: AppHandle,
@@ -855,6 +991,7 @@ async fn llm_quick(
     model: String,
     messages: Vec<ChatMsg>,
     max_tokens: Option<u32>,
+    no_thinking: Option<bool>,
     api_key: Option<String>,
 ) -> Result<String, String> {
     let client = reqwest::Client::builder()
@@ -871,8 +1008,14 @@ async fn llm_quick(
         "temperature": 0,
         "max_tokens": max_tokens.unwrap_or(8),
         "stream": false,
-        "chat_template_kwargs": { "enable_thinking": false },
     });
+    // The gate wants speed above all — it is a one-word yes/no — but the caller
+    // decides, because this flag is not universally safe: on GLM-4.6V the same
+    // kwarg faults the AMD Vulkan driver, and a landmine in the cheapest call in
+    // the app is the worst place for one.
+    if no_thinking.unwrap_or(true) {
+        body["chat_template_kwargs"] = json!({ "enable_thinking": false });
+    }
     let mut resp = send_chat(&client, &url, &body, api_key.as_deref()).await?;
     // Same fallback as stream_chat: an older backend may not know the field.
     if !resp.status().is_success() && resp.status().is_client_error() {

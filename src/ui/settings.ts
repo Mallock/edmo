@@ -18,6 +18,10 @@ export interface AppSettings {
     temperature: number;
     maxTokens: number;
     tools: boolean; // let the operator call tools to read live game data
+    /** Refresh the bundled llama.cpp runtime when a newer pinned build
+     *  ships. The archive is ~32 MB and still comes from the pinned URL
+     *  in engine.rs — this only removes the click, not the pinning. */
+    autoUpdateRuntime: boolean;
   };
   voice: {
     enabled: boolean;
@@ -41,6 +45,7 @@ export interface AppSettings {
   chatter: {
     enabled: boolean; // fictional flavor stories about active missions
     intervalMin: number; // minimum minutes between automatic stories
+    epic: boolean; // epic, purpose-driven tone for chatter + copilot commentary
   };
   saga: {
     enabled: boolean; // auto-narrate a space-opera episode when a session ends
@@ -108,6 +113,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
     // Tool loop on by default; auto-disabled at runtime for models that don't
     // support tool calls, and falls back to grounded context on tool errors.
     tools: true,
+    // On by default: a stale runtime silently missed every upstream fix,
+    // because build.txt was written and never read. Turn it off to keep
+    // the strict never-fetch-unasked behaviour.
+    autoUpdateRuntime: true,
   },
   voice: {
     enabled: true,
@@ -131,6 +140,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   chatter: {
     enabled: true,
     intervalMin: 6,
+    epic: false,
   },
   saga: {
     enabled: true,

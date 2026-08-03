@@ -195,6 +195,8 @@ export async function llmQuick(opts: {
   model: string;
   messages: ChatMessageWire[];
   maxTokens?: number;
+  /** Defaults to true (speed). Must be false for models the flag crashes. */
+  noThinking?: boolean;
   apiKey?: string | null;
 }): Promise<string> {
   try {
@@ -203,6 +205,7 @@ export async function llmQuick(opts: {
       model: opts.model,
       messages: opts.messages,
       maxTokens: opts.maxTokens ?? 8,
+      noThinking: opts.noThinking ?? true,
       apiKey: opts.apiKey ?? null,
     });
   } catch {
@@ -230,6 +233,12 @@ export interface EngineModelInfo {
 
 export interface EngineStatus {
   runtime_installed: boolean;
+  /** llama.cpp build on disk, and the one this app is pinned to. */
+  runtime_build: string | null;
+  runtime_latest: string;
+  /** An older runtime than we ship against — still works, but re-downloading
+   *  the ~32 MB archive picks up upstream fixes and newer model support. */
+  runtime_outdated: boolean;
   runtime_backend: string | null;
   recommended_backend: string;
   models: EngineModelInfo[];
@@ -275,8 +284,26 @@ export async function engineCancelDownload(): Promise<void> {
   await invoke('engine_cancel_download');
 }
 
-export async function engineStart(modelId: string, ctxSize?: number): Promise<EngineStatus> {
-  return invoke<EngineStatus>('engine_start', { modelId, ctxSize: ctxSize ?? null });
+export async function engineStart(
+  modelId: string,
+  ctxSize?: number,
+  /** Layers on the GPU. Omitted = 99 (all), the behaviour that shipped before
+   *  the app learned to leave the game room — see gpuLayerBudget. */
+  gpuLayers?: number,
+  /** Keep the vision projector on the CPU: ~0.9-2.2 GB of VRAM back, for no
+   *  cost to text beats (glances get slower, and they are opt-in). */
+  visionOnCpu?: boolean,
+  /** `--reasoning-budget` for models that crash when reasoning is disabled
+   *  per-request (GLM). Null omits the flag entirely. */
+  reasoningBudget?: number | null,
+): Promise<EngineStatus> {
+  return invoke<EngineStatus>('engine_start', {
+    modelId,
+    ctxSize: ctxSize ?? null,
+    gpuLayers: gpuLayers ?? null,
+    visionOnCpu: visionOnCpu ?? null,
+    reasoningBudget: reasoningBudget ?? null,
+  });
 }
 
 export async function engineStop(): Promise<void> {

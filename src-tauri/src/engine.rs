@@ -30,7 +30,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 // ---------------------------------------------------------------- manifest
 
 /// Pinned llama.cpp release. Bumping the runtime is a one-line edit here.
-const LLAMA_BUILD: &str = "b10107";
+const LLAMA_BUILD: &str = "b10238";
 
 /// One downloadable runtime build. `bytes` is for the pre-flight disk check and
 /// the progress bar's total when the server omits Content-Length.
@@ -48,19 +48,19 @@ fn runtime_artifacts() -> Vec<RuntimeArtifact> {
         vec![
             RuntimeArtifact {
                 backend: "vulkan",
-                url: "https://github.com/ggml-org/llama.cpp/releases/download/b10107/llama-b10107-bin-win-vulkan-x64.zip",
+                url: "https://github.com/ggml-org/llama.cpp/releases/download/b10238/llama-b10238-bin-win-vulkan-x64.zip",
                 extra_url: None,
                 bytes: 32 * 1024 * 1024,
             },
             RuntimeArtifact {
                 backend: "cuda",
-                url: "https://github.com/ggml-org/llama.cpp/releases/download/b10107/llama-b10107-bin-win-cuda-13.3-x64.zip",
-                extra_url: Some("https://github.com/ggml-org/llama.cpp/releases/download/b10107/cudart-llama-bin-win-cuda-13.3-x64.zip"),
+                url: "https://github.com/ggml-org/llama.cpp/releases/download/b10238/llama-b10238-bin-win-cuda-13.3-x64.zip",
+                extra_url: Some("https://github.com/ggml-org/llama.cpp/releases/download/b10238/cudart-llama-bin-win-cuda-13.3-x64.zip"),
                 bytes: 509 * 1024 * 1024,
             },
             RuntimeArtifact {
                 backend: "cpu",
-                url: "https://github.com/ggml-org/llama.cpp/releases/download/b10107/llama-b10107-bin-win-cpu-x64.zip",
+                url: "https://github.com/ggml-org/llama.cpp/releases/download/b10238/llama-b10238-bin-win-cpu-x64.zip",
                 extra_url: None,
                 bytes: 17 * 1024 * 1024,
             },
@@ -71,13 +71,13 @@ fn runtime_artifacts() -> Vec<RuntimeArtifact> {
         vec![
             RuntimeArtifact {
                 backend: "vulkan",
-                url: "https://github.com/ggml-org/llama.cpp/releases/download/b10107/llama-b10107-bin-ubuntu-vulkan-x64.tar.gz",
+                url: "https://github.com/ggml-org/llama.cpp/releases/download/b10238/llama-b10238-bin-ubuntu-vulkan-x64.tar.gz",
                 extra_url: None,
                 bytes: 30 * 1024 * 1024,
             },
             RuntimeArtifact {
                 backend: "cpu",
-                url: "https://github.com/ggml-org/llama.cpp/releases/download/b10107/llama-b10107-bin-ubuntu-x64.tar.gz",
+                url: "https://github.com/ggml-org/llama.cpp/releases/download/b10238/llama-b10238-bin-ubuntu-x64.tar.gz",
                 extra_url: None,
                 bytes: 15 * 1024 * 1024,
             },
@@ -121,6 +121,16 @@ fn model_artifacts() -> Vec<ModelArtifact> {
             // Measured from the CDN: 4.97 GB model + 0.92 GB mmproj.
             bytes: 5_950_000_000,
             licence: "Gemma Terms of Use",
+        },
+        ModelArtifact {
+            id: "glm-4-6v-flash-9b",
+            label: "GLM 4.6V Flash (9B)",
+            needs_gb: 6.5,
+            url: "https://huggingface.co/lmstudio-community/GLM-4.6V-Flash-GGUF/resolve/main/GLM-4.6V-Flash-Q4_K_M.gguf",
+            mmproj_url: "https://huggingface.co/lmstudio-community/GLM-4.6V-Flash-GGUF/resolve/main/mmproj-GLM-4.6V-Flash-F16.gguf",
+            // Measured from the CDN: 6.17 GB model + 1.79 GB mmproj.
+            bytes: 7_953_537_376,
+            licence: "MIT",
         },
     ]
 }
@@ -331,6 +341,16 @@ pub struct RunningEngine {
 pub struct EngineStatus {
     runtime_installed: bool,
     runtime_backend: Option<String>,
+    /// llama.cpp build actually on disk (from build.txt), when known.
+    runtime_build: Option<String>,
+    /// The build this app is pinned to — what a fresh install would fetch.
+    runtime_latest: String,
+    /// An older runtime is installed than the one we ship against. It keeps
+    /// working, so this is an offer rather than an error: build.txt has been
+    /// written since the first release and never read, which meant a bumped
+    /// pin only ever reached NEW installs while everyone else silently stayed
+    /// on the old build forever.
+    runtime_outdated: bool,
     recommended_backend: String,
     models: Vec<ModelInfo>,
     running: bool,
@@ -612,13 +632,22 @@ fn status_of(app: &AppHandle, ctl: &EngineCtl, gpus: Vec<String>) -> EngineStatu
         })
         .collect();
     let proc = ctl.proc.lock().unwrap();
+    let rt_dir = runtime_dir(&app).unwrap_or_default();
+    let runtime_build = fs::read_to_string(rt_dir.join("build.txt"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     EngineStatus {
         runtime_installed: runtime.is_some(),
-        runtime_backend: fs::read_to_string(
-            runtime_dir(&app).unwrap_or_default().join("backend.txt"),
-        )
-        .ok()
-        .map(|s| s.trim().to_string()),
+        runtime_backend: fs::read_to_string(rt_dir.join("backend.txt"))
+            .ok()
+            .map(|s| s.trim().to_string()),
+        // A runtime with no build.txt predates the marker entirely — that is
+        // older than anything we ship, so it counts as outdated too.
+        runtime_outdated: runtime.is_some()
+            && runtime_build.as_deref() != Some(LLAMA_BUILD),
+        runtime_build,
+        runtime_latest: LLAMA_BUILD.to_string(),
         recommended_backend: recommend_backend(&gpus),
         models,
         running: proc.is_some(),
@@ -825,6 +854,8 @@ pub async fn engine_start(
     model_id: String,
     gpu_layers: Option<i32>,
     ctx_size: Option<u32>,
+    vision_on_cpu: Option<bool>,
+    reasoning_budget: Option<i32>,
 ) -> Result<EngineStatus, String> {
     // Idempotent: already serving this model is success, not an error. Compute
     // under a short-lived lock — status_of() locks again, so the guard must be
@@ -867,12 +898,36 @@ pub async fn engine_start(
         .arg("1")
         .arg("-ngl")
         .arg(gpu_layers.unwrap_or(99).to_string());
+    // Keep the vision projector off the card unless asked otherwise. It only
+    // runs when a screen glance fires (opt-in, off by default), and measured on
+    // an RX 7800 XT it costs 0.9-2.2 GB of VRAM for no gain to the text beats
+    // the operator actually speaks with — the cheapest headroom the app can
+    // hand back to the game's renderer.
+    if vision_on_cpu.unwrap_or(false) {
+        cmd.arg("--no-mmproj-offload");
+    }
+    // Cap hidden reasoning at the SERVER for models that cannot be told to skip
+    // it per-request. GLM-4.6V faults the AMD Vulkan driver the moment a request
+    // carries `chat_template_kwargs: {enable_thinking:false}` — reproduced 3/3,
+    // and unfixed by a newer llama.cpp, -fa off, --cache-reuse 0 or
+    // --kv-unified. Capping here instead is stable 8/8 and just as fast, at the
+    // cost of needing a restart to change (which is why it is a launch flag).
+    if let Some(budget) = reasoning_budget {
+        cmd.arg("--reasoning-budget").arg(budget.to_string());
+    }
     // Keep the engine's own log. It was going to /dev/null, so when the server
     // died mid-session the only record anywhere was a Windows crash bucket —
     // 0xC00000FD, a stack overflow inside llama.cpp, which no amount of staring
     // at our own code would have revealed. Truncated each start so it stays
     // small and always describes the run that is actually going.
-    match fs::File::create(engine_log_path(&app)) {
+    //
+    // Rotate before truncating: when the engine crashes mid-session the user's
+    // next click is Restart, and truncation was destroying the one log that
+    // said why it died (it happened live — "engine stopped", restarted, and
+    // the evidence was gone). engine.prev.log always holds the previous run.
+    let log_path = engine_log_path(&app);
+    let _ = fs::rename(&log_path, log_path.with_extension("prev.log"));
+    match fs::File::create(&log_path) {
         Ok(f) => {
             let err = f.try_clone().unwrap_or_else(|_| f.try_clone().expect("dup"));
             cmd.stdout(Stdio::from(f)).stderr(Stdio::from(err));
@@ -990,4 +1045,27 @@ pub fn engine_alive(ctl: State<'_, EngineCtl>) -> bool {
         return false;
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::model_artifacts;
+
+    #[test]
+    fn bundled_catalog_includes_glm_46v_flash_q4km() {
+        let models = model_artifacts();
+        let model = models
+            .iter()
+            .find(|entry| entry.id == "glm-4-6v-flash-9b")
+            .expect("missing GLM 4.6V Flash model entry");
+
+        assert!(model.url.ends_with("GLM-4.6V-Flash-Q4_K_M.gguf"));
+        assert!(
+            model
+                .mmproj_url
+                .ends_with("mmproj-GLM-4.6V-Flash-F16.gguf")
+        );
+        assert!(model.bytes > 7_000_000_000);
+        assert!(model.needs_gb >= 6.0);
+    }
 }

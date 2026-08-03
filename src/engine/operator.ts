@@ -9,7 +9,7 @@
  */
 import type { ChatMessage } from './lmstudio.ts';
 import type { Mission, MissionCategory, OperatorState } from './types.ts';
-import { ASK_PERSONA, LORE_PRIMER, UNIVERSAL_LORE } from './lore.ts';
+import { askPersona, LORE_PRIMER, UNIVERSAL_LORE } from './lore.ts';
 
 export function formatCredits(n: number): string {
   return `${n.toLocaleString('en-US')} cr`;
@@ -317,8 +317,8 @@ const CATEGORY_GUIDANCE: Record<MissionCategory, string> = {
   Other: 'Give concise, practical guidance.',
 };
 
-const BASE_SYSTEM =
-  `${ASK_PERSONA} ${LORE_PRIMER} ${UNIVERSAL_LORE} ` +
+const baseSystem = (cmdr?: string): string =>
+  `${askPersona(cmdr)} ${LORE_PRIMER} ${UNIVERSAL_LORE} ` +
   'Give a grounded, ordered plan ' +
   'for the ACTIVE mission using ONLY facts in the provided context (mission data, steps, detected ' +
   'signals, stations). Start with what the commander should do right now from the current ' +
@@ -329,13 +329,16 @@ const BASE_SYSTEM =
   'terminology. Output 2-4 short speakable sentences, plain text only, and always return an answer.';
 
 /** The same operator, with no contract on the board to plan around. */
-export const IDLE_ASK_SYSTEM =
-  `${ASK_PERSONA} ${LORE_PRIMER} ${UNIVERSAL_LORE} ` +
+export const idleAskSystem = (cmdr?: string): string =>
+  `${askPersona(cmdr)} ${LORE_PRIMER} ${UNIVERSAL_LORE} ` +
   'No mission is active. Answer from the facts provided — never invent places, prices, ' +
   'mechanics or events. Output 2-4 short speakable sentences, plain text only, no markdown.';
 
-export function systemPromptFor(category: MissionCategory): ChatMessage {
-  return { role: 'system', content: `${BASE_SYSTEM} ${CATEGORY_GUIDANCE[category]}` };
+/** Back-compat for callers with no commander name. */
+export const IDLE_ASK_SYSTEM = idleAskSystem();
+
+export function systemPromptFor(category: MissionCategory, cmdr?: string): ChatMessage {
+  return { role: 'system', content: `${baseSystem(cmdr)} ${CATEGORY_GUIDANCE[category]}` };
 }
 
 /**
@@ -445,7 +448,7 @@ export function missionContext(m: Mission, state: OperatorState): string {
 
 export function buildChat(m: Mission, state: OperatorState, question: string): ChatMessage[] {
   return [
-    systemPromptFor(m.category),
+    systemPromptFor(m.category, state.cmdr),
     { role: 'user', content: `${missionContext(m, state)}\n\nCommander asks: ${question}` },
   ];
 }
