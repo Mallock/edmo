@@ -15,8 +15,8 @@ import { parseJournalLine, parseJournalLines } from '../engine/parse.ts';
 import {
   arrivalNotice,
   buildBriefingChat,
+  categoryGuidance,
   missionContext,
-  systemPromptFor,
   cargoNotice,
   completionNotice,
   describeSystemIntel,
@@ -3747,9 +3747,19 @@ ${missionContext(mission, state)}`);
     }
     knowledge.push(...this.contextExtras());
 
-    const persona = mission
-      ? String(systemPromptFor(mission.category, state.cmdr).content)
-      : idleAskSystem(this.sm.commanderName || undefined);
+    // The SAME operator that has been talking all session, in answering mode —
+    // not a second, more assistant-shaped personality. The commander could hear
+    // the seam between the two prompts ("You've earned your permanent address
+    // here" vs "Community goals are a good way to build local reputation"), and
+    // the seam was literally two system prompts.
+    //
+    // The category guidance still rides along when a contract is active: it is
+    // procedure the operator knows, not a personality.
+    const persona =
+      buildCopilotSystem(this.sm.commanderName || undefined, {
+        epic: this.settings.chatter.epic,
+        mode: 'answer',
+      }) + (mission ? ` ${categoryGuidance(mission.category)}` : '');
     const system =
       `${persona}
 

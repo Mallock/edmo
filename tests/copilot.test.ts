@@ -709,3 +709,51 @@ test('an empty answer never commits a half exchange', () => {
   assert.equal(cp.transcript().length, 0);
   assert.equal(cp.pendingCount(), 1); // the event survives for the next beat
 });
+
+// --- one personality, two jobs -------------------------------------------------
+// Reported live: "feels like I'm talking to two different personalities". It was
+// literally two system prompts — the living copilot for beats, a separate
+// assistant-shaped one for questions. Now there is one persona with a mode.
+
+test('both modes are the same person', () => {
+  const beat = buildCopilotSystem("M'allock", { mode: 'beat' });
+  const answer = buildCopilotSystem("M'allock", { mode: 'answer' });
+  // The identity, the life, the witness role and the voice rules are shared.
+  for (const marker of [
+    /Commander M'allock/,
+    /dry, unhurried veteran/,
+    /a PERSON with a post and a life/,
+    /twenty years flying these lanes/,
+    /the only witness keeping the log/,
+    /NEVER "we", "our", "us"/,
+    /STRICT grounding/,
+  ]) {
+    assert.match(beat, marker, `beat: ${marker}`);
+    assert.match(answer, marker, `answer: ${marker}`);
+  }
+});
+
+test('answering mode drops the rules that only make sense for a beat', () => {
+  const answer = buildCopilotSystem("M'allock", { mode: 'answer' });
+  // Staying silent, six-word brevity and the length hint are beat rules; a
+  // commander waiting for an answer must never meet them.
+  assert.doesNotMatch(answer, /brevity is the default/);
+  assert.doesNotMatch(answer, /Match the LENGTH hint/);
+  assert.doesNotMatch(answer, /QUIET STRETCH/);
+  // ...and it is told plainly what it IS doing.
+  assert.match(answer, /waiting for a reply/);
+  assert.match(answer, /Never stay silent, and never answer with NO_BEAT/);
+  assert.match(answer, /YOURS to use freely and in detail/);
+  assert.match(answer, /what thing\?/); // follow-ups resolve against its own last line
+});
+
+test('beat mode keeps the event-stream contract', () => {
+  const beat = buildCopilotSystem("M'allock", { mode: 'beat' });
+  assert.match(beat, /QUIET STRETCH/);
+  assert.match(beat, /brevity is the default/);
+  assert.doesNotMatch(beat, /waiting for a reply/);
+});
+
+test('mode defaults to beat, so existing callers are unchanged', () => {
+  assert.equal(buildCopilotSystem("M'allock"), buildCopilotSystem("M'allock", { mode: 'beat' }));
+});

@@ -284,6 +284,13 @@ export function ruleBasedAdvice(m: Mission, nowIso: string): string {
 // LLM prompt builders
 // ---------------------------------------------------------------------------
 
+/** The procedure for a contract type — knowledge the operator HAS, usable by
+ *  any prompt that needs it (the ask path composes it onto the shared persona
+ *  rather than keeping a second one of its own). */
+export function categoryGuidance(category: MissionCategory): string {
+  return CATEGORY_GUIDANCE[category];
+}
+
 const CATEGORY_GUIDANCE: Record<MissionCategory, string> = {
   Courier: 'Data courier: jump to the destination system, dock at the named station, hand in at the mission board (Passenger Lounge/Mission Board). No cargo needed.',
   Delivery: 'Delivery: confirm the cargo is aboard (see cargo progress), jump to the destination, dock, hand the goods in via the mission board.',
