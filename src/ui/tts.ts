@@ -27,7 +27,14 @@ export class Speaker {
   /** Piper marked unavailable after a failed synth — falls back to system. */
   private piperOk = true;
 
-  constructor(private readonly getSettings: () => AppSettings) {}
+  /** Written out rather than a parameter property: Node's type-stripping (how
+   *  the test runner loads .ts) does not support those, and tests/boot.test.ts
+   *  has to be able to import the whole UI store. */
+  private readonly getSettings: () => AppSettings;
+
+  constructor(getSettings: () => AppSettings) {
+    this.getSettings = getSettings;
+  }
 
   /** Queue text for speech (no-op when voice is disabled or text repeats). */
   speak(text: string): void {

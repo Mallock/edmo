@@ -21,6 +21,7 @@ import {
   stripVerdict,
   type BeatAngle,
 } from '../src/engine/copilot.ts';
+import { placeOf } from '../src/engine/place.ts';
 import { stripFillerTics, suppressRoutineCoaching } from '../src/engine/glance.ts';
 import { parseProspectTarget, matchesProspect } from '../src/engine/mining.ts';
 import {
@@ -29,6 +30,7 @@ import {
   findFabricatedPlace,
   findHabitualGenerality,
   findLiftedExample,
+  findVoiceViolation,
 } from '../src/engine/factcheck.ts';
 import { loreForSystem, UNIVERSAL_LORE } from '../src/engine/lore.ts';
 import { stripThink } from '../src/engine/lmstudio.ts';
@@ -580,7 +582,7 @@ test('the gate knows scenery is not news', () => {
 test('the system prompt gives the operator a life, a witness role, and the contracts', () => {
   const sys = buildCopilotSystem('Hadfield');
   assert.match(sys, /a PERSON with a post and a life/);
-  assert.match(sys, /twenty years flying these lanes/);
+  assert.match(sys, /twenty years/);
   assert.match(sys, /plain small\s+truths about YOURSELF are yours to say/);
   assert.match(sys, /the only witness keeping the log/);
   assert.match(sys, /never flattery, never coaching/);
@@ -591,8 +593,57 @@ test('the system prompt gives the operator a life, a witness role, and the contr
   assert.match(sys, /"EVENT: Chapter turn"/);
 });
 
+// --- the operator belongs somewhere, and it changes -----------------------
+// Reported live: it "just babbles about only one thing, Lave station and lanes".
+// It had exactly two concrete place-nouns to work with — "Jaques Station" in
+// the persona and "the old Lave lanes" in the self angle — both hardcoded into
+// every prompt regardless of where the commander was.
+
+test('the persona names a post that follows the region, not a fixed station', () => {
+  const colonia = buildCopilotSystem('Hadfield', { place: placeOf('Tir', { x: -9532.9, y: -923.4, z: 19799.1 }) });
+  assert.match(colonia, /Jaques Station/);
+  assert.match(colonia, /COLONIA REGION/);
+
+  const bubble = buildCopilotSystem('Hadfield', { place: placeOf('Sol', { x: 0, y: 0, z: 0 }) });
+  assert.doesNotMatch(bubble, /Jaques/);
+  assert.match(bubble, /CORE SYSTEMS/);
+
+  const deep = buildCopilotSystem('Hadfield', { place: placeOf('Nowhere', { x: -5000, y: 200, z: 40000 }) });
+  assert.doesNotMatch(deep, /Jaques/);
+  assert.match(deep, /DEEP SPACE/);
+  assert.match(deep, /only voice reaching them/);
+});
+
+test('with no position the prompt claims no region at all', () => {
+  const sys = buildCopilotSystem('Hadfield');
+  assert.doesNotMatch(sys, /COLONIA REGION/);
+  assert.doesNotMatch(sys, /Jaques/);
+});
+
+test("the operator's own memories follow the region too", () => {
+  const bubble = beatAngleHint('self', placeOf('Sol', { x: 0, y: 0, z: 0 }));
+  assert.match(bubble, /Lave lanes/); // apt in the Bubble, where Lave is
+  const colonia = beatAngleHint('self', placeOf('Tir', { x: -9532.9, y: -923.4, z: 19799.1 }));
+  assert.doesNotMatch(colonia, /Lave/); // 22,000 ly away, it is not
+  assert.match(colonia, /the long haul out here/);
+  const deep = beatAngleHint('self', placeOf('Nowhere', { x: -5000, y: 200, z: 40000 }));
+  assert.match(deep, /nothing you ever flew was this far out/);
+  // The template slot must never leak into a prompt.
+  for (const h of [bubble, colonia, deep]) assert.doesNotMatch(h, /%PAST%/);
+  assert.doesNotMatch(beatAngleHint('self'), /%PAST%/);
+});
+
+test('the operator is told not to keep circling its own post', () => {
+  const sys = buildCopilotSystem('Hadfield', { place: placeOf('Sol', { x: 0, y: 0, z: 0 }) });
+  assert.match(sys, /do not\s+keep returning to your post/);
+  assert.match(sys, /Reach for what is\s+around THEM right now/);
+  assert.match(beatAngleHint('self'), /Do not reuse a place or a memory you have already used/);
+});
+
 test("the 'self' angle invites the inner life and its backstory clears the fence", () => {
-  const hint = beatAngleHint('self');
+  // Lave and the Perseus Arm are the BUBBLE flavour of the backstory now; they
+  // used to be hardcoded into every beat regardless of where the run was.
+  const hint = beatAngleHint('self', placeOf('Sol', { x: 0, y: 0, z: 0 }));
   assert.match(hint, /^ANGLE: yourself/);
   assert.match(hint, /Perseus Arm/);
   assert.match(hint, /Lave/);
@@ -724,7 +775,7 @@ test('both modes are the same person', () => {
     /Commander M'allock/,
     /dry, unhurried veteran/,
     /a PERSON with a post and a life/,
-    /twenty years flying these lanes/,
+    /twenty years/,
     /the only witness keeping the log/,
     /NEVER "we", "our", "us"/,
     /STRICT grounding/,
@@ -827,4 +878,34 @@ test('estimateTokens is cheap and roughly right', () => {
   assert.equal(estimateTokens(''), 0);
   assert.equal(estimateTokens('abcd'), 1);
   assert.ok(Math.abs(estimateTokens('x'.repeat(4000)) - 1000) <= 1);
+});
+
+test('the voice fences answer as one decision, whoever is asking', () => {
+  // This helper exists because each new speaking path re-opened the same hole.
+  // "We're running on fumes" reached a live session through the glance verdict,
+  // which never asked — the rule itself catches it fine.
+  assert.equal(findVoiceViolation("We're running on fumes.")?.fence, 'collective');
+  assert.equal(findVoiceViolation("We're completely out of fuel!")?.fence, 'collective');
+  assert.equal(findVoiceViolation('Robardin Rock always smells of rock dust.')?.fence, 'habitual');
+  // The same line rewritten in the operator's own voice is not a violation.
+  assert.equal(findVoiceViolation('The wanderer is running on fumes.'), null);
+  assert.equal(findVoiceViolation('Docking granted — pad 40, commander.'), null);
+});
+
+test('the shared fence agrees with the individual rules it replaced', () => {
+  // The store now asks findVoiceViolation instead of the three in sequence, so
+  // it must not have changed which lines get through.
+  const lines = [
+    "We're running on fumes.",
+    'Anarchy means no one is watching your back out here.',
+    'That coffee always tastes of recycled air.',
+    'Bio signals down there — one uncollected.',
+    "Let's get moving.",
+    'Fifty-three jumps, commander.',
+  ];
+  for (const line of lines) {
+    const individually =
+      findLiftedExample(line) ?? findCollectivePronoun(line) ?? findHabitualGenerality(line);
+    assert.equal(!!findVoiceViolation(line), !!individually, line);
+  }
 });

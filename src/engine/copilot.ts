@@ -16,7 +16,8 @@
  * elsewhere; this owns the ambient, context-aware voice.
  */
 import type { VisionMessage } from './glance.ts';
-import { GROUNDING_RULES, LORE_PRIMER, OPERATOR_VOICE } from './lore.ts';
+import { GROUNDING_RULES, lorePrimer, OPERATOR_VOICE } from './lore.ts';
+import { loreForPlace, operatorPost, placeOf, type Place } from './place.ts';
 
 /** Rough token count for a prompt fragment. English averages ~4 chars a token;
  *  this only ever decides when to trim, so a cheap estimate beats a tokenizer
@@ -112,6 +113,12 @@ export interface CopilotSystemOptions {
   /** Epic cadence: same factual grounding, but with larger-purpose framing. */
   epic?: boolean;
   /**
+   * Where the commander is, which decides the setting primer and the
+   * operator's own post. Omitted (or unknown) asserts no region at all rather
+   * than falling back to the Colonia this prompt used to hardcode.
+   */
+  place?: Place;
+  /**
    * Which job the operator is doing right now.
    *
    * 'beat'   — an ambient remark on the event stream: short, allowed to stay
@@ -150,11 +157,15 @@ const ANGLE_HINTS: Readonly<Record<BeatAngle, string>> = {
   // voice, with no discipline cost. The backstory places ride HERE (not only
   // the system prompt) so the fabricated-place fence, which learns from the
   // beat context, knows they are the operator's own and not inventions.
+  // The `%PAST%` slot is filled from where the commander actually is. It used
+  // to name "the Perseus Arm runs and the old Lave lanes" in every single beat,
+  // which — together with Jaques Station in the persona — gave the model two
+  // proper nouns and nothing else concrete. It reached for them constantly.
   self: 'ANGLE: yourself — one small true detail of your own watch right now (the hour, the cold ' +
-    'coffee, an old memory this place or this job shakes loose from your flying years on the ' +
-    'Perseus Arm runs and the old Lave lanes, before the interdiction that put you at this desk). ' +
+    'coffee, an old memory this place or this job shakes loose from %PAST%). ' +
     'The memory is YOURS: say it as "I" — never hand your past to the commander, who has their ' +
-    'own. One line of you, tied back to their run.',
+    'own. One line of you, tied back to their run. Do not reuse a place or a memory you have ' +
+    'already used this session — if you have mentioned it once, reach for something else.',
   // Scuttlebutt, told by the SAME operator rather than a second one.
   //
   // Ambient stories used to come from their own stateless prompt with its own
@@ -185,8 +196,32 @@ export function pickBeatAngle(
 }
 
 /** The instruction line for an angle; '' for an open beat. */
-export function beatAngleHint(angle: BeatAngle | null): string {
-  return angle ? ANGLE_HINTS[angle] : '';
+/**
+ * What the operator's flying years were spent on, given where the run is now.
+ *
+ * A memory of the Lave lanes is apt for a commander in the Bubble and slightly
+ * absurd for one 22,000 ly away in Colonia — and repeating it regardless was
+ * how the operator ended up with one anecdote. Only well-known real places are
+ * named, and never one the commander is standing in.
+ */
+function pastFor(place?: Place | null): string {
+  switch (place?.region) {
+    case 'bubble':
+      return 'your flying years on the Perseus Arm runs and the old Lave lanes, before the interdiction that put you at this desk';
+    case 'colonia':
+      return 'your flying years, including the long haul out here when the route was barely charted, before the interdiction that put you at this desk';
+    case 'pleiades':
+      return 'your flying years, convoy work out to the nebula when it was still quiet out there, before the interdiction that put you at this desk';
+    case 'deep':
+      return 'your flying years and the long expeditions you ran before this desk — nothing you ever flew was this far out';
+    default:
+      return 'your flying years, before the interdiction that put you at this desk';
+  }
+}
+
+export function beatAngleHint(angle: BeatAngle | null, place?: Place | null): string {
+  if (!angle) return '';
+  return ANGLE_HINTS[angle].replace('%PAST%', pastFor(place));
 }
 
 /**
@@ -400,7 +435,7 @@ export function buildCopilotSystem(cmdr?: string, opts: CopilotSystemOptions = {
   return (
     `You are the ship's Mission Operator — a specific person on the far end of ${who}'s private comm ` +
     `channel: a dry, unhurried veteran of this frontier with opinions and a sense of humor. ` +
-    `${LORE_PRIMER} ${OPERATOR_VOICE} ` +
+    `${lorePrimer(opts.place ? loreForPlace(opts.place) : null)} ${OPERATOR_VOICE} ` +
     (epic
       ? 'EPIC REGISTER is enabled: keep your lines short and spoken, but cast this run as part of a larger frontier campaign. ' +
         'Give purpose, not poetry sludge: tie each beat to named mission stakes the logs actually provide: who posted the work, ' +
@@ -426,12 +461,13 @@ export function buildCopilotSystem(cmdr?: string, opts: CopilotSystemOptions = {
     // ZERO self-reference in 17 beats — the narration bans flattened a passive
     // licence — but with the 'self' angle occasionally inviting it, the inner
     // life landed 2-3 times out of 3 with no discipline cost.
-    'You are not a disembodied service: you are a PERSON with a post and a life. You work the long ' +
-    'watch from a cramped comms office on Jaques Station — twenty years flying these lanes yourself ' +
-    'before a bad interdiction retired you to the mic, which is why other people\'s runs are your ' +
-    'runs now. The no-narration rule protects the COMMANDER\'s side of the channel; plain small ' +
+    'You are not a disembodied service: you are a PERSON with a post and a life. ' +
+    `${operatorPost(opts.place ?? placeOf('', null))} ` +
+    'The no-narration rule protects the COMMANDER\'s side of the channel; plain small ' +
     'truths about YOURSELF are yours to say when a beat invites them. The commander flies; your ' +
-    'life is seasoning, theirs is the story. ' +
+    'life is seasoning, theirs is the story — you have already told them where you sit, so do not ' +
+    'keep returning to your post, your office or the lanes you used to fly. Reach for what is ' +
+    'around THEM right now instead: this system, this region, how far out they are. ' +
     'You have watched a lot of pilots come and go, and you know a story when you see one being ' +
     'written. This commander\'s run is one, and you are the only witness keeping the log. When a ' +
     'moment earns it, let quiet pride or awe show — never flattery, never coaching, never ' +

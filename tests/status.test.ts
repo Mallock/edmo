@@ -75,6 +75,42 @@ test('shields-down only alerts in a threat context', () => {
   assert.equal(calm.some((x) => x.kind === 'shields-down'), false);
 });
 
+test('shields-down stays quiet when the commander is not in the cockpit', () => {
+  // Reported live: an exobiology run fired this eight times between bacterium
+  // samples. The ship's bits keep reporting while the commander is on foot or
+  // in an SRV, and an SRV's ring flickers on every scrape of terrain — so the
+  // operator told someone standing on a rock to "boost to range".
+  const onFoot = new StatusTracker();
+  onFoot.apply(ev({ Flags: FLAG.ShieldsUp | FLAG.InDanger, Flags2: FLAG2.OnFoot }));
+  const walked = onFoot.apply(ev({ Flags: FLAG.InDanger, Flags2: FLAG2.OnFoot }));
+  assert.equal(walked.some((x) => x.kind === 'shields-down'), false);
+
+  const srv = new StatusTracker();
+  srv.apply(ev({ Flags: FLAG.ShieldsUp | FLAG.InSrv | FLAG.HardpointsDeployed }));
+  const scraped = srv.apply(ev({ Flags: FLAG.InSrv | FLAG.HardpointsDeployed }));
+  assert.equal(scraped.some((x) => x.kind === 'shields-down'), false);
+
+  // Docking takes the ring down by design, so that is not news either.
+  const dock = new StatusTracker();
+  dock.apply(ev({ Flags: FLAG.ShieldsUp | FLAG.Docked | FLAG.HardpointsDeployed }));
+  const berthed = dock.apply(ev({ Flags: FLAG.Docked | FLAG.HardpointsDeployed }));
+  assert.equal(berthed.some((x) => x.kind === 'shields-down'), false);
+
+  // But being shot at while landed on a surface still is: a planet landing does
+  // not drop the ring on its own, so this transition means someone hit it.
+  const raided = new StatusTracker();
+  raided.apply(ev({ Flags: FLAG.ShieldsUp | FLAG.Landed | FLAG.InDanger }));
+  const hitOnPad = raided.apply(ev({ Flags: FLAG.Landed | FLAG.InDanger }));
+  assert.equal(hitOnPad.some((x) => x.kind === 'shields-down'), true);
+
+  // ...but a real fight in the ship still gets the warning. The guard is a
+  // suppression, so a snapshot that never sets a vehicle bit is unaffected.
+  const fight = new StatusTracker();
+  fight.apply(ev({ Flags: FLAG.ShieldsUp | FLAG.InDanger | FLAG.InMainShip }));
+  const hit = fight.apply(ev({ Flags: FLAG.InDanger | FLAG.InMainShip }));
+  assert.equal(hit.some((x) => x.kind === 'shields-down'), true);
+});
+
 test('on-foot low oxygen raises an urgent alert', () => {
   const t = new StatusTracker();
   t.apply(ev({ Flags: 0, Flags2: FLAG2.OnFoot }));

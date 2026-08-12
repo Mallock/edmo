@@ -24,6 +24,22 @@ const num = (v: unknown): number | undefined =>
 /** Tritium is the only carrier fuel; everything else transferred is stock. */
 const FUEL = 'tritium';
 
+/** Everything the route plotter needs to price a carrier trip in tritium. */
+export interface CarrierSnapshot {
+  callsign: string | null;
+  system: string | null;
+  /** Depot level in tons (max 1000), or null before any CarrierStats. */
+  fuelLevel: number | null;
+  /** Tons of the hold in use — crew quarters, services, cargo, packs. */
+  usedCapacity: number | null;
+  /** Tons still free, which is the ceiling on a tritium load. */
+  freeSpace: number | null;
+  /** Current maximum jump, ly. 500 on a fuelled carrier. */
+  jumpRange: number | null;
+  /** When the figures above were last reported by the game, ms. */
+  statsAt: number | null;
+}
+
 export class CarrierTracker {
   /** Market/carrier id, present once the game has mentioned their carrier. */
   private carrierId: number | null = null;
@@ -35,9 +51,28 @@ export class CarrierTracker {
   private fuelDelivered = 0;
   /** Tons of tritium sitting in the ship's hold, destined for it or not. */
   private lastTransferAt: string | null = null;
+  // --- what the route plotter needs: the depot, the hold, the reach ---
+  private fuelLevel: number | null = null;
+  private usedCapacity: number | null = null;
+  private freeSpace: number | null = null;
+  private jumpRange: number | null = null;
+  private statsAt: number | null = null;
 
   owned(): boolean {
     return this.carrierId != null;
+  }
+
+  /** The carrier's own numbers, for the tritium calculator. */
+  snapshot(): CarrierSnapshot {
+    return {
+      callsign: this.callsign,
+      system: this.system,
+      fuelLevel: this.fuelLevel,
+      usedCapacity: this.usedCapacity,
+      freeSpace: this.freeSpace,
+      jumpRange: this.jumpRange,
+      statsAt: this.statsAt,
+    };
   }
 
   apply(ev: JournalEvent): void {
@@ -47,8 +82,11 @@ export class CarrierTracker {
         // Emitted only for a carrier the commander owns.
         const id = num(ev.CarrierID) ?? num(ev.MarketID);
         if (id != null) this.carrierId = id;
+        // Both events say where it is. CarrierJump used to be ignored here, so
+        // a carrier that had just jumped was still reported at its old parking
+        // spot — which is exactly the moment a route is plotted FROM it.
         const sys = str(ev.StarSystem);
-        if (sys && ev.event === 'CarrierLocation') this.system = sys;
+        if (sys) this.system = sys;
         break;
       }
       case 'CarrierStats': {
@@ -56,6 +94,17 @@ export class CarrierTracker {
         if (id != null) this.carrierId = id;
         const call = str(ev.Callsign);
         if (call) this.callsign = call;
+        // The depot, the hold and the reach — everything a tritium plan needs.
+        this.fuelLevel = num(ev.FuelLevel) ?? this.fuelLevel;
+        this.jumpRange = num(ev.JumpRangeCurr) ?? this.jumpRange;
+        const use = ev.SpaceUsage as Record<string, unknown> | undefined;
+        if (use && typeof use === 'object') {
+          const total = num(use.TotalCapacity);
+          const free = num(use.FreeSpace);
+          if (free != null) this.freeSpace = free;
+          if (total != null && free != null) this.usedCapacity = Math.max(0, total - free);
+        }
+        this.statsAt = Date.parse(ev.timestamp) || Date.now();
         break;
       }
       case 'Docked': {
@@ -105,15 +154,51 @@ export class CarrierTracker {
   }
 
   /** Everything worth persisting across restarts. */
-  toJSON(): { carrierId: number | null; callsign: string | null; system: string | null } {
-    return { carrierId: this.carrierId, callsign: this.callsign, system: this.system };
+  toJSON(): {
+    carrierId: number | null;
+    callsign: string | null;
+    system: string | null;
+    fuelLevel: number | null;
+    usedCapacity: number | null;
+    freeSpace: number | null;
+    jumpRange: number | null;
+    statsAt: number | null;
+  } {
+    return {
+      carrierId: this.carrierId,
+      callsign: this.callsign,
+      system: this.system,
+      fuelLevel: this.fuelLevel,
+      usedCapacity: this.usedCapacity,
+      freeSpace: this.freeSpace,
+      jumpRange: this.jumpRange,
+      statsAt: this.statsAt,
+    };
   }
 
-  load(d: { carrierId?: number | null; callsign?: string | null; system?: string | null } | null): void {
+  load(
+    d: {
+      carrierId?: number | null;
+      callsign?: string | null;
+      system?: string | null;
+      fuelLevel?: number | null;
+      usedCapacity?: number | null;
+      freeSpace?: number | null;
+      jumpRange?: number | null;
+      statsAt?: number | null;
+    } | null,
+  ): void {
     if (!d) return;
     if (d.carrierId != null) this.carrierId = d.carrierId;
     if (d.callsign) this.callsign = d.callsign;
     if (d.system) this.system = d.system;
+    // The depot figures are a last-known reading, not live truth — the plotter
+    // shows how old they are rather than pretending the game just said so.
+    if (d.fuelLevel != null) this.fuelLevel = d.fuelLevel;
+    if (d.usedCapacity != null) this.usedCapacity = d.usedCapacity;
+    if (d.freeSpace != null) this.freeSpace = d.freeSpace;
+    if (d.jumpRange != null) this.jumpRange = d.jumpRange;
+    if (d.statsAt != null) this.statsAt = d.statsAt;
   }
 
   /** Session counters reset on a new game session; ownership does not. */

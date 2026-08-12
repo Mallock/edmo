@@ -250,7 +250,12 @@ test('a named system is searched instead of wherever we are standing', async () 
   let sawSystem = '';
   const galaxyMarket = async (_c: string, _s: 'buy' | 'sell', nearSystem: string) => {
     sawSystem = nearSystem;
-    return [{ station: 'Neugebauer Mines', system: 'Luchtaine', distanceLy: 0, price: 53715,
+    // A station we have NOT docked at. Neugebauer Mines used to be the fixture
+    // here, but ctx() carries an hour-old snapshot of it listing only Bauxite —
+    // and a commodity absent from our own snapshot now (correctly) vetoes the
+    // community claim, which is a different rule than the one under test here.
+    // See tests/marketage.test.ts for that behaviour.
+    return [{ station: 'Ehrlich Terminal', system: 'Luchtaine', distanceLy: 0, price: 53715,
       stock: 4210, demand: 0, pad: 'M', carrier: false }];
   };
   const c = ctx({ system: 'Tir', galaxyMarket });

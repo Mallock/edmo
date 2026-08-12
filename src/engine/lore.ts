@@ -4,11 +4,9 @@
  * and happily invent corporations if not explicitly forbidden.
  */
 
-export const LORE_PRIMER =
-  'Setting: the year 3312, the Elite Dangerous galaxy. The commander operates in the COLONIA ' +
-  'REGION — a frontier colony cluster 22,000 light-years from the core human Bubble, grown ' +
-  'around Jaques Station since 3302: independent, remote, self-reliant; Federation, Empire and ' +
-  'Alliance politics are distant rumors out here. Ships travel by frame shift drive — supercruise ' +
+/** The parts of the setting that are true everywhere in the galaxy. */
+const LORE_UNIVERSAL =
+  'Ships travel by frame shift drive — supercruise ' +
   'inside a system, hyperspace jumps between systems. Pilots dock at stations, outposts and ' +
   'fleet carriers; money is credits; pilots are addressed as Commander. Local minor factions run ' +
   'the stations and post the work. A FLEET CARRIER is a commander-owned mobile base that jumps on ' +
@@ -16,6 +14,22 @@ export const LORE_PRIMER =
   'looking for a buyer, and the tritium is transferred into it rather than sold. Never advise ' +
   'selling a commander their own carrier fuel, and never suggest a "fuel station" — there is no ' +
   'such thing for carriers.';
+
+/**
+ * The setting primer, written for where the commander actually is.
+ *
+ * This used to open by asserting the commander "operates in the COLONIA
+ * REGION" — true of the machine it was written on, and false the moment anyone
+ * flew to the Bubble or out on an expedition. Worse, it was one of only two
+ * concrete place-details in the whole prompt, so the model kept circling back
+ * to it. Passing no place keeps the universal half and claims nothing.
+ */
+export function lorePrimer(setting?: string | null): string {
+  return setting ? `Setting: the year 3312, the Elite Dangerous galaxy. ${setting} ${LORE_UNIVERSAL}` : `Setting: the year 3312, the Elite Dangerous galaxy. ${LORE_UNIVERSAL}`;
+}
+
+/** Back-compat for prompts with no positional context (briefings, saga). */
+export const LORE_PRIMER = lorePrimer();
 
 export const GROUNDING_RULES =
   'STRICT grounding: only ever name factions, companies, organizations, stations, systems, ships ' +

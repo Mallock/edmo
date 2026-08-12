@@ -3,6 +3,12 @@ import { useEffect, useState, useSyncExternalStore } from 'react';
 import { closeApp, isTauri } from './bridge.ts';
 import { core } from './store.ts';
 import { MissionCard, MissionTabs } from './MissionCard.tsx';
+import { DeathClockCard } from './DeathClock.tsx';
+import { PlotterCard } from './Plotter.tsx';
+import { ArchitectCard } from './Architect.tsx';
+import { fmtDur, phaseOf } from '../engine/deathclock.ts';
+import { remaining as plotRemaining } from '../engine/plotter.ts';
+import { fmtClock, phaseOf as jumpPhaseOf } from '../engine/carrierjump.ts';
 import { Feed } from './Feed.tsx';
 import { SettingsPanel } from './SettingsPanel.tsx';
 import { categoryColor, countdown } from './util.ts';
@@ -100,6 +106,20 @@ export function App() {
 
   const selected = snap.missions.find((m) => m.id === snap.selectedId) ?? null;
   const s = snap.settings;
+  const dcPhase = snap.deathClock ? phaseOf(snap.deathClock.state, nowMs) : null;
+  const clockOpen = snap.view === 'deathclock' && snap.deathClock != null;
+  const plotOpen = snap.view === 'plotter';
+  const archOpen = snap.view === 'architect' && snap.architect != null;
+  const plotLeft = snap.plotter.route ? plotRemaining(snap.plotter.route, snap.plotter.idx) : null;
+  // The carrier clock outranks the jump count on the tab: while a jump is
+  // locked down or cooling, that countdown is the number being waited on.
+  const jumpPhase = jumpPhaseOf(snap.plotter.jumpState, nowMs);
+  const plotTabLabel =
+    jumpPhase.kind === 'countdown' || jumpPhase.kind === 'cooldown'
+      ? fmtClock(jumpPhase.secondsLeft)
+      : plotLeft && plotLeft.jumps > 0
+        ? `${plotLeft.jumps} jmp`
+        : '';
 
   const rootStyle = {
     '--hud-alpha': s.hud.opacity,
@@ -163,8 +183,64 @@ export function App() {
             selectedId={snap.selectedId}
             nowMs={nowMs}
             onSelect={(id) => core.select(id)}
+            clock={
+              snap.deathClock
+                ? {
+                    active: clockOpen,
+                    timer: dcPhase ? fmtDur(dcPhase.countdownS) : '--:--',
+                    open: dcPhase?.inWindow ?? false,
+                    onSelect: () => core.setView(clockOpen ? 'missions' : 'deathclock'),
+                  }
+                : undefined
+            }
+            plot={{
+              active: plotOpen,
+              label: plotTabLabel,
+              running: (plotLeft?.jumps ?? 0) > 0 || jumpPhase.kind === 'countdown',
+              urgent: jumpPhase.kind === 'ready',
+              onSelect: () => core.setView(plotOpen ? 'missions' : 'plotter'),
+            }}
+            architect={
+              snap.architect
+                ? {
+                    active: archOpen,
+                    // Tons outstanding is the number the whole build is about.
+                    label: `${Math.round(snap.architect.totalRemaining).toLocaleString('en-US')}t`,
+                    // Something in the hold the site wants — hand it over.
+                    urgent: snap.architect.groups.some((g) => g.bucket === 'deliver'),
+                    onSelect: () => core.setView(archOpen ? 'missions' : 'architect'),
+                  }
+                : undefined
+            }
           />
-          {selected ? (
+          {archOpen && snap.architect ? (
+            <ArchitectCard
+              view={snap.architect}
+              nowMs={nowMs}
+              onScan={() => void core.architectScan()}
+            />
+          ) : plotOpen ? (
+            <PlotterCard
+              nowMs={nowMs}
+              view={snap.plotter}
+              actions={{
+                onKind: (k) => core.setPlotKind(k),
+                onTarget: (t) => core.setPlotTarget(t),
+                onEfficiency: (n) => core.setPlotEfficiency(n),
+                onHold: (n) => core.setPlotHold(n),
+                onPlot: () => void core.plotRoute(),
+                onCopy: (i) => void core.copyPlotWaypoint(i),
+                onClear: () => core.clearPlot(),
+                onEnableOnline: () => core.enableSpansh(),
+              }}
+            />
+          ) : clockOpen && snap.deathClock ? (
+            <DeathClockCard
+              state={snap.deathClock.state}
+              nowMs={nowMs}
+              onMark={(kind) => core.deathClockMark(kind)}
+            />
+          ) : selected ? (
             <MissionCard mission={selected} nowMs={nowMs} warnMin={s.journal.expiryWarningMin} />
           ) : (
             <div className="no-mission">

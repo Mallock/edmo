@@ -119,6 +119,9 @@ export interface SystemIntel {
   /** Local minor factions in an active BGS state (War, Boom, Election, …) —
    *  the states that spawn combat/BGS missions. From FSDJump/Location Factions[]. */
   factionStates?: Array<{ name: string; state: string }>;
+  /** Galactic coordinates from StarPos — what tells the Bubble from Colonia
+   *  from the black, and so what region the operator is talking about. */
+  coords?: { x: number; y: number; z: number };
 }
 
 /** Snapshot of the whole player situation the operator reasons over. */

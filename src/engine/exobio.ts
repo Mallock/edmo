@@ -31,22 +31,70 @@ export interface BioLead extends BioBody {
 }
 
 const MAX_BODIES = 120;
+/** Sample receipts are tiny and precious — keep far more of them than bodies. */
+const MAX_SAMPLED = 600;
 const BIO_TYPE = /biological/i;
+
+/** Persisted shape. The bare array is the pre-history format, still accepted. */
+export interface BioState {
+  bodies: BioBody[];
+  /** body key → genera with a completed Analyse, ever. */
+  sampled: Record<string, string[]>;
+}
 
 export class BioTracker {
   private bodies = new Map<string, BioBody>();
+  /**
+   * Every genus ever analysed, per body — kept SEPARATELY from the body record.
+   *
+   * A completed sample is permanent and the body record is not: `bodies` is
+   * capped and trimmed, and it only exists at all once an FSS/DSS signal event
+   * has been folded. Storing the receipt inside the body meant a commander who
+   * sampled Tussock Cultro on HIP 71120 2 e in August 2025 was told, a year
+   * later while standing on that rock, that all four genera were still down
+   * there — the app replays one previous session, so the receipt was long gone.
+   */
+  private sampled = new Map<string, string[]>();
   private systemNames = new Map<string, string>(); // systemAddress -> name
   currentSystem = '';
   private currentAddress = '';
   /** True when apply() changed something persistable since the last save. */
   dirty = false;
 
-  load(records: BioBody[]): void {
+  load(data: BioBody[] | BioState | null): void {
+    if (!data) return;
+    const records = Array.isArray(data) ? data : (data.bodies ?? []);
     for (const r of records) if (r && r.key) this.bodies.set(r.key, r);
+    const sampled = Array.isArray(data) ? null : data.sampled;
+    for (const [key, genuses] of Object.entries(sampled ?? {})) {
+      if (Array.isArray(genuses)) this.sampled.set(key, [...genuses]);
+    }
+    // Upgrading from the bare-array format: the receipts live on the bodies,
+    // so lift them out rather than starting the history empty.
+    for (const b of this.bodies.values()) {
+      for (const g of b.sampled ?? []) this.noteSample(b.key, g);
+    }
   }
 
-  toJSON(): BioBody[] {
-    return [...this.bodies.values()];
+  toJSON(): BioState {
+    return { bodies: [...this.bodies.values()], sampled: Object.fromEntries(this.sampled) };
+  }
+
+  /** File a sample receipt, whether or not the body itself is known yet. */
+  private noteSample(key: string, genus: string): boolean {
+    const at = this.sampled.get(key);
+    if (at) {
+      if (at.includes(genus)) return false;
+      at.push(genus);
+    } else {
+      this.sampled.set(key, [genus]);
+      if (this.sampled.size > MAX_SAMPLED) {
+        this.sampled.delete(this.sampled.keys().next().value as string);
+      }
+    }
+    const b = this.bodies.get(key);
+    if (b && !b.sampled.includes(genus)) b.sampled.push(genus);
+    return true;
   }
 
   apply(ev: JournalEvent): void {
@@ -90,7 +138,9 @@ export class BioTracker {
           body: bodyName,
           signals: Math.max(count, existing?.signals ?? 0),
           genuses,
-          sampled: existing?.sampled ?? [],
+          // Seeded from the permanent receipts, so re-mapping a body — or
+          // meeting it again after a trim — never resurrects finished genera.
+          sampled: [...new Set([...(existing?.sampled ?? []), ...(this.sampled.get(key) ?? [])])],
           landable: existing?.landable,
           distanceLs: existing?.distanceLs,
           lastSeen: ev.timestamp,
@@ -120,11 +170,9 @@ export class BioTracker {
         const bodyId = num(ev.Body);
         const genus = str(ev.Genus_Localised) ?? str(ev.Genus);
         if (addr == null || bodyId == null || !genus) break;
-        const b = this.bodies.get(`${addr}|${bodyId}`);
-        if (b && !b.sampled.includes(genus)) {
-          b.sampled.push(genus);
-          this.dirty = true;
-        }
+        // Filed even when the body is unknown to us. A historical sweep hands
+        // over samples from sessions whose FSS/DSS events we will never see.
+        if (this.noteSample(`${addr}|${bodyId}`, genus)) this.dirty = true;
         break;
       }
       default:
@@ -142,9 +190,11 @@ export class BioTracker {
     const addr = num(systemAddress);
     const id = num(bodyId);
     if (addr == null || id == null) return [];
-    const b = this.bodies.get(`${addr}|${id}`);
+    const key = `${addr}|${id}`;
+    const b = this.bodies.get(key);
     if (!b) return [];
-    return b.genuses.filter((g) => !b.sampled.includes(g));
+    const receipts = new Set([...b.sampled, ...(this.sampled.get(key) ?? [])]);
+    return b.genuses.filter((g) => !receipts.has(g));
   }
 
   private trim(): void {
@@ -155,11 +205,24 @@ export class BioTracker {
     this.bodies.delete(oldest.key);
   }
 
+  /**
+   * How many of this body's genera are done.
+   *
+   * Counted against the genus list when the DSS gave us one, so a receipt for
+   * a genus this body does not have — a mis-keyed or superseded entry — cannot
+   * quietly mark the rock finished and hide real money.
+   */
+  private doneOn(b: BioBody): number {
+    const receipts = new Set([...b.sampled, ...(this.sampled.get(b.key) ?? [])]);
+    if (!b.genuses.length) return receipts.size;
+    return b.genuses.filter((g) => receipts.has(g)).length;
+  }
+
   /** Bodies with uncollected bio signals — current system first, then newest. */
   leads(exclude?: Set<string>): BioLead[] {
     const out: BioLead[] = [];
     for (const b of this.bodies.values()) {
-      const remaining = b.signals - b.sampled.length;
+      const remaining = b.signals - this.doneOn(b);
       if (remaining <= 0) continue;
       if (exclude?.has(b.key)) continue;
       out.push({ ...b, remaining, inCurrentSystem: b.system === this.currentSystem });

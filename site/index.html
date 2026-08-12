@@ -203,7 +203,7 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
 <div class="strip">
   <div class="wrap">
     <span><b>ED MISSION OPERATOR</b></span>
-    <span>v1.0.0 · Windows 10/11 · Linux beta</span>
+    <span>v1.0.2 · Windows 10/11 · Linux beta</span>
     <span><span class="dot"></span>100% local</span>
     <nav>
       <a href="#features">Features</a>
@@ -225,23 +225,24 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
         <b>AI wingman</b> that answers out loud in offline neural voices. It watches your ship in
         real time — <b>fuel, heat, shields, interdictions, your docking pad</b> — checks whether
         your hold and cabins can carry a job before you fly it, <b>finds you a profitable trade
-        run</b>, does the <b>exobiology arithmetic</b> while you walk, and writes the session up as
-        a space-opera episode when you log off. It <b>remembers you</b> across sessions — your
+        run</b>, <b>plots a neutron route for your ship — or your fleet carrier's whole trip, jump
+        by jump, tritium counted</b>, does the <b>exobiology arithmetic</b> while you walk, and
+        writes the session up as a space-opera episode when you log off. It <b>remembers you</b> across sessions — your
         factions, your records, where you lost a ship — and you can <b>talk to it</b>: hold a key,
         speak, and it answers. Give it a vision model and it turns copilot, <b>riding the whole
         session with you</b>. <b>Everything runs on your machine</b> — including the AI, which it
         installs itself.
       </p>
       <div class="cta-row">
-        <a class="dl" href="ED-Mission-Operator-1.0.0-setup.exe" download>
+        <a class="dl" href="ED-Mission-Operator-1.0.2-setup.exe" download>
           ⬇ DOWNLOAD FOR WINDOWS
-          <small>ED-Mission-Operator-1.0.0-setup.exe · 131 MB · no admin needed</small>
+          <small>ED-Mission-Operator-1.0.2-setup.exe · 131 MB · no admin needed</small>
         </a>
         <p class="cta-note">Free hobby project. Two offline voices included. AI features optional.</p>
         <p class="cta-note">🐧 <b>Linux beta:</b>
-          <a href="ED-Mission-Operator-1.0.0-amd64.deb" download style="color:var(--amber)">.deb (147 MB)</a>
+          <a href="ED-Mission-Operator-1.0.2-amd64.deb" download style="color:var(--amber)">.deb (147 MB)</a>
           ·
-          <a href="ED-Mission-Operator-1.0.0-x86_64.AppImage" download style="color:var(--amber)">AppImage (231 MB)</a>
+          <a href="ED-Mission-Operator-1.0.2-x86_64.AppImage" download style="color:var(--amber)">AppImage (242 MB)</a>
           — journals auto-detected from the Steam Proton prefix; X11 recommended
           (global hotkeys don't exist on Wayland); screen glances are Windows-only for now.
           Fresh out of the forge — reports welcome. AppImage users: install an emoji font
@@ -383,6 +384,40 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
         records, bonuses included.</p>
       </div></div>
       <div class="mi"><span class="n">N</span><div>
+        <h3>Route plotter — ship &amp; fleet carrier <span style="color:var(--dim);font-size:0.82em">(opt-in)</span></h3>
+        <p>A plotter tab for the two routes the galaxy map won't give you. For your <b>ship</b>, the
+        <b>neutron highway</b> — every supercharge star between here and there, plotted against
+        your real jump range. For your <b>fleet carrier</b>, the thing the game refuses to do at
+        all: the <b>whole trip jump by jump</b>, since a carrier hop is one system name typed in by
+        hand and a run to Colonia is forty-six of them. Every stop has a <b>copy button</b>, and the
+        next one lands on your clipboard <b>automatically the moment you arrive</b> — jump, paste,
+        jump. And above the list, the number that decides whether the trip happens at all: the
+        <b>tritium</b>. It reads your carrier's depot and tonnage from the journal, adds what you
+        tell it is in the hold, and answers plainly — <i>"short 2,739 t — seven runs with your
+        400 t hold"</i> — flagging the stops with <b>icy rings</b> where you could mine it instead,
+        and warning you when the load won't physically fit aboard. The operator follows the same
+        route you do: it calls each waypoint out loud and knows about the shortfall before it
+        advises you on anything.</p>
+      </div></div>
+      <div class="mi"><span class="n">O</span><div>
+        <h3>System architect — the build, as a shopping list <span style="color:var(--dim);font-size:0.82em">(new in 1.0.2)</span></h3>
+        <p>Dock at a <b>construction site</b> and the whole requirement comes across into its own
+        tab. The game states it once, on the contribution panel, as an alphabetical wall of
+        <i>required / provided</i> — and you cannot read it at all once you undock to go shopping.
+        Here it becomes an <b>ordered plan</b>: what is <b>already in your hold</b> that the site
+        wants (hand it over before you fly anywhere), then what is <b>on sale at this station</b>,
+        then <b>everything for sale in the build's own system</b> — no jump, just supercruise —
+        and only then the wider galaxy. Each line opens to show <b>where to buy it</b>, at what
+        price, how much they hold, and <b>how old that report is</b>, because a two-month-old
+        listing is a rumour and the panel says so in red. Lines are <b>grouped by seller</b>, so
+        the stop that clears the most of the build comes first — one real site wanted 6,703 t
+        across seventeen commodities, and <b>two stations in its own system covered 99% of it</b>.
+        Every docking teaches it more: read a market and that reading <b>replaces</b> anyone
+        else's report about the same station, and a shelf you found empty is never suggested
+        again. It also counts the <b>trips</b> against your actual hold — <i>"×6"</i> next to a
+        line is six full loads — and credits your deliveries the moment you make them.</p>
+      </div></div>
+      <div class="mi"><span class="n">P</span><div>
         <h3>The wider galaxy, on request <span style="color:var(--dim);font-size:0.82em">(opt-in)</span></h3>
         <p>Three community sources the operator touches <b>only when you ask it to</b>. <i>"Any
         news?"</i> reads the <b>Galnet wire</b> and passes the stories on as news — not as
@@ -402,6 +437,12 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
   <div class="wrap">
     <div class="sec-label"><span class="idx">02</span><h2>On screen</h2><span class="tail">flight recordings — click any shot to enlarge</span></div>
     <div class="gallery">
+      <figure class="shot">
+        <a href="img/hud-architect.png" target="_blank" rel="noopener">
+          <img src="img/hud-architect.png" alt="The system architect tab during a real colonisation build: 6,703 tons wanted across seventeen commodities, grouped under 'In HIP 71120 — no jump'. Liquid oxygen is expanded to show five sellers with prices, stock and how old each report is — three in-system ones giving their landing pad and supercruise distance, and two marked 'you saw it' from the commander's own dockings" loading="lazy">
+        </a>
+        <figcaption><b>System architect</b> — 6,703 t of build, sorted into a shopping run</figcaption>
+      </figure>
       <figure class="shot">
         <a href="img/hud-copilot.png" target="_blank" rel="noopener">
           <img src="img/hud-copilot.png" alt="The operator narrating an 80-passenger prisoner-transport run to Dove Enigma: copilot commentary about the booking and the final approach, woven with a memory recall of a past Colonia delivery and a docking-pad callout" loading="lazy">
@@ -462,7 +503,7 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
       <div class="step"><div>
         <h3>Download the installer</h3>
         <p>Click the download button above — you get a single file,
-        <span class="mono">ED-Mission-Operator-1.0.0-setup.exe</span> (about 131&nbsp;MB — it
+        <span class="mono">ED-Mission-Operator-1.0.2-setup.exe</span> (about 131&nbsp;MB — it
         carries the offline voices). Your browser may ask where to save it; Downloads is fine.</p>
       </div></div>
 

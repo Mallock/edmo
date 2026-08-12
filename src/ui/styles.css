@@ -1041,3 +1041,779 @@ body {
   font-size: 0.86em;
   color: #e0a860;
 }
+
+/* ------------------------------------------------------- death clock (WOD) */
+.wod-sub {
+  color: var(--dim);
+  font-size: 0.78em;
+  margin-top: 1px;
+}
+
+.wod-dial {
+  margin: 8px 0 2px;
+}
+
+.wod-dial svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.wod-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  font-size: 0.68em;
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.wod-legend i {
+  display: inline-block;
+  width: 12px;
+  height: 2px;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+
+.wod-status {
+  margin-top: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-left-width: 3px;
+  border-radius: 6px;
+  padding: 7px 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.wod-state {
+  font-size: 0.8em;
+  letter-spacing: 0.12em;
+}
+
+.wod-count {
+  font-size: 1.9em;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.wod-status.warn .wod-count {
+  animation: blink 1s step-end infinite;
+}
+
+.wod-detail {
+  color: var(--dim);
+  font-size: 0.8em;
+  margin-top: 2px;
+}
+
+.wod-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.wod-grid .k {
+  font-size: 0.65em;
+  letter-spacing: 0.12em;
+  color: var(--dim);
+  text-transform: uppercase;
+}
+
+.wod-grid .v {
+  font-size: 0.92em;
+  font-variant-numeric: tabular-nums;
+}
+
+.wod-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 8px;
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
+}
+
+.wod-table th {
+  text-align: left;
+  color: var(--dim);
+  font-size: 0.72em;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-weight: 600;
+  padding: 2px 8px 2px 0;
+}
+
+.wod-table td {
+  padding: 3px 8px 3px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.wod-table tr.now td {
+  color: var(--amber);
+}
+
+.wod-cal {
+  margin-top: 8px;
+  color: var(--dim);
+  font-size: 0.78em;
+}
+
+.wod-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.wod-btns button {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 5px;
+  color: var(--text);
+  font-size: 0.78em;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.wod-btns button:hover {
+  border-color: var(--amber);
+  color: var(--amber);
+}
+
+.wod-hint {
+  margin-top: 6px;
+  color: var(--dim);
+  font-size: 0.72em;
+}
+
+/* ------------------------------------------------------------- plotter tab */
+.plot-card {
+  border-color: var(--cyan);
+}
+
+.plot-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.plot-kinds {
+  margin-left: auto;
+  display: flex;
+  gap: 0;
+}
+
+.plot-kind {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: var(--dim);
+  font-size: 0.66em;
+  letter-spacing: 0.1em;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.plot-kind:first-child {
+  border-radius: 4px 0 0 4px;
+}
+
+.plot-kind:last-child {
+  border-radius: 0 4px 4px 0;
+  border-left-width: 0;
+}
+
+.plot-kind.on {
+  color: #0a1628;
+  background: var(--cyan);
+  border-color: var(--cyan);
+}
+
+.plot-from {
+  color: var(--dim);
+  font-size: 0.78em;
+  margin-top: 2px;
+}
+
+.plot-form {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.plot-target {
+  flex: 1;
+  min-width: 0;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 5px;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.86em;
+  padding: 4px 7px;
+}
+
+.plot-target:focus {
+  outline: none;
+  border-color: var(--cyan);
+}
+
+.plot-eff {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 5px;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.78em;
+  padding: 3px 4px;
+}
+
+.plot-go {
+  background: transparent;
+  border: 1px solid var(--cyan);
+  border-radius: 5px;
+  color: var(--cyan);
+  font-size: 0.8em;
+  padding: 3px 12px;
+  cursor: pointer;
+}
+
+.plot-go:disabled {
+  border-color: rgba(255, 255, 255, 0.15);
+  color: var(--dim);
+  cursor: default;
+}
+
+.plot-optin {
+  margin-top: 6px;
+  color: var(--dim);
+  font-size: 0.75em;
+  line-height: 1.35;
+}
+
+.plot-enable {
+  display: inline-block;
+  margin-left: 6px;
+  background: transparent;
+  border: 1px solid var(--cyan);
+  border-radius: 4px;
+  color: var(--cyan);
+  font-size: 0.95em;
+  padding: 1px 7px;
+  cursor: pointer;
+}
+
+.plot-note {
+  margin-top: 5px;
+  color: var(--dim);
+  font-size: 0.75em;
+}
+
+.plot-warn {
+  margin-top: 5px;
+  color: var(--amber);
+  font-size: 0.75em;
+}
+
+/* The jump clock — the biggest thing on the card while a carrier run is going,
+   because it is the only number that decides the next quarter of an hour. */
+.plot-clock {
+  margin-top: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-left-width: 3px;
+  border-radius: 6px;
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.plot-clock-label {
+  font-size: 0.66em;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.plot-clock-digits {
+  font-size: 2.1em;
+  line-height: 1.05;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+.plot-clock-sub {
+  color: var(--dim);
+  font-size: 0.76em;
+  margin-top: 1px;
+}
+
+.plot-summary {
+  margin-top: 8px;
+  font-size: 0.86em;
+}
+
+.plot-left {
+  color: var(--cyan);
+}
+
+/* The tritium bill sits above the list: "can I make it" outranks "where next". */
+.plot-fuel {
+  margin-top: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-left: 3px solid var(--green);
+  border-radius: 6px;
+  padding: 6px 9px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.plot-fuel.short {
+  border-left-color: var(--amber);
+}
+
+.plot-fuel-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 3px 8px;
+}
+
+.plot-k {
+  font-size: 0.62em;
+  letter-spacing: 0.12em;
+  color: var(--dim);
+  text-transform: uppercase;
+}
+
+.plot-v {
+  font-size: 0.9em;
+  font-variant-numeric: tabular-nums;
+}
+
+.plot-hold input {
+  width: 62px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 4px;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.8em;
+  font-variant-numeric: tabular-nums;
+  padding: 1px 4px;
+}
+
+.plot-verdict {
+  margin-top: 3px;
+  font-size: 0.85em;
+}
+
+.plot-list {
+  margin-top: 8px;
+  max-height: 210px;
+  overflow-y: auto;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.plot-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 2px;
+  font-size: 0.82em;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.plot-row.done {
+  color: var(--dim);
+  opacity: 0.65;
+}
+
+.plot-row.here {
+  color: var(--cyan);
+}
+
+.plot-row.next {
+  background: rgba(64, 208, 240, 0.07);
+}
+
+.plot-n {
+  min-width: 20px;
+  text-align: right;
+  color: var(--dim);
+  font-size: 0.9em;
+}
+
+.plot-row.here .plot-n {
+  color: var(--cyan);
+}
+
+.plot-sys {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plot-tag {
+  margin-left: 4px;
+  font-size: 0.85em;
+}
+
+.plot-tag.neutron {
+  color: var(--cyan);
+}
+
+.plot-tag.icy {
+  color: #8ab8e0;
+}
+
+.plot-tag.icy.pristine {
+  color: var(--green);
+}
+
+.plot-tag.fuel {
+  color: var(--amber);
+  font-variant-numeric: tabular-nums;
+}
+
+.plot-cost {
+  color: var(--dim);
+  font-size: 0.9em;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.plot-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+.plot-btns button {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 5px;
+  color: var(--text);
+  font-size: 0.78em;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.plot-btns button:hover {
+  border-color: var(--cyan);
+  color: var(--cyan);
+}
+
+.plot-next {
+  border-color: var(--cyan) !important;
+  color: var(--cyan) !important;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plot-hint {
+  margin-top: 6px;
+  color: var(--dim);
+  font-size: 0.72em;
+}
+
+/* ---------------------------------------------------------------- architect
+   The colonisation shopping list. Dense on purpose: a build wants seventeen
+   commodities and the panel is 420 px wide, so every row is one line until
+   the commander opens it. Amber, because the build is the standing job. */
+.arc-card {
+  border-color: var(--amber);
+  overflow-y: auto;
+}
+
+.arc-head {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.arc-title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.arc-sub {
+  color: var(--dim);
+  font-size: 0.74em;
+}
+
+.arc-warn {
+  margin-top: 6px;
+  padding: 4px 6px;
+  border-left: 2px solid var(--red);
+  background: rgba(224, 48, 48, 0.1);
+  color: var(--text);
+  font-size: 0.76em;
+}
+
+.arc-warn.soft {
+  border-left-color: var(--amber);
+  background: rgba(240, 160, 48, 0.08);
+}
+
+.arc-progress {
+  margin-top: 8px;
+}
+
+.arc-progress-bar {
+  height: 4px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.arc-progress-bar span {
+  display: block;
+  height: 100%;
+  background: var(--amber);
+}
+
+.arc-progress-line {
+  margin-top: 3px;
+  font-size: 0.76em;
+  color: var(--dim);
+}
+
+.arc-pct {
+  float: right;
+  color: var(--amber);
+}
+
+.arc-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.arc-scan {
+  background: transparent;
+  border: 1px solid var(--amber);
+  color: var(--amber);
+  font-size: 0.7em;
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.arc-scan:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.arc-scan-note {
+  color: var(--dim);
+  font-size: 0.7em;
+  line-height: 1.2;
+}
+
+.arc-tree {
+  margin-top: 8px;
+}
+
+.arc-group {
+  margin-bottom: 6px;
+}
+
+.arc-group-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: 0;
+  border-left: 2px solid var(--dim);
+  color: var(--text);
+  text-align: left;
+  padding: 3px 4px;
+  cursor: pointer;
+  font-size: 0.8em;
+}
+
+.arc-group-head:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.arc-group-title {
+  font-weight: 600;
+}
+
+.arc-group-count {
+  margin-left: auto;
+  color: var(--dim);
+  font-size: 0.92em;
+}
+
+.arc-hint {
+  color: var(--dim);
+  font-size: 0.68em;
+  padding: 0 4px 3px 12px;
+}
+
+.arc-items,
+.arc-srcs {
+  list-style: none;
+}
+
+.arc-item {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.arc-item-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  text-align: left;
+  padding: 3px 4px 3px 10px;
+  cursor: pointer;
+  font-size: 0.78em;
+}
+
+.arc-item-head:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.arc-twist {
+  color: var(--dim);
+  width: 8px;
+  flex: none;
+}
+
+.arc-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.arc-need {
+  margin-left: auto;
+  color: var(--amber);
+  flex: none;
+}
+
+.arc-trips {
+  color: var(--dim);
+  font-size: 0.86em;
+  flex: none;
+}
+
+/* A sparkline of how much of this commodity is already delivered. */
+.arc-bar {
+  width: 34px;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 2px;
+  overflow: hidden;
+  flex: none;
+}
+
+.arc-bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--green);
+}
+
+.arc-src {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0 6px;
+  padding: 3px 4px 3px 22px;
+  font-size: 0.72em;
+  color: var(--dim);
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.arc-src.hold {
+  color: var(--green);
+}
+
+.arc-src-where {
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.arc-src-sys {
+  grid-column: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.arc-src-num {
+  grid-column: 2;
+  text-align: right;
+  color: var(--text);
+}
+
+/* A seller who cannot fill the order on their own is a second trip. */
+.arc-src-num.short {
+  color: var(--amber);
+}
+
+.arc-age {
+  grid-column: 2;
+  text-align: right;
+}
+
+.arc-age.own {
+  color: var(--green);
+}
+
+.arc-age.stale {
+  color: var(--red);
+}
+
+.arc-chip {
+  margin-left: 4px;
+  padding: 0 4px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 3px;
+  font-size: 0.86em;
+  color: var(--dim);
+}
+
+.arc-none,
+.arc-pay {
+  padding: 3px 4px 3px 22px;
+  font-size: 0.7em;
+  color: var(--dim);
+}
+
+.arc-pay b.good {
+  color: var(--green);
+}
+
+.arc-pay b.bad {
+  color: var(--amber);
+}
+
+.arc-foot {
+  margin-top: 6px;
+  color: var(--dim);
+  font-size: 0.68em;
+}
+
+/* "+2" — this stop also covers two other lines of the build. */
+.arc-stop {
+  color: var(--green);
+  font-size: 0.8em;
+  border: 1px solid rgba(64, 224, 96, 0.4);
+  border-radius: 3px;
+  padding: 0 3px;
+  flex: none;
+}

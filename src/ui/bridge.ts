@@ -84,6 +84,27 @@ export async function startWatch(
   await invoke('start_watch', { dir, bootstrapPrevious });
 }
 
+/** Newest raw `Scan` journal lines for one body, from the WHOLE history on
+ *  disk — the death clock's "you flew past it months ago" calibration sweep. */
+export async function journalScanHistory(
+  dir: string | null,
+  body: string,
+  limit = 3,
+): Promise<string[]> {
+  return invoke<string[]>('journal_scan_history', { dir, body, limit });
+}
+
+/**
+ * Every completed organic sample in the whole journal history.
+ *
+ * A sample is permanent; the bootstrap replay is one session deep. Without
+ * this the app tells a commander standing on a rock they part-sampled a year
+ * ago that everything down there is still uncollected.
+ */
+export async function journalOrganicHistory(dir: string | null, limit = 4000): Promise<string[]> {
+  return invoke<string[]>('journal_organic_history', { dir, limit });
+}
+
 export async function setClickThrough(enabled: boolean): Promise<void> {
   await invoke('set_click_through', { enabled });
 }
@@ -132,6 +153,43 @@ export async function spanshTradeRoute(opts: {
     maxHops: opts.maxHops,
     requiresLargePad: opts.requiresLargePad,
     maxPriceAgeDays: opts.maxPriceAgeDays,
+  });
+}
+
+/** Opt-in neutron-highway plot for the ship; resolves to the raw results JSON. */
+export async function spanshShipRoute(opts: {
+  from: string;
+  to: string;
+  /** Laden jump range, ly — the game reports it as Loadout.MaxJumpRange. */
+  range: number;
+  /** Spansh's detour dial, 1–100. 60 is their default. */
+  efficiency: number;
+}): Promise<string> {
+  return invoke<string>('spansh_ship_route', {
+    from: opts.from,
+    to: opts.to,
+    range: opts.range,
+    efficiency: opts.efficiency,
+  });
+}
+
+/** Opt-in fleet-carrier plot; resolves to the raw results JSON. */
+export async function spanshCarrierRoute(opts: {
+  source: string;
+  destinations: string[];
+  /** Tons of the 25,000 t hold in use — mass, and therefore fuel burn. */
+  capacityUsed: number;
+  /** Depot level (CarrierStats FuelLevel), max 1000 t. */
+  currentFuel: number;
+  /** Tritium already in the carrier's cargo hold. */
+  tritiumAmount: number;
+}): Promise<string> {
+  return invoke<string>('spansh_carrier_route', {
+    source: opts.source,
+    destinations: opts.destinations,
+    capacityUsed: opts.capacityUsed,
+    currentFuel: opts.currentFuel,
+    tritiumAmount: opts.tritiumAmount,
   });
 }
 
@@ -341,6 +399,26 @@ export interface ArdentMarketRow {
   pad: string | null;
   carrier: boolean;
   updatedAt: string | null;
+}
+
+/**
+ * One row of a whole-system commodity sweep: what a station here sells.
+ *
+ * Separate from ArdentMarketRow because it names the commodity — a single
+ * request returns every commodity at every station in the system.
+ */
+export interface ArdentSystemRow extends ArdentMarketRow {
+  commodity: string;
+  /** Supercruise distance from the star; the only "distance" inside a system. */
+  distanceLs: number | null;
+}
+
+/**
+ * Every commodity on sale in ONE system (opt-in). The nearby lookup excludes
+ * the system it is asked about, so this is the only way to see home.
+ */
+export async function ardentSystemCommodities(system: string): Promise<ArdentSystemRow[]> {
+  return JSON.parse(await invoke<string>('ardent_system_commodities', { system })) as ArdentSystemRow[];
 }
 
 /** Opt-in galaxy-wide commodity lookup; sends only the system + commodity. */

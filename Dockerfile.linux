@@ -31,6 +31,23 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 # AppImage tooling can't FUSE-mount inside a container — extract-and-run instead.
 ENV APPIMAGE_EXTRACT_AND_RUN=1
 
+# NOTE on the AppImage tools, learned the hard way.
+#
+# The bundler fetches AppRun, linuxdeploy and its plugins from github.com in the
+# middle of `tauri build`, AFTER the three-minute Rust compile. When github.com
+# is unreachable the deb still bundles and the AppImage step dies with
+# "io: Peer disconnected".
+#
+# Do NOT "fix" that by pre-seeding /root/.cache/tauri from the URLs in an older
+# tauri-bundler: tauri 2.6 moved its tool downloads (AppRun now comes from the
+# `apprun-old` tag) and the linuxdeploy those older URLs serve is too old to use
+# the modern AppImage plugin. It silently falls back to a built-in one that
+# compresses far worse, and the same app ships as 241.5 MiB instead of 230.5 —
+# a build that succeeds while quietly producing a different artifact.
+#
+# If github.com is down, wait it out and rebuild. Check with:
+#   curl -s -o /dev/null -w '%{http_code}\n' https://github.com
+
 WORKDIR /app
 
 # Cache the node install on the manifests alone.

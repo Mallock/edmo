@@ -480,6 +480,15 @@ export class MissionStateManager {
       this.intelForSystem = system;
       this.systemIntel = { signals: [] };
     }
+    // Galactic coordinates. FSDJump/Location/CarrierJump have carried StarPos
+    // all along and it was discarded, so nothing could tell the Bubble from
+    // Colonia from deep space — and the persona simply asserted Colonia.
+    if (Array.isArray(ev.StarPos) && ev.StarPos.length === 3) {
+      const [x, y, z] = ev.StarPos as number[];
+      if ([x, y, z].every((n) => typeof n === 'number' && Number.isFinite(n))) {
+        this.systemIntel.coords = { x, y, z };
+      }
+    }
     const faction = ev.SystemFaction as { Name?: string } | undefined;
     this.systemIntel.security =
       str(ev.SystemSecurity_Localised) ?? str(ev.SystemSecurity) ?? this.systemIntel.security;

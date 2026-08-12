@@ -115,26 +115,63 @@ export function MissionCard({
   );
 }
 
+/** The World of Death tab: timer to the next window edge, dot green when open. */
+export interface ClockTab {
+  active: boolean;
+  timer: string;
+  open: boolean;
+  onSelect: () => void;
+}
+
+/** The plotter tab: jumps left when a route is running, otherwise just the dial. */
+export interface PlotTab {
+  active: boolean;
+  /** "12 jmp" while following a route, or a live carrier clock like "4:12". */
+  label: string;
+  /** A route is loaded and still has road ahead. */
+  running: boolean;
+  /** The carrier is clear to jump — worth catching the eye from any tab. */
+  urgent?: boolean;
+  onSelect: () => void;
+}
+
+/** The construction tab: tons the site is still short of. */
+export interface ArchitectTab {
+  active: boolean;
+  /** Outstanding tonnage, e.g. "6,093t". */
+  label: string;
+  /** The hold contains something the site is asking for. */
+  urgent?: boolean;
+  onSelect: () => void;
+}
+
 export function MissionTabs({
   missions,
   selectedId,
   nowMs,
   onSelect,
+  clock,
+  plot,
+  architect,
 }: {
   missions: Mission[];
   selectedId: number | null;
   nowMs: number;
   onSelect: (id: number) => void;
+  clock?: ClockTab;
+  plot?: PlotTab;
+  architect?: ArchitectTab;
 }) {
-  if (missions.length <= 1) return null;
+  if (missions.length <= 1 && !clock && !plot && !architect) return null;
+  const otherActive = clock?.active || plot?.active || architect?.active;
   return (
     <div className="tabs" role="tablist" aria-label="Active missions">
       {missions.map((m, i) => (
         <button
           key={m.id}
           role="tab"
-          aria-selected={m.id === selectedId}
-          className={m.id === selectedId ? 'tab active' : 'tab'}
+          aria-selected={m.id === selectedId && !otherActive}
+          className={m.id === selectedId && !otherActive ? 'tab active' : 'tab'}
           style={{ borderColor: categoryColor(m.category) }}
           title={m.title}
           onClick={() => onSelect(m.id)}
@@ -144,6 +181,54 @@ export function MissionTabs({
           <span className="tab-timer mono">{countdown(m.expiry, nowMs)}</span>
         </button>
       ))}
+      {clock && (
+        <button
+          role="tab"
+          aria-selected={clock.active}
+          className={clock.active ? 'tab active' : 'tab'}
+          style={{ borderColor: 'var(--red)' }}
+          title="World of Death — landing windows (Spoihaae XE-X d2-9 A 1)"
+          onClick={clock.onSelect}
+        >
+          <span className="tab-dot" style={{ background: clock.open ? 'var(--green)' : 'var(--red)' }} />
+          ☠
+          <span className="tab-timer mono">{clock.timer}</span>
+        </button>
+      )}
+      {plot && (
+        <button
+          role="tab"
+          aria-selected={plot.active}
+          className={plot.active ? 'tab active' : 'tab'}
+          style={{ borderColor: 'var(--cyan)' }}
+          title="Plotter — neutron route for the ship, jump list and tritium for the carrier"
+          onClick={plot.onSelect}
+        >
+          <span
+            className="tab-dot"
+            style={{ background: plot.urgent ? 'var(--green)' : plot.running ? 'var(--cyan)' : 'var(--dim)' }}
+          />
+          🧭
+          {plot.label && <span className="tab-timer mono">{plot.label}</span>}
+        </button>
+      )}
+      {architect && (
+        <button
+          role="tab"
+          aria-selected={architect.active}
+          className={architect.active ? 'tab active' : 'tab'}
+          style={{ borderColor: 'var(--amber)' }}
+          title="System architect — what the construction site still needs, and where to buy it"
+          onClick={architect.onSelect}
+        >
+          <span
+            className="tab-dot"
+            style={{ background: architect.urgent ? 'var(--green)' : 'var(--amber)' }}
+          />
+          🏗
+          {architect.label && <span className="tab-timer mono">{architect.label}</span>}
+        </button>
+      )}
     </div>
   );
 }

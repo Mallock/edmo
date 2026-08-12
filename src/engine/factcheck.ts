@@ -132,3 +132,29 @@ export function findHabitualGenerality(beat: string): string | null {
   const lead = beat.match(/(?:^|[.!?,;—-]\s*)(always|never)\b(?:\s+\w+){0,3}/i);
   return lead ? lead[0].replace(/^[.!?,;—-]\s*/, '').trim() : null;
 }
+
+/** Every fence that applies to anything the operator says out loud, as one
+ * decision, in the order they were tuned. `fence` names the rule; `detail` is
+ * the offending phrase.
+ *
+ * This exists because each new speaking path has quietly re-opened the same
+ * hole. The fences were written for the conversation beat; the raw-image
+ * fallback walked past all of them, and so did the glance verdict — which is
+ * how "We're running on fumes" reached a live session, a collective pronoun
+ * that the fence catches perfectly well when it is asked. Anything that can
+ * reach `speak()` should ask this, so a new path can only be wrong once.
+ *
+ * The fabricated-place check is deliberately NOT here: it needs the set of
+ * places that specific prompt was told about, which only the caller knows.
+ */
+export function findVoiceViolation(
+  line: string,
+): { fence: 'lifted' | 'collective' | 'habitual'; detail: string } | null {
+  const lifted = findLiftedExample(line);
+  if (lifted) return { fence: 'lifted', detail: lifted };
+  const collective = findCollectivePronoun(line);
+  if (collective) return { fence: 'collective', detail: collective };
+  const habitual = findHabitualGenerality(line);
+  if (habitual) return { fence: 'habitual', detail: habitual };
+  return null;
+}

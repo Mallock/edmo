@@ -55,9 +55,27 @@ export interface ToolContext {
         Array<{
           station: string; system: string; distanceLy: number | null; price: number | null;
           stock: number | null; demand: number | null; pad: string | null; carrier: boolean;
+          /** ISO date the community last saw this market. */
+          updatedAt?: string | null;
         }>
       >)
     | null;
+  /**
+   * Tons of a commodity the commander is currently short of, or null when
+   * nothing is asking for it.
+   *
+   * Exists because "where is tritium cheapest" is never really the question —
+   * the question is where to buy the 4,865 t a plotted carrier route needs, and
+   * a seller holding 3,557 t is the wrong answer at any price. Without this the
+   * operator recommended exactly that carrier.
+   */
+  commodityNeed?: (commodity: string) => number | null;
+  /** Station-type signals honked in the CURRENT system — how a carrier's
+   *  callsign is resolved to the name the nav panel shows. */
+  systemSignals?: ReadonlyArray<{ name: string; isStation?: boolean }>;
+  /** Stations that have already refused this commander docking, so a lookup
+   *  never sends them back to a door they know is shut. */
+  dockingDenied?: (station: string, system: string) => string | null;
   /** Galnet news wire (opt-in): recent in-universe headlines, on demand. */
   galnetNews: (() => Promise<Array<{ title: string; date: string; lead: string }>>) | null;
   /** EDAstro exploration catalogue (opt-in): what others have logged in a system. */
@@ -220,12 +238,30 @@ export async function runTool(name: string, argsJson: string, ctx: ToolContext):
 
 // ------------------------------------------------------------------ tool bodies
 
+/**
+ * The market in front of the commander — or, failing that, the last one they
+ * opened, clearly labelled as somewhere else.
+ *
+ * The fallback is worth keeping (a price from an hour ago beats "I don't
+ * know"), but it used to be silent. Docked at a carrier whose market they had
+ * never opened, this returned the last market from a DIFFERENT SYSTEM and the
+ * summary went on to describe it as "Buy here". Asked "in Tir?", the operator
+ * answered with Crevie's Salvo's prices — a station in Kinesi — and stated them
+ * as Tir's. Naming the station was not enough; the word "here" outvoted it.
+ */
 function currentMarket(ctx: ToolContext): string {
-  const rec =
-    ctx.markets.latest(ctx.station ? { station: ctx.station } : ctx.system !== 'unknown' ? { system: ctx.system } : undefined) ??
-    ctx.markets.latest();
+  const atStation = ctx.station ? ctx.markets.latest({ station: ctx.station }) : null;
+  const inSystem =
+    !atStation && ctx.system !== 'unknown' ? ctx.markets.latest({ system: ctx.system }) : null;
+  const rec = atStation ?? inSystem ?? ctx.markets.latest();
   if (!rec) return 'No market data recorded yet — dock and open the Commodities Market once so I can read it.';
-  return marketSummary(rec, ageHours(rec.at));
+  const local = !!(atStation || inSystem);
+  const elsewhere = local
+    ? ''
+    : `WARNING: this is NOT where the commander is. They are ${ctx.station ? `docked at ${ctx.station}` : 'in'} ${ctx.system}` +
+      `, and no market has been opened there. These are the last prices they saw, somewhere else entirely — ` +
+      `never describe them as local, and say plainly that you have no market data for ${ctx.system}.\n`;
+  return elsewhere + marketSummary(rec, ageHours(rec.at), local);
 }
 
 function findCommodity(ctx: ToolContext, commodity: string, side: 'buy' | 'sell'): string {
@@ -309,18 +345,22 @@ function listMissions(ctx: ToolContext): string {
 
 // ------------------------------------------------------------------ formatting
 
-function marketSummary(rec: MarketRecord, age: number): string {
+function marketSummary(rec: MarketRecord, age: number, local = true): string {
   const buys = rec.items.filter((i) => i.buy > 0 && i.stock > 0).sort((a, b) => b.stock - a.stock);
   const sells = rec.items.filter((i) => i.sell > 0 && i.demand > 0).sort((a, b) => b.sell - a.sell);
+  // "here" is a claim about where the commander is standing. When the record
+  // came from somewhere else, saying it is how a price from another system
+  // gets reported as the local one.
+  const at = local ? 'here' : `at ${rec.station}`;
   const lines = [`Market at ${rec.station} (${rec.system}), ${age}h old:`];
   if (buys.length) {
     lines.push(
-      `Buy here: ${buys.slice(0, 12).map((i) => `${i.name} ${i.buy.toLocaleString('en-US')} cr (stock ${i.stock})`).join('; ')}`,
+      `Buy ${at}: ${buys.slice(0, 12).map((i) => `${i.name} ${i.buy.toLocaleString('en-US')} cr (stock ${i.stock})`).join('; ')}`,
     );
-  } else lines.push('Buy here: nothing in stock.');
+  } else lines.push(`Buy ${at}: nothing in stock.`);
   if (sells.length) {
     lines.push(
-      `Sells for most (demand here): ${sells.slice(0, 8).map((i) => `${i.name} ${i.sell.toLocaleString('en-US')} cr`).join('; ')}`,
+      `Sells for most (demand ${at}): ${sells.slice(0, 8).map((i) => `${i.name} ${i.sell.toLocaleString('en-US')} cr`).join('; ')}`,
     );
   }
   return lines.join('\n');
@@ -354,6 +394,125 @@ const numOr = (v: unknown, d: number): number => (typeof v === 'number' && Numbe
 const clamp = (n: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, n));
 
 /**
+ * A fleet carrier's display name, matched to a callsign from the signals the
+ * commander has already honked in-system.
+ *
+ * Market data (EDDN, and so Ardent and Spansh) carries only the callsign —
+ * "G9H-NVZ". The GAME shows "IVAN KING G9H-NVZ", and that full string is what
+ * the commander is scanning for in a nav panel listing fifty-eight carriers.
+ * Told to look for G9H-NVZ, they flew to the right system, could not spot it,
+ * and docked at the wrong carrier — while `FSSSignalDiscovered` had put "IVAN
+ * KING G9H-NVZ" into system intel four minutes earlier.
+ *
+ * Matching is on the callsign appearing in the signal name, because that is
+ * exactly how the game composes it (name + space + callsign).
+ */
+export function carrierDisplayName(
+  callsign: string,
+  signals: ReadonlyArray<{ name: string; isStation?: boolean }>,
+): string | null {
+  const call = callsign.trim().toUpperCase();
+  // A carrier callsign is XXX-XXX. Anything else is an ordinary station, whose
+  // name is already its full name.
+  if (!/^[A-Z0-9]{3}-[A-Z0-9]{3}$/.test(call)) return null;
+  for (const s of signals) {
+    const name = (s.name ?? '').trim();
+    if (!name || name.toUpperCase() === call) continue;
+    if (name.toUpperCase().includes(call)) return name;
+  }
+  return null;
+}
+
+/** One row of a galaxy market lookup, as the injected source returns it. */
+export interface MarketLookupRow {
+  station: string;
+  system: string;
+  distanceLy: number | null;
+  price: number | null;
+  stock: number | null;
+  demand: number | null;
+  pad: string | null;
+  carrier: boolean;
+  /** When the community last saw this market. The single most important field
+   *  on the row, and it used to be dropped before the model ever saw it. */
+  updatedAt?: string | null;
+}
+
+/** Days since a community report, or null when it carries no timestamp. */
+export function reportAgeDays(updatedAt: string | null | undefined, nowMs = Date.now()): number | null {
+  const t = Date.parse(updatedAt ?? '');
+  return Number.isFinite(t) ? Math.max(0, Math.floor((nowMs - t) / 86_400_000)) : null;
+}
+
+/**
+ * Past this, a carrier listing is a rumour rather than a price.
+ *
+ * Carriers restock, sell out and flip between buying and selling in days. A
+ * commander was sent fifteen light-years to a carrier reported twelve days
+ * earlier as selling 9,789 t of tritium at 2,565 cr; on arrival it held none
+ * and was BUYING at 55,301. Nothing in the answer had hinted the report was
+ * nearly a fortnight old, because the age was never rendered at all.
+ */
+export const STALE_DAYS = 7;
+
+const ageWord = (days: number | null): string =>
+  days == null ? 'age unknown' : days === 0 ? 'seen today' : days === 1 ? 'seen yesterday' : `seen ${days} days ago`;
+
+/**
+ * Order market rows so the FIRST one is the answer.
+ *
+ * Price alone does not rank anything when every seller lists the same number,
+ * and for carrier fuel they invariably do: a live lookup for tritium returned
+ * eight carriers at exactly 2,565 cr, in no useful order — the nearest sat
+ * third and the only two holding enough to fill the order sat fourth and
+ * seventh. Asked to pick, the operator correctly observed that "the price is
+ * the same everywhere" and then named no destination at all.
+ *
+ * So the tie-breaks carry the ranking: distance, because that is the cost the
+ * commander actually pays, then quantity, because a nearer seller who cannot
+ * fill the hold is a second trip. Rows with no price sort last rather than
+ * masquerading as free.
+ *
+ * `need` outranks all of it. A seller who cannot fill the order is not a
+ * cheaper option, it is an unfinished job — ranking the nearest carrier first
+ * when it holds 73% of the tritium a route needs recommends a trip that ends
+ * with the commander still stuck. Sellers who can cover the need come first;
+ * distance then decides between them. When none can, the order is unchanged and
+ * the caller says so outright rather than quietly topping the list with 31%.
+ */
+export function rankMarketRows<T extends MarketLookupRow>(
+  rows: readonly T[],
+  side: 'buy' | 'sell',
+  need: number | null = null,
+  nowMs = Date.now(),
+): T[] {
+  const price = (r: T): number =>
+    r.price == null ? (side === 'buy' ? Infinity : -Infinity) : r.price;
+  const qty = (r: T): number => (side === 'buy' ? (r.stock ?? 0) : (r.demand ?? 0));
+  const far = (r: T): number => r.distanceLy ?? Infinity;
+  // Only a purchase can fall short; a sale is limited by the hold, not the buyer.
+  const shopping = need != null && side === 'buy';
+  const covers = (r: T): number => (shopping && qty(r) >= need! ? 0 : 1);
+  const byPrice = (a: T, b: T): number =>
+    side === 'buy' ? price(a) - price(b) : price(b) - price(a);
+  // Freshness outranks distance. A report from two days ago is far likelier to
+  // still be true than one from twelve, and being wrong costs the whole trip
+  // while a few extra light-years costs minutes. Bucketed rather than sorted
+  // by exact age so a one-day difference does not shuffle the list.
+  const stale = (r: T): number => ((reportAgeDays(r.updatedAt, nowMs) ?? STALE_DAYS) > STALE_DAYS ? 1 : 0);
+  return [...rows].sort((a, b) => {
+    const ca = covers(a);
+    if (ca !== covers(b)) return ca - covers(b);
+    // Nobody in this list can fill the order on their own, so the trip is
+    // several stops whatever happens and the useful first one is the biggest
+    // holding, not the closest. Leading with a carrier holding 7% of the need
+    // because it is 6 ly nearer optimises the wrong thing.
+    if (shopping && ca === 1) return qty(b) - qty(a) || byPrice(a, b) || far(a) - far(b);
+    return byPrice(a, b) || stale(a) - stale(b) || far(a) - far(b) || qty(b) - qty(a);
+  });
+}
+
+/**
  * Galaxy-wide market lookup via community (EDDN) data — the complement to
  * `find_commodity`, which can only see stations the commander has personally
  * visited. Answers are explicitly dated and carriers flagged, because both
@@ -385,21 +544,112 @@ async function findMarketInGalaxy(
   if (!rows.length) {
     return `No ${side === 'buy' ? 'sellers' : 'buyers'} of ${commodity} reported near ${around}.`;
   }
+  const nowMs = Date.now();
   const verb = side === 'buy' ? 'Buy' : 'Sell';
-  const lines = rows.slice(0, 6).map((r) => {
-    const qty = side === 'buy' ? `${r.stock ?? 0} in stock` : `demand ${r.demand ?? 0}`;
+  const need = ctx.commodityNeed?.(commodity) ?? null;
+  // What the commander saw with their own eyes beats a stranger's report, when
+  // ours is the fresher of the two. They docked at QFB-75N on the strength of a
+  // twelve-day-old listing, found no tritium and a BUY order at 55,301 — and
+  // the next lookup would have offered the same stale row straight back.
+  rows = rows.map((r) => {
+    const mine = ctx.markets?.latest({ station: r.station, system: r.system });
+    if (!mine) return r;
+    const theirs = Date.parse(r.updatedAt ?? '');
+    const ours = Date.parse(mine.at);
+    if (!Number.isFinite(ours) || (Number.isFinite(theirs) && theirs > ours)) return r;
+    const seen = mine.items.find(
+      (i) => i.name.toLowerCase().replace(/[^a-z0-9]+/g, '') === commodity.toLowerCase().replace(/[^a-z0-9]+/g, ''),
+    );
+    return {
+      ...r,
+      price: seen ? (side === 'buy' ? seen.buy : seen.sell) || null : null,
+      stock: seen ? seen.stock : 0,
+      demand: seen ? seen.demand : 0,
+      updatedAt: mine.at,
+      ownVisit: true,
+    };
+  });
+  // A station that has already refused the commander is not a cheap option, it
+  // is a wasted trip they have ALREADY made once. Ranked last rather than
+  // dropped: knowing the best price is behind a locked door is worth saying.
+  const refused = (r: MarketLookupRow): string | null =>
+    ctx.dockingDenied?.(r.station, r.system) ?? null;
+  // A market we personally found empty is not a candidate at any price.
+  const empty = (r: MarketLookupRow & { ownVisit?: boolean }): boolean =>
+    !!r.ownVisit && side === 'buy' && (r.stock ?? 0) <= 0;
+  const usable = rows.filter((r) => !refused(r) && !empty(r));
+  const rest = rows.filter((r) => refused(r) || empty(r));
+  const open = rankMarketRows(usable, side, need, nowMs);
+  const shut = rankMarketRows(rest, side, need, nowMs);
+  const ranked = [...open, ...shut];
+  const top = [...open.slice(0, 6), ...shut.slice(0, 2)];
+  const anyCovers =
+    need != null && side === 'buy' && ranked.some((r) => (r.stock ?? 0) >= need);
+  const lines = top.map((r) => {
+    const have = side === 'buy' ? (r.stock ?? 0) : (r.demand ?? 0);
+    const qty = side === 'buy' ? `${have.toLocaleString('en-US')} in stock` : `demand ${have.toLocaleString('en-US')}`;
     const pad = r.pad ? `, pad ${r.pad}` : '';
     const far = r.distanceLy != null ? `${Math.round(r.distanceLy)} ly` : 'distance unknown';
-    return `- ${r.station} (${r.system}, ${far}${pad})${r.carrier ? ' [fleet carrier]' : ''}: ${
+    // Whether this seller can actually fill the order the commander is trying
+    // to fill. Recommending a carrier holding 3,557 t to someone who needs
+    // 4,865 t is a wasted trip they only discover at the pad.
+    const fill = need != null && side === 'buy' ? (have >= need ? ' — COVERS your need' : ` — only ${Math.round((have / need) * 100)}% of what you need`) : '';
+    // In-system carriers get the name the commander will actually read off
+    // their nav panel, not just the callsign buried at the end of it.
+    const full = r.carrier ? carrierDisplayName(r.station, ctx.systemSignals ?? []) : null;
+    const shown = full ? `${r.station} — shows in the nav panel as "${full}"` : r.station;
+    const shut = refused(r);
+    const days = reportAgeDays(r.updatedAt, nowMs);
+    const own = (r as MarketLookupRow & { ownVisit?: boolean }).ownVisit;
+    // The age belongs on every row. Without it a twelve-day-old rumour and a
+    // reading from this morning look identical, and the commander flies.
+    const seenAt = own
+      ? `YOU saw this yourself, ${ageWord(days)}`
+      : `${ageWord(days)}${days != null && days > STALE_DAYS ? ' — STALE, may well be wrong' : ''}`;
+    const gone = empty(r) ? ' — ⛔ YOU CHECKED: none for sale here' : '';
+    return `- ${shown} (${r.system}, ${far}${pad})${r.carrier ? ' [fleet carrier]' : ''}: ${
       r.price != null ? `${r.price.toLocaleString('en-US')} cr` : 'price unknown'
-    }, ${qty}`;
+    }, ${qty}, ${seenAt}${fill}${gone}${shut ? ` — ⛔ ${shut}; DO NOT send them back here` : ''}`;
   });
+
+  // A total price tie is the NORM for carrier fuel — six carriers all at
+  // 2,565 cr — and a flat list of identical prices reads as "there is no
+  // cheapest", which is what the operator told a commander who then got no
+  // destination at all. Say that the tie is expected and that the list is
+  // already ordered by the thing that breaks it.
+  const prices = top.map((r) => r.price).filter((p): p is number => p != null);
+  const tied = prices.length > 1 && new Set(prices).size === 1;
+  const order =
+    need != null && side === 'buy'
+      ? anyCovers
+        ? 'sellers who can fill the whole order first, then cheapest, then nearest'
+        : 'largest holding first — nobody here can fill the whole order'
+      : side === 'buy'
+        ? 'cheapest first, then nearest, then most stock'
+        : 'best price first, then nearest';
+
   return (
     // "near X" was read as "in X" and reported back as "Luchtaine has it at
     // 2,565" when the seller was a carrier two systems over. Say it outright.
     `${verb} ${commodity} — nearest to ${around}, NOT necessarily IN ${around}; each line names ` +
-    `its own system (community data, may be hours old):\n${lines.join('\n')}` +
-    `\nFleet carriers are marked — they can jump away, and their prices swing.`
+    // "may be hours old" was wishful: the row that stranded a commander was
+    // twelve DAYS old. Every line now states its own age; say it out loud.
+    `its own system. Community reports, each with the date it was last seen — ALWAYS tell the ` +
+    `commander how old the one you recommend is, because carriers sell out and flip to buying in ` +
+    `days. Ordered ${order}, so the FIRST line is the ` +
+    `recommendation${need != null && side === 'buy' ? ` for the ${need.toLocaleString('en-US')} t they need` : ''}:\n` +
+    lines.join('\n') +
+    (tied ? `\nEvery price here is identical (${prices[0].toLocaleString('en-US')} cr) — that is normal for carrier fuel, so pick on distance and stock, not price. Do NOT answer "there is no cheapest": name the first line.` : '') +
+    // Needing more than any one seller holds is normal at carrier scale, and it
+    // changes the advice from "go here" to "go here first" — worth saying, not
+    // worth hiding behind a top line that quietly covers a third of the order.
+    (need != null && side === 'buy' && !anyCovers
+      ? `\nNo single seller here holds the ${need.toLocaleString('en-US')} t needed — say so, and treat the top line as the first stop of more than one.`
+      : '') +
+    `\nFleet carriers are marked. Always tell the commander the SYSTEM to fly to — that is what they ` +
+    `enter in the galaxy map. The callsign (G9H-NVZ) is how they pick the carrier out once they ` +
+    `arrive; where a nav-panel name is given above, say THAT, because a busy system can list fifty ` +
+    `carriers and the callsign sits at the end of the name. Carriers can jump away and prices swing.`
   );
 }
 

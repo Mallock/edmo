@@ -118,6 +118,12 @@ export interface ShipStatus {
   fsdCharging: boolean;
   fsdMassLocked: boolean;
   nightVision: boolean;
+  /** Which vehicle the commander is actually in. Status.json keeps reporting
+   *  the ship's own bits while they are on foot or in an SRV, so any alert
+   *  about the ship has to know whether the commander is even in it. */
+  inMainShip: boolean;
+  inFighter: boolean;
+  inSrv: boolean;
   onFoot: boolean;
   lowOxygen: boolean;
   lowHealth: boolean;
@@ -183,6 +189,9 @@ export function parseStatus(ev: JournalEvent): ShipStatus | null {
     fsdCharging: bit(flags, FLAG.FsdCharging),
     fsdMassLocked: bit(flags, FLAG.FsdMassLocked),
     nightVision: bit(flags, FLAG.NightVision),
+    inMainShip: bit(flags, FLAG.InMainShip),
+    inFighter: bit(flags, FLAG.InFighter),
+    inSrv: bit(flags, FLAG.InSrv),
     onFoot: bit(flags2, FLAG2.OnFoot),
     lowOxygen: bit(flags2, FLAG2.LowOxygen),
     lowHealth: bit(flags2, FLAG2.LowHealth),
@@ -271,7 +280,18 @@ export class StatusTracker {
     }
     // Shields lost: only alert in a threat context, so undocking/normal drops
     // (shields also read "down" briefly on station approach) stay quiet.
-    if (!next.shieldsUp && prev.shieldsUp && (next.inDanger || next.hardpoints || prev.hardpoints)) {
+    // ...and only while the commander is actually flying the thing. On foot or
+    // in an SRV the ship's bits keep reporting a vehicle they are not in, and
+    // an SRV's ring flickers every time it scrapes terrain: a live exobiology
+    // run fired this eight times between bacterium samples, telling a commander
+    // standing on a rock to "boost to range". Written as a suppression rather
+    // than a requirement so a snapshot that never sets the vehicle bits still
+    // gets its combat warning.
+    // Deliberately NOT keyed on `landed`: a surface landing does not drop the
+    // ring, and being shot at on a pad is a real emergency. Only leaving the
+    // cockpit does — or docking, where the ring goes down by design.
+    const outOfTheCockpit = next.onFoot || next.inSrv || next.docked;
+    if (!outOfTheCockpit && !next.shieldsUp && prev.shieldsUp && (next.inDanger || next.hardpoints || prev.hardpoints)) {
       alerts.push({
         kind: 'shields-down',
         severity: 'urgent',

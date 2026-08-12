@@ -38,6 +38,7 @@ import {
   MarketMemory,
   findOpportunities,
   parseMarketSnapshot,
+  type MarketRecord,
   type TradeOpportunity,
 } from '../engine/trade.ts';
 import { BioTracker, type BioLead } from '../engine/exobio.ts';
@@ -50,9 +51,53 @@ import {
 } from '../engine/status.ts';
 import { ShipTracker, describeShip, shipRequiresLargePad } from '../engine/ship.ts';
 import { MaterialsTracker } from '../engine/materials.ts';
-import { CarrierTracker } from '../engine/carrier.ts';
+import { CarrierTracker, type CarrierSnapshot } from '../engine/carrier.ts';
+import { DockingDenials, explainDenial } from '../engine/docking.ts';
+import { placeFacts, placeOf, postPlaces, regionChanged, type Place } from '../engine/place.ts';
+import {
+  CarrierJumpAnnouncer,
+  CarrierJumpTracker,
+  describePhase,
+  type CarrierJumpState,
+} from '../engine/carrierjump.ts';
+import {
+  fmtLy,
+  nextWaypoint,
+  parseCarrierPlot,
+  parseShipPlot,
+  plotContextLine,
+  plotProgress,
+  plotSummary,
+  remaining as plotRemaining,
+  reprice,
+  type PlotKind,
+  type PlottedRoute,
+} from '../engine/plotter.ts';
+import {
+  ConstructionTracker,
+  architectFacts,
+  buildShoppingList,
+  commodityKey,
+  coversFromMarket,
+  describeCoverage,
+  describeDepot,
+  tonsRemaining,
+  tonsRequired,
+  type DepotState,
+  type ShoppingGroup,
+} from '../engine/architect.ts';
 import { buildShipPanel, type ShipPanel } from '../engine/shippanel.ts';
 import { ExploreTracker, classifyBody, type ExploreLead } from '../engine/explore.ts';
+import {
+  DeathClock,
+  DeathClockAnnouncer,
+  WOD_BODY,
+  WOD_SYSTEM,
+  phaseOf,
+  speakableDur,
+  type DeathClockMarkKind,
+  type DeathClockState,
+} from '../engine/deathclock.ts';
 import { parseProspectTarget, matchesProspect, type ProspectTarget } from '../engine/mining.ts';
 import {
   SampleRangeTracker,
@@ -63,10 +108,8 @@ import {
 } from '../engine/exobiorange.ts';
 import {
   extractPlaces,
-  findCollectivePronoun,
   findFabricatedPlace,
-  findHabitualGenerality,
-  findLiftedExample,
+  findVoiceViolation,
 } from '../engine/factcheck.ts';
 import { loreForSystem } from '../engine/lore.ts';
 import { momentOf, CombatStreak } from '../engine/moments.ts';
@@ -150,6 +193,8 @@ import {
   llmModels,
   llmModelTypes,
   ardentMarket,
+  type ArdentMarketRow,
+  ardentSystemCommodities,
   ardentTradeCandidates,
   ardentStationPads,
   ardentTradeTo,
@@ -178,12 +223,16 @@ import {
   onShortcut,
   onSnapshot,
   onWatchStatus,
+  journalScanHistory,
+  journalOrganicHistory,
   piperAvailable,
   piperDownloadVoice,
   piperVoices,
   copyText,
   setClickThrough,
   spanshTradeRoute,
+  spanshShipRoute,
+  spanshCarrierRoute,
   startWatch,
   sttAvailable,
   sttCancel,
@@ -270,6 +319,56 @@ export interface HudShipStatus {
   pips: [number, number, number] | null;
 }
 
+/** Everything the Plotter tab renders — data only; the actions live on core. */
+export interface PlotterView {
+  kind: PlotKind;
+  /** What the commander typed, '' when they have typed nothing. */
+  target: string;
+  /** Where the game says they are heading, offered as the placeholder. */
+  suggestion: string | null;
+  route: PlottedRoute | null;
+  /** Index of the waypoint they are standing on. */
+  idx: number;
+  busy: boolean;
+  error: string | null;
+  /** Spansh's detour dial for ship routes (1–100). */
+  efficiency: number;
+  /** Tritium the commander says is in the carrier's hold. */
+  inHold: number;
+  /** Whether the Spansh opt-in is on. */
+  online: boolean;
+  /** The system a plot would start from, or null when there isn't one. */
+  from: string | null;
+  /** Why there is no starting point. */
+  fromNote: string | null;
+  shipRange: number | null;
+  shipCargo: number | null;
+  carrier: CarrierSnapshot | null;
+  /** Lockdown / cooldown clock state. The card recomputes the phase from this
+   *  every second — the snapshot only rebuilds on the 15 s heartbeat. */
+  jumpState: CarrierJumpState;
+}
+
+/** Everything the Architect tab renders — data only; actions live on core. */
+export interface ArchitectView {
+  depot: DepotState;
+  /** The prioritised tree: deliver-now, buy-here, nearby, unknown, done. */
+  groups: ShoppingGroup[];
+  totalRequired: number;
+  totalRemaining: number;
+  /** Docked at THIS site right now — contributions can be made. */
+  atSite: boolean;
+  /** Community lookups are opt-in; without them the tree can only see here. */
+  online: boolean;
+  scanning: boolean;
+  /** How many commodities the last scan covered, and when it ran. */
+  scannedAt: number | null;
+  scanError: string | null;
+  cargoCapacity: number | null;
+  /** Tons in the hold right now, for the trip arithmetic. */
+  holdUsed: number | null;
+}
+
 export interface AppSnapshot {
   missions: Mission[];
   selectedId: number | null;
@@ -294,6 +393,16 @@ export interface AppSnapshot {
   exploreLead: ExploreLead | null;
   route: TradeRoute | null;
   tradeRun: TradeFind | null;
+  /** World of Death landing clock — non-null while the tab should show
+   *  (in the system, or calibrated with a route plotted there). */
+  deathClock: { state: DeathClockState; inSystem: boolean } | null;
+  /** Spansh-style route plotting for the ship or the carrier. */
+  plotter: PlotterView;
+  /** The construction shopping list — null until a depot has been seen. */
+  architect: ArchitectView | null;
+  /** Which panel fills the card area: missions (default), clock, plotter or
+   *  the system architect's shopping list. */
+  view: 'missions' | 'deathclock' | 'plotter' | 'architect';
   shipPanel: ShipPanel;
   routeBusy: boolean;
   routeIdx: number;
@@ -521,6 +630,8 @@ export class AppCore {
   private copilotRetried = false;
   /** Places the copilot is allowed to name this beat (built at fire time). */
   private copilotAllowedPlaces = new Set<string>();
+  /** Last region the persona was built for — see refreshPlaceIfRegionChanged. */
+  private lastPlace: Place | null = null;
   /** Last time the copilot actually fired a beat (glance OR event reaction) —
    *  the shared cadence clock that keeps involvement from flooding. */
   private lastCopilotBeatAt = 0;
@@ -543,8 +654,116 @@ export class AppCore {
     }
     return t;
   })();
+  /** Doors already known to be shut. Persisted — a carrier locked to its
+   *  owner's squadron is still locked next session, and market data will keep
+   *  advertising it either way. */
+  private denials = (() => {
+    const d = new DockingDenials();
+    try {
+      d.load(JSON.parse(localStorage.getItem('edmo.denials.v1') ?? '[]'));
+    } catch {
+      /* start with every door assumed open */
+    }
+    return d;
+  })();
+  /**
+   * The carrier's own two clocks: the ~16 min lockdown after plotting a jump,
+   * and the 5 min cooldown after arriving. Persisted, because a lockdown
+   * outlives an app restart and the commander is usually off doing something
+   * else while it runs.
+   */
+  private jumpClock = (() => {
+    const t = new CarrierJumpTracker();
+    try {
+      t.load(JSON.parse(localStorage.getItem('edmo.carrierjump.v1') ?? 'null'));
+    } catch {
+      /* clocks re-learn themselves from the next jump */
+    }
+    return t;
+  })();
+  private jumpAnnouncer = new CarrierJumpAnnouncer();
+  /** Last phase kind announced in the feed — so the tick only writes on change. */
+  private lastJumpPhaseKind = '';
   /** Last trade run the operator found, shown as a dismissible card. */
   private tradeRun: TradeFind | null = null;
+  /** The World of Death landing clock. Calibration persists — the orbit is
+   *  periodic, so one good scan keeps timing windows across sessions. */
+  private deathClock = (() => {
+    const d = new DeathClock();
+    try {
+      d.load(JSON.parse(localStorage.getItem('edmo.deathclock.v1') ?? 'null'));
+    } catch {
+      /* start uncalibrated */
+    }
+    return d;
+  })();
+  private deathAnnouncer = new DeathClockAnnouncer();
+  /**
+   * The colonisation build. Persisted, because the requirement is stated only
+   * on the contribution panel at the site: a commander who undocks to go
+   * shopping cannot read the list again until they fly back to it.
+   */
+  private construction = (() => {
+    const c = new ConstructionTracker();
+    try {
+      c.load(JSON.parse(localStorage.getItem('edmo.construction.v1') ?? 'null'));
+    } catch {
+      /* the next depot event restates the whole list anyway */
+    }
+    return c;
+  })();
+  /** Commodity key → where it can be bought, from the galaxy scan. */
+  private architectSources = new Map<string, ArdentMarketRow[]>();
+  private architectScanning = false;
+  private architectScannedAt: number | null = null;
+  private architectScanError: string | null = null;
+  /** The system the scan was run from — a jump invalidates its distances. */
+  private architectScanFrom: string | null = null;
+  /** Depot state already announced, so the shopping list is called out once. */
+  private saidDepot = '';
+  /** Last market-covers-the-build line said, so re-reading a board is silent. */
+  private saidMarketCover = '';
+  /** Commodity key → tons in the hold, from Cargo.json's Inventory. */
+  private cargoManifest = new Map<string, number>();
+  /** Which panel fills the card area; the clock and plotter are offered as tabs. */
+  private view: 'missions' | 'deathclock' | 'plotter' | 'architect' = 'missions';
+
+  // ------------------------------------------------------------- the plotter
+  /**
+   * A plotted route outlives the app: a carrier run to Colonia is forty-six
+   * jumps over several evenings, and losing the list on restart would mean
+   * re-plotting from wherever the carrier happens to be — with the tritium
+   * already spent. Persisted whole, position and all.
+   */
+  private plotSaved: {
+    route?: PlottedRoute | null;
+    idx?: number;
+    kind?: PlotKind;
+    hold?: number;
+    efficiency?: number;
+  } = (() => {
+    try {
+      return JSON.parse(localStorage.getItem('edmo.plot.v1') ?? '{}');
+    } catch {
+      return {};
+    }
+  })();
+  private plot: PlottedRoute | null = (() => {
+    // A route from an older build (or a half-written storage entry) would blow
+    // up the card on its first render, which is a worse first impression than
+    // an empty plotter. Anything that is not clearly a route is discarded.
+    const r = this.plotSaved.route;
+    return r && Array.isArray(r.waypoints) && r.waypoints.length > 1 ? r : null;
+  })();
+  private plotIdx = this.plotSaved.idx ?? 0;
+  private plotKind: PlotKind = this.plotSaved.kind === 'carrier' ? 'carrier' : 'ship';
+  private plotTarget = '';
+  private plotEfficiency = this.plotSaved.efficiency ?? 60;
+  /** Tritium the commander says is in the carrier's hold. The journal reports
+   *  the hold's TONNAGE but never what is in it, so this one has to be told. */
+  private plotHold = this.plotSaved.hold ?? 0;
+  private plotBusy = false;
+  private plotError: string | null = null;
   /**
    * The tool calls and results from the LAST answered question.
    *
@@ -767,6 +986,18 @@ export class AppCore {
       exploreLead: this.explore.leads()[0] ?? null,
       route: this.route,
       tradeRun: this.tradeRun,
+      deathClock: (() => {
+        const inSystem = this.inWodSystem();
+        // Also worth a tab while flying TOWARD it with a calibrated clock —
+        // that is exactly when a commander times the arrival.
+        const routed =
+          this.deathClock.state.epochMs != null &&
+          (this.navRouteDest ?? '').trim().toLowerCase() === WOD_SYSTEM.toLowerCase();
+        return inSystem || routed ? { state: this.deathClock.state, inSystem } : null;
+      })(),
+      plotter: this.plotterView(),
+      architect: this.architectView(),
+      view: this.view,
       shipPanel: this.shipPanel(),
       routeBusy: this.routeBusy,
       routeIdx: this.routeIdx,
@@ -1147,12 +1378,18 @@ export class AppCore {
     this.lastStatusAlertAt.clear();
     this.resetCopilot(); // fresh session → fresh conversation
     this.copilotSeenBodies.clear();
+    this.deathAnnouncer = new DeathClockAnnouncer(); // clock itself persists
+    this.view = 'missions';
+    this.deathClockSweepDone = false; // directory may have changed — sweep again
+    this.deathClockFssHinted = false;
     this.prospectTarget = null;
     this.sessionStartAt = 0;
     this.jumpsSinceDock = 0;
     this.winStreak = 0;
     this.lossStreak = 0;
     this.dockVisits.clear();
+    void this.sweepDeathClockHistory();
+    void this.sweepBioHistory();
     try {
       await startWatch(
         this.settings.journal.directory,
@@ -1179,9 +1416,52 @@ export class AppCore {
       this.saga.apply(ev);
       this.bioTracker.apply(ev);
       this.carrier.apply(ev);
+      // The lockdown / cooldown clocks. Folded for every event so a bootstrap
+      // replay restores a jump that is still counting down.
+      if (ev.event.startsWith('Carrier')) {
+        this.jumpClock.apply(ev);
+        try {
+          localStorage.setItem('edmo.carrierjump.v1', JSON.stringify(this.jumpClock.toJSON()));
+        } catch {
+          /* the clock still runs for this session */
+        }
+        if (live && this.bootstrapped && ev.event === 'CarrierJumpRequest') {
+          const dest = this.jumpClock.destination;
+          const line = describePhase(this.jumpClock.phase(Date.now()));
+          if (dest && line) {
+            this.pushFeed('system', `🕐 ${line}`);
+            this.speak(line);
+          }
+        }
+      }
+      // The colonisation shopping list. Folded always, so a bootstrap replay
+      // restores the requirement without flying back to the site; announced and
+      // scanned only when it happens live.
+      if (this.construction.apply(ev)) {
+        try {
+          localStorage.setItem('edmo.construction.v1', JSON.stringify(this.construction.toJSON()));
+        } catch {
+          /* the list still stands for this session */
+        }
+        if (live && this.bootstrapped) this.announceConstruction();
+      }
+      // Remember doors that stay shut (and forget one that opens on a Docked).
+      if (this.denials.apply(ev, this.sm.location.system)) {
+        try {
+          localStorage.setItem('edmo.denials.v1', JSON.stringify(this.denials.toJSON()));
+        } catch {
+          /* the refusal still holds for this session */
+        }
+      }
       this.ship.apply(ev);
       this.materials.apply(ev);
       this.explore.apply(ev);
+      // Any scan of the World of Death recalibrates its landing clock — even
+      // one replayed from an old journal, since the orbit is periodic.
+      if (this.deathClock.apply(ev)) {
+        this.persistDeathClock();
+        if (live && this.bootstrapped) this.announceDeathClockCalibrated('your scan');
+      }
       // Teach the status tracker the fuel-tank size so it can report fuel %.
       if (ev.event === 'Loadout' && this.ship.current?.fuelCapacity) {
         this.statusTracker.setFuelCapacity(this.ship.current.fuelCapacity);
@@ -1204,6 +1484,21 @@ export class AppCore {
         }
       }
       const changes = this.sm.apply(ev);
+      // Position on the plotted route, recomputed AFTER the state manager has
+      // moved the commander. Runs during bootstrap too, so a route restored
+      // from last session opens at the waypoint they are actually standing on.
+      if (
+        ev.event === 'FSDJump' ||
+        ev.event === 'Location' ||
+        ev.event === 'CarrierJump' ||
+        ev.event === 'CarrierLocation'
+      ) {
+        this.onArrivalForPlot(live && this.bootstrapped);
+        // Crossing into another region rewrites who the operator is and where
+        // they sit — otherwise a run that started in Colonia is still being
+        // told it is in Colonia twenty thousand light-years later.
+        if (live && this.bootstrapped) this.refreshPlaceIfRegionChanged();
+      }
       if (live && this.bootstrapped) {
         this.announce(changes, ev.timestamp);
         this.tactical(ev);
@@ -1276,6 +1571,122 @@ export class AppCore {
     }
   }
 
+  // ------------------------------------------------------------- death clock
+  private inWodSystem(): boolean {
+    return this.sm.location.system.trim().toLowerCase() === WOD_SYSTEM.toLowerCase();
+  }
+
+  private persistDeathClock(): void {
+    try {
+      localStorage.setItem('edmo.deathclock.v1', JSON.stringify(this.deathClock.toJSON()));
+    } catch {
+      /* a re-scan recalibrates in seconds */
+    }
+  }
+
+  /** One phrase for "where the window is right now", for feed + voice. */
+  private deathClockNow(): string | null {
+    const p = phaseOf(this.deathClock.state, Date.now());
+    if (!p) return null;
+    if (p.zone === 'clear') return `the window is open — ${speakableDur(p.countdownS)} until leave-by`;
+    if (p.zone === 'board') return `the window is closing — ${speakableDur(p.countdownS)} left`;
+    return `the next landing window opens in ${speakableDur(p.opensInS)}`;
+  }
+
+  /** The magic moment: a scan of A 1 just set the clock by itself. Speaks only
+   *  when it matters (game live, in the system) and primes the announcer so the
+   *  next tick doesn't repeat the same picture as an arrival call. */
+  private announceDeathClockCalibrated(origin: string): void {
+    const now = this.deathClockNow();
+    if (!now) return;
+    const text = `Death clock calibrated from ${origin}: ${now}.`;
+    this.pushFeed('system', `☠ ${text}`);
+    if (Date.now() - this.lastGameActivity < GAME_LIVE_WINDOW_MS && this.inWodSystem()) {
+      this.speak(text);
+      this.copilotEvent(`EVENT: The World of Death landing clock calibrated (${origin}) — ${now}.`);
+      this.deathAnnouncer.prime(phaseOf(this.deathClock.state, Date.now()), true);
+    }
+  }
+
+  /** Whether this launch already swept the journal history for an old A 1 scan. */
+  private deathClockSweepDone = false;
+  /** The one-time organic-sample backfill has run this watch. */
+  private bioSweepDone = false;
+  /** FSS coaching said this session ("tuned to it — now zoom in"). */
+  private deathClockFssHinted = false;
+
+  /**
+   * The "it just works" path: with no fix on the clock, sweep the ENTIRE
+   * journal history on disk for any past scan of A 1. The orbit is periodic,
+   * so a fly-by from months ago is still an exact calibration — and the
+   * session bootstrap never replays that far back. Runs once per watch start,
+   * in the background; a live scan later still supersedes it.
+   */
+  private async sweepDeathClockHistory(): Promise<void> {
+    if (!isTauri || this.deathClockSweepDone) return;
+    this.deathClockSweepDone = true;
+    if (this.deathClock.state.epochMs != null) return;
+    try {
+      const lines = await journalScanHistory(this.settings.journal.directory, WOD_BODY, 3);
+      for (const line of lines) {
+        const ev = parseJournalLine(line);
+        if (ev && this.deathClock.apply(ev)) {
+          this.persistDeathClock();
+          const when = new Date(this.deathClock.state.calibratedAt ?? 0).toLocaleDateString();
+          this.announceDeathClockCalibrated(`your old scan of A 1 (${when})`);
+          this.emit();
+          return;
+        }
+      }
+    } catch {
+      /* no history or no shell — the live scan path still calibrates */
+    }
+  }
+
+  /**
+   * Edge-triggered landing-window calls (window open / leave-by / closed /
+   * opens-soon), spoken only while the game is live and the commander is in
+   * the system. Runs on the 15 s heartbeat and immediately on jump events.
+   */
+  private maybeDeathClock(): void {
+    const live = Date.now() - this.lastGameActivity < GAME_LIVE_WINDOW_MS;
+    const alerts = this.deathAnnouncer.tick(
+      phaseOf(this.deathClock.state, Date.now()),
+      live && this.inWodSystem(),
+    );
+    for (const a of alerts) {
+      this.pushFeed('nudge', `☠ ${a.message}`, { severity: a.severity });
+      this.speak(a.message);
+      if (a.kind !== 'opens-soon') this.copilotEvent(`EVENT: ${a.message}`);
+    }
+    if (alerts.length) this.emit();
+  }
+
+  /**
+   * The carrier's jump clocks: the two edges worth interrupting for.
+   *
+   * A minute before departure (be aboard, or don't be) and the moment the
+   * cooldown clears (the next hop can be plotted). Everything between is on
+   * the card as a digital counter — the point of the cooldown clock is that
+   * the commander can go and mine the tritium for the next hop and be told
+   * when it is worth coming back.
+   */
+  private maybeCarrierJump(): void {
+    const now = Date.now();
+    const phase = this.jumpClock.phase(now);
+    if (phase.kind !== this.lastJumpPhaseKind) {
+      this.lastJumpPhaseKind = phase.kind;
+      if (phase.kind === 'cooldown') this.copilotEvent('EVENT: The carrier has arrived and is cooling down.');
+    }
+    const live = now - this.lastGameActivity < GAME_LIVE_WINDOW_MS;
+    if (!live) return;
+    const say = this.jumpAnnouncer.next(phase);
+    if (say) {
+      this.pushFeed('nudge', `🕐 ${say}`, { severity: 'info' });
+      this.speak(say);
+    }
+  }
+
   // ------------------------------------------------------------- memory bank
   /**
    * Speak at most ONE queued memory remark, under deterministic gates:
@@ -1333,6 +1744,37 @@ export class AppCore {
       .finally(() => {
         this.memorySaving = false;
       });
+  }
+
+  /**
+   * Backfill every organic sample ever taken, from the journals on disk.
+   *
+   * A sample is permanent; the bootstrap replay is one session deep. Standing
+   * on HIP 71120 2 e — four genera, Tussock Cultro logged there in August 2025
+   * — the app counted the 2025 receipt as missing and reported one more genus
+   * uncollected than was really down there. Runs once per watch start, in the
+   * background, and is silent: it only ever REMOVES phantom work, so there is
+   * nothing to announce.
+   */
+  private async sweepBioHistory(): Promise<void> {
+    if (!isTauri || this.bioSweepDone) return;
+    this.bioSweepDone = true;
+    try {
+      const lines = await journalOrganicHistory(this.settings.journal.directory);
+      let found = 0;
+      for (const line of lines) {
+        const ev = parseJournalLine(line);
+        if (!ev) continue;
+        this.bioTracker.apply(ev);
+        found++;
+      }
+      if (found && this.bioTracker.dirty) {
+        this.recomputeBio(false);
+        this.emit();
+      }
+    } catch {
+      /* no history or no shell — live samples still count */
+    }
   }
 
   // ------------------------------------------------------------ exobio leads
@@ -1448,20 +1890,16 @@ export class AppCore {
         break;
       }
       case 'DockingDenied': {
-        const reason = typeof ev.Reason === 'string' ? ev.Reason : '';
-        const human: Record<string, string> = {
-          NoSpace: 'no free pad',
-          TooLarge: 'your ship is too large for this pad class',
-          Hostile: 'you are hostile to this station',
-          Offences: 'you have outstanding offences here',
-          Distance: 'you are too far out — get closer and request again',
-          ActiveFighter: 'recall your fighter first',
-          NoReason: 'request denied',
-        };
-        const why = human[reason] ?? (reason ? reason : 'request denied');
+        // RestrictedAccess was missing from this table, so a locked carrier
+        // made the operator read the raw enum out loud — "Docking denied,
+        // RestrictedAccess" — which tells a commander nothing about whether to
+        // try again or fly somewhere else.
+        const why = explainDenial(typeof ev.Reason === 'string' ? ev.Reason : '');
+        const station = typeof ev.StationName === 'string' ? ev.StationName : '';
         const text = `Docking denied — ${why}.`;
-        this.pushFeed('system', `⛔ ${text}`);
+        this.pushFeed('system', `⛔ ${text}${station ? ` (${station})` : ''}`);
         this.speak(text);
+        this.copilotEvent(`EVENT: Docking denied at ${station || 'a station'} — ${why}.`);
         break;
       }
       case 'FSDTarget': {
@@ -1490,6 +1928,31 @@ export class AppCore {
         this.oreMilestonesDone.clear();
         this.copilotSeenBodies.clear();
         break;
+      case 'FSSBodySignals': {
+        // Tuned to the World of Death in the FSS with no fix yet: the one
+        // moment a commander is a single zoom away from calibrating the clock.
+        // Tuning alone writes THIS event but no Scan — coach the last step.
+        if (this.deathClock.state.epochMs != null || this.deathClockFssHinted) break;
+        const body = typeof ev.BodyName === 'string' ? ev.BodyName : '';
+        if (body.trim().toLowerCase() !== WOD_BODY.toLowerCase()) break;
+        this.deathClockFssHinted = true;
+        const text =
+          "That's the World of Death on your scanner — zoom in and complete the scan, and the death clock sets itself.";
+        this.pushFeed('nudge', `☠ ${text}`, { severity: 'info' });
+        this.speak(text);
+        break;
+      }
+      case 'FSDJump':
+      case 'Location': {
+        // The World of Death gets its clock the moment the commander arrives —
+        // the tab opens itself and the operator reads the window out loud.
+        const sys = typeof ev.StarSystem === 'string' ? ev.StarSystem : '';
+        const wod = sys.trim().toLowerCase() === WOD_SYSTEM.toLowerCase();
+        if (wod) this.view = 'deathclock';
+        else if (this.view === 'deathclock') this.view = 'missions';
+        this.maybeDeathClock();
+        break;
+      }
       case 'Scan': {
         // A notable WORLD found — the copilot pipes up for the ones that make
         // an explorer sit forward (not every auto-scanned rock), once each.
@@ -1878,6 +2341,7 @@ export class AppCore {
       try {
         const rec = parseMarketSnapshot(JSON.parse(text));
         if (rec && this.settings.trade.enabled) {
+          const known = this.marketMemory.byId(rec.marketId);
           this.marketMemory.record(rec);
           try {
             localStorage.setItem('edmo.markets.v1', JSON.stringify(this.marketMemory.toJSON()));
@@ -1885,6 +2349,9 @@ export class AppCore {
             /* memory still works in-session */
           }
           this.recomputeTrade();
+          // Every docking is a survey. In a system nobody has reported to EDDN
+          // this is the ONLY way the build ever learns what is on sale here.
+          this.noteMarketForBuild(rec, known?.at ?? null);
         }
       } catch {
         /* partial write — next snapshot wins */
@@ -1907,8 +2374,19 @@ export class AppCore {
       }
     } else if (name === 'Cargo.json') {
       try {
-        const c = JSON.parse(text) as { Count?: number };
+        const c = JSON.parse(text) as {
+          Count?: number;
+          Inventory?: Array<{ Name?: string; Name_Localised?: string; Count?: number }>;
+        };
         this.ship.setCargo(typeof c.Count === 'number' ? c.Count : undefined);
+        // The manifest, not just the tonnage: a construction site wants to know
+        // that the 16 t aboard is water it is asking for, not bromellite.
+        const manifest = new Map<string, number>();
+        for (const i of c.Inventory ?? []) {
+          const key = commodityKey(i.Name ?? i.Name_Localised ?? '');
+          if (key && typeof i.Count === 'number') manifest.set(key, (manifest.get(key) ?? 0) + i.Count);
+        }
+        this.cargoManifest = manifest;
       } catch {
         /* keep last-good cargo */
       }
@@ -2103,6 +2581,538 @@ export class AppCore {
       this.pushFeed('system', `Clipboard failed: ${String(e)}`);
     }
     this.emit();
+  }
+
+  // ==========================================================================
+  // The Plotter tab — Spansh for the ship (neutron highway) and the carrier.
+  //
+  // The carrier half is the reason this exists. The game will not plot a
+  // carrier route at all: every hop is a system name typed by hand into the
+  // carrier panel, and nothing in the game tells you whether the tritium
+  // aboard covers the trip. So the tab does the two things the game refuses
+  // to — the list, and the fuel — and puts the next system on the clipboard.
+  // ==========================================================================
+
+  /**
+   * Whose position a route's progress is measured by.
+   *
+   * A carrier route is the CARRIER's progress, not the commander's. They are
+   * frequently not aboard when it jumps — off mining the tritium for the next
+   * hop, usually — and tracking their ship would leave the list frozen at the
+   * departure system for the whole trip.
+   */
+  private plotReferenceSystem(route: PlottedRoute): string {
+    return route.kind === 'carrier'
+      ? (this.carrier.snapshot().system ?? this.sm.location.system)
+      : this.sm.location.system;
+  }
+
+  /**
+   * Where the commander is, for the persona and the setting primer.
+   *
+   * Recomputed rather than cached: it is three subtractions and a square root,
+   * and a cache would be one more thing to invalidate on every jump.
+   */
+  private currentPlace(): Place {
+    return placeOf(this.sm.location.system, this.sm.getState().system?.coords ?? null);
+  }
+
+  /**
+   * Swap the persona when the commander crosses into a different region.
+   *
+   * The system prompt is built ONCE when the conversation starts, so without
+   * this a run that began in Colonia would still be told it was in Colonia
+   * 20,000 ly later. Only a region change rebuilds it — doing it per jump would
+   * churn the prompt (and its cache) for no gain.
+   */
+  private refreshPlaceIfRegionChanged(): void {
+    const place = this.currentPlace();
+    if (!regionChanged(this.lastPlace, place)) return;
+    const was = this.lastPlace;
+    this.lastPlace = place;
+    if (!this.copilot) return;
+    this.copilot.setSystem(
+      buildCopilotSystem(this.sm.commanderName || undefined, {
+        epic: this.settings.chatter.epic,
+        place,
+      }),
+    );
+    // Worth a beat: crossing out of inhabited space (or back into it) is one of
+    // the few genuine changes of character a run has.
+    if (was && was.region !== 'unknown' && place.region !== 'unknown') {
+      this.copilotEvent(`EVENT: Chapter turn — crossed from ${was.regionName} into ${place.regionName}.`);
+    }
+  }
+
+  /** Where a plot starts from, and why it might not be able to. */
+  private plotOrigin(): { from: string | null; note: string | null } {
+    if (this.plotKind === 'carrier') {
+      if (!this.carrier.owned()) return { from: null, note: 'No fleet carrier in your journal yet.' };
+      const sys = this.carrier.snapshot().system;
+      return sys
+        ? { from: sys, note: null }
+        : { from: null, note: 'I have not seen where your carrier is parked — open the carrier panel once.' };
+    }
+    const here = this.sm.location.system;
+    return here && here !== 'unknown'
+      ? { from: here, note: null }
+      : { from: null, note: 'No position yet — the journal has not said where you are.' };
+  }
+
+  /**
+   * The destination to offer before they type one.
+   *
+   * The plotted nav route's endpoint first: if they have already told the game
+   * where they are going, asking again is a question with a known answer. A
+   * mission destination is the next best guess.
+   */
+  private plotSuggestion(): string | null {
+    if (this.navRouteDest) return this.navRouteDest;
+    // The board directly, NOT selectedMission(): that one reads the LAST
+    // snapshot, and this runs while the FIRST one is being built. Reaching
+    // through it here threw inside the constructor — so `core` was never
+    // created, React never mounted, and the HUD came up as a window that
+    // painted nothing and answered nothing.
+    const sel = this.sm.activeMissions().find((m) => m.id === this.selectedId);
+    const dest = sel?.destination?.system;
+    return dest && dest !== this.sm.location.system ? dest : null;
+  }
+
+  // ------------------------------------------------------- the system architect
+  /**
+   * The market at the station under the ship, when there is one.
+   *
+   * A construction site has a commodity market of its own, and so does the
+   * station the commander happens to be docked at while planning — "can I buy
+   * it without moving" is the first question the tree has to answer.
+   */
+  private localMarketRecord(): MarketRecord | null {
+    if (!this.statusTracker.current?.docked) return null;
+    const station = this.sm.location.station;
+    if (!station) return null;
+    return this.marketMemory.latest({ station, system: this.sm.location.system });
+  }
+
+  private architectView(): ArchitectView | null {
+    const depot = this.construction.depot;
+    if (!depot) return null;
+    const capacity = this.stats.cargoCapacity || this.ship.current?.cargoCapacity || null;
+    const groups = buildShoppingList(depot, {
+      cargo: this.cargoManifest,
+      localMarket: this.localMarketRecord(),
+      visited: this.marketMemory.all(),
+      sources: this.architectSources,
+      cargoCapacity: capacity,
+    });
+    return {
+      depot,
+      groups,
+      totalRequired: tonsRequired(depot),
+      totalRemaining: tonsRemaining(depot),
+      atSite: !!this.statusTracker.current?.docked && this.sm.location.station === depot.station,
+      online: this.settings.external.ardent,
+      scanning: this.architectScanning,
+      scannedAt: this.architectScannedAt,
+      scanError: this.architectScanError,
+      cargoCapacity: capacity,
+      holdUsed: this.ship.liveCargo ?? null,
+    };
+  }
+
+  /**
+   * A market just read — tell the commander if it covers the build.
+   *
+   * Ardent has never heard of a system colonised last week, so for the site's
+   * own system the commander's dockings ARE the market data. Announced only
+   * when the station is new to us or its stock has moved, so re-reading the
+   * same board on every undock/redock stays silent.
+   */
+  private noteMarketForBuild(rec: MarketRecord, knownAt: string | null): void {
+    const depot = this.construction.depot;
+    if (!depot || depot.complete) return;
+    const covers = coversFromMarket(depot, rec);
+    if (!covers.length) return;
+    const inSystem = rec.system.toLowerCase() === (depot.system ?? '').toLowerCase();
+    const fingerprint = `${rec.marketId}:${covers.map((c) => `${c.name}${c.stock}`).join(',')}`;
+    if (this.saidMarketCover === fingerprint) return;
+    this.saidMarketCover = fingerprint;
+    const line = describeCoverage(rec.station, covers, inSystem);
+    if (!line) return;
+    this.pushFeed('nudge', `🏗 ${line}`, { severity: 'info' });
+    // Worth interrupting for only when it is a genuinely new find in the
+    // build's own system — a re-read of a known board is a feed line, not a
+    // voice line.
+    if (inSystem && !knownAt) {
+      this.speak(line);
+      this.copilotEvent(`EVENT: ${line}`);
+    }
+    this.emit();
+  }
+
+  /**
+   * Say the list once, when it appears — and only when something changed.
+   *
+   * The depot event repeats on every contribution and every re-dock, so keying
+   * the callout on the numbers rather than the event is what keeps it from
+   * becoming the carrier-jump nag all over again.
+   */
+  private announceConstruction(): void {
+    const depot = this.construction.depot;
+    if (!depot) return;
+    const key = `${depot.marketId}:${tonsRemaining(depot)}`;
+    if (this.saidDepot === key) return;
+    const first = !this.saidDepot.startsWith(`${depot.marketId}:`);
+    this.saidDepot = key;
+    const groups = buildShoppingList(depot, {
+      cargo: this.cargoManifest,
+      localMarket: this.localMarketRecord(),
+      visited: this.marketMemory.all(),
+      sources: this.architectSources,
+    });
+    const line = describeDepot(depot, groups);
+    if (!line) return;
+    // Every contribution re-fires the depot event. The full brief is worth
+    // speaking when the site first opens; after that the panel carries it.
+    if (first) {
+      this.pushFeed('nudge', `🏗 ${line}`, { severity: 'info' });
+      this.speak(line);
+      this.copilotEvent(`EVENT: ${line}`);
+      void this.architectScan(false);
+    } else {
+      this.pushFeed('system', `🏗 ${line}`);
+    }
+    this.emit();
+  }
+
+  /**
+   * Find somewhere to buy what the site still wants.
+   *
+   * One Ardent lookup per outstanding commodity — seventeen of them for a
+   * first-day build — so they go three at a time rather than in one burst, and
+   * anything the commander can already buy where they are standing is skipped
+   * entirely. Re-scanning is cheap to ask for and expensive to do, so a scan
+   * from the same system inside ten minutes is reused.
+   */
+  async architectScan(force = true): Promise<void> {
+    const depot = this.construction.depot;
+    if (!depot || this.architectScanning) return;
+    if (!this.settings.external.ardent) {
+      this.architectScanError =
+        'Galaxy-wide lookups are off. Settings → Community data turns them on (it sends only a system name and a commodity).';
+      this.emit();
+      return;
+    }
+    const from = this.sm.location.system;
+    if (!from || from === 'unknown') {
+      this.architectScanError = 'Current system unknown — nothing to measure distances from yet.';
+      this.emit();
+      return;
+    }
+    const fresh =
+      this.architectScannedAt != null &&
+      Date.now() - this.architectScannedAt < 10 * 60_000 &&
+      this.architectScanFrom === from;
+    if (!force && fresh) return;
+    const local = this.localMarketRecord();
+    const soldHere = new Set(
+      (local?.items ?? []).filter((i) => i.buy > 0 && i.stock > 0).map((i) => commodityKey(i.name)),
+    );
+    const wanted = depot.resources.filter(
+      (r) => r.remaining > 0 && !soldHere.has(r.key) && (this.cargoManifest.get(r.key) ?? 0) < r.remaining,
+    );
+    if (!wanted.length) {
+      this.architectScannedAt = Date.now();
+      this.architectScanFrom = from;
+      this.emit();
+      return;
+    }
+    this.architectScanning = true;
+    this.architectScanError = null;
+    this.emit();
+    const found = new Map<string, ArdentMarketRow[]>();
+    let failed = 0;
+
+    // The build's OWN system first, in one request. The per-commodity lookup
+    // used below asks for "nearby" markets, which excludes the system it is
+    // given — so without this the panel could not see a crater outpost holding
+    // 371,309 t of steel two hundred thousand Ls from the site, and routed the
+    // commander 76 ly instead. One request covers every commodity here.
+    const home = depot.system;
+    if (home) {
+      try {
+        const rows = await ardentSystemCommodities(home);
+        for (const row of rows) {
+          const key = commodityKey(row.commodity);
+          if (!key) continue;
+          const at = found.get(key);
+          if (at) at.push(row);
+          else found.set(key, [row]);
+        }
+      } catch {
+        // Not fatal: the nearby sweep below still runs.
+        this.architectScanError = `Could not read the markets in ${home} — showing out-of-system sellers only.`;
+      }
+    }
+
+    // Anything the home system already covers needs no galaxy search.
+    const covered = new Set(
+      [...found.entries()].filter(([, rows]) => rows.some((r) => (r.stock ?? 0) > 0)).map(([k]) => k),
+    );
+    const queue = [...wanted.filter((r) => !covered.has(r.key))];
+    const searched = queue.length; // the workers drain the queue
+    const worker = async (): Promise<void> => {
+      for (let next = queue.shift(); next; next = queue.shift()) {
+        try {
+          // Ardent names commodities exactly the way commodityKey spells them:
+          // 'liquidoxygen', 'fruitandvegetables'. Verified against the live API.
+          found.set(next.key, await ardentMarket(from, next.key, 'buy'));
+        } catch {
+          failed++;
+        }
+      }
+    };
+    try {
+      await Promise.all([worker(), worker(), worker()]);
+      // Replace wholesale rather than merge: a rescan from a new system must
+      // not leave last system's distances sitting under the new ones.
+      this.architectSources = found;
+      this.architectScannedAt = Date.now();
+      this.architectScanFrom = from;
+      if (failed) {
+        this.architectScanError = `${failed} of ${searched} lookups failed — those rows are unsearched, not empty.`;
+      }
+    } finally {
+      this.architectScanning = false;
+      this.emit();
+    }
+  }
+
+  private plotterView(): PlotterView {
+    const origin = this.plotOrigin();
+    return {
+      kind: this.plotKind,
+      target: this.plotTarget,
+      suggestion: this.plotSuggestion(),
+      route: this.plot,
+      idx: this.plotIdx,
+      busy: this.plotBusy,
+      error: this.plotError,
+      efficiency: this.plotEfficiency,
+      inHold: this.plotHold,
+      online: this.settings.trade.online,
+      from: origin.from,
+      fromNote: origin.note,
+      shipRange: this.ship.current?.maxJumpRange ?? null,
+      shipCargo: this.stats.cargoCapacity || this.ship.current?.cargoCapacity || null,
+      carrier: this.carrier.owned() ? this.carrier.snapshot() : null,
+      jumpState: this.jumpClock.state,
+    };
+  }
+
+  setPlotKind(kind: PlotKind): void {
+    this.plotKind = kind;
+    this.plotError = null;
+    this.emit();
+  }
+
+  setPlotTarget(target: string): void {
+    this.plotTarget = target;
+    this.emit();
+  }
+
+  setPlotEfficiency(efficiency: number): void {
+    this.plotEfficiency = Math.min(100, Math.max(1, Math.round(efficiency)));
+    this.emit();
+  }
+
+  /** Tritium in the carrier's hold — re-prices the plotted route in place. */
+  setPlotHold(tons: number): void {
+    this.plotHold = Math.max(0, Math.round(tons));
+    // Re-run the arithmetic on the route already on screen: the answer to
+    // "am I short" changes the moment they tell us what is aboard, and making
+    // them re-plot (another minute of Spansh) to learn it would be absurd.
+    if (this.plot) this.plot = reprice(this.plot, this.carrierFuelInput());
+    this.persistPlot();
+    this.emit();
+  }
+
+  /** Flip the Spansh opt-in from the plotter, so nobody hunts for Settings. */
+  enableSpansh(): void {
+    this.updateSettings({ ...this.settings, trade: { ...this.settings.trade, online: true } });
+    this.pushFeed('system', 'Spansh route planning is on — it sends system names and nothing else.');
+    this.emit();
+  }
+
+  /** What the carrier knows about itself, for the tritium arithmetic. */
+  private carrierFuelInput() {
+    const c = this.carrier.snapshot();
+    return {
+      inTank: c.fuelLevel ?? 0,
+      inHold: this.plotHold,
+      shipCargo: this.stats.cargoCapacity || this.ship.current?.cargoCapacity || null,
+      freeSpace: c.freeSpace,
+    };
+  }
+
+  /** Ask Spansh for a route to the target system, for the ship or the carrier. */
+  async plotRoute(): Promise<void> {
+    if (!isTauri || this.plotBusy) return;
+    if (!this.settings.trade.online) {
+      this.plotError = 'Spansh route planning is off — turn it on above.';
+      this.emit();
+      return;
+    }
+    const origin = this.plotOrigin();
+    const to = (this.plotTarget || this.plotSuggestion() || '').trim();
+    if (!origin.from || !to) {
+      this.plotError = origin.note ?? 'Give me a destination system.';
+      this.emit();
+      return;
+    }
+    if (to.toLowerCase() === origin.from.toLowerCase()) {
+      this.plotError = `You are already in ${origin.from}, commander.`;
+      this.emit();
+      return;
+    }
+
+    const kind = this.plotKind;
+    this.plotBusy = true;
+    this.plotError = null;
+    this.pushFeed(
+      'system',
+      `🧭 Plotting a ${kind === 'carrier' ? 'carrier' : 'neutron'} route ${origin.from} → ${to}…`,
+    );
+    this.emit();
+    try {
+      let route: PlottedRoute | null = null;
+      if (kind === 'carrier') {
+        const c = this.carrier.snapshot();
+        const raw = await spanshCarrierRoute({
+          source: origin.from,
+          destinations: [to],
+          // Mass drives the burn. Unknown usage would understate the fuel, and
+          // an understated fuel figure is how a carrier ends up stranded — so
+          // fall back to a laden 15,000 t rather than an empty hull.
+          capacityUsed: c.usedCapacity ?? 15_000,
+          currentFuel: c.fuelLevel ?? 0,
+          tritiumAmount: this.plotHold,
+        });
+        route = parseCarrierPlot(raw, this.carrierFuelInput());
+      } else {
+        // The game reports the laden range in Loadout; without one, Spansh's
+        // own default of 50 ly is the honest guess and the card says so.
+        const raw = await spanshShipRoute({
+          from: origin.from,
+          to,
+          range: this.ship.current?.maxJumpRange ?? 50,
+          efficiency: this.plotEfficiency,
+        });
+        route = parseShipPlot(raw);
+      }
+      if (!route) {
+        this.plotError = `Spansh found no ${kind === 'carrier' ? 'carrier' : 'neutron'} route to ${to}. Check the spelling, or try the other mode.`;
+        this.plot = null;
+        this.pushFeed('system', `🧭 ${this.plotError}`);
+      } else {
+        this.plot = route;
+        this.plotIdx = plotProgress(route, this.plotReferenceSystem(route)) ?? 0;
+        this.view = 'plotter';
+        const text = plotSummary(route);
+        this.pushFeed('system', `🧭 ${text} (data: Spansh)`);
+        this.speak(text);
+        this.addSeed(
+          `Plotted a ${kind === 'carrier' ? 'carrier' : 'neutron'} route to ${route.destination} — ${route.totalJumps} jumps`,
+        );
+        // Straight onto the clipboard: the first thing they do next is paste it.
+        if (this.settings.trade.autoCopyRoute) void this.copyPlotWaypoint(this.plotIdx + 1);
+      }
+      this.persistPlot();
+    } catch (e) {
+      this.plotError = String(e);
+      this.pushFeed('system', `🧭 Route plot failed: ${String(e)}`);
+    } finally {
+      this.plotBusy = false;
+      this.emit();
+    }
+  }
+
+  /** Put one waypoint on the clipboard — galaxy map, or the carrier panel. */
+  async copyPlotWaypoint(idx: number, spoken = false): Promise<void> {
+    const w = this.plot?.waypoints[idx];
+    if (!w) return;
+    const where = this.plot?.kind === 'carrier' ? 'carrier panel' : 'galaxy map';
+    try {
+      await copyText(w.system);
+      this.pushFeed('system', `📋 Copied "${w.system}" — paste it into the ${where}.`);
+      if (spoken) this.speak(`Next waypoint is ${w.system}. It is on your clipboard.`);
+    } catch (e) {
+      this.pushFeed('system', `Clipboard failed: ${String(e)}`);
+    }
+    this.emit();
+  }
+
+  clearPlot(): void {
+    this.plot = null;
+    this.plotIdx = 0;
+    this.plotError = null;
+    this.persistPlot();
+    if (this.view === 'plotter') this.view = 'missions';
+    this.emit();
+  }
+
+  private persistPlot(): void {
+    try {
+      localStorage.setItem(
+        'edmo.plot.v1',
+        JSON.stringify({
+          route: this.plot,
+          idx: this.plotIdx,
+          kind: this.plotKind,
+          hold: this.plotHold,
+          efficiency: this.plotEfficiency,
+        }),
+      );
+    } catch {
+      /* storage full — the route still holds for this session */
+    }
+  }
+
+  /**
+   * Move the marker along the plotted route when the commander arrives.
+   *
+   * Only advances on a system it actually recognises: a ship route's waypoints
+   * are the supercharge stars, with ten ordinary jumps between them, so most
+   * arrivals are correctly "nowhere on the list" and must leave the marker
+   * where it is rather than resetting to the start.
+   */
+  private onArrivalForPlot(live: boolean): void {
+    if (!this.plot) return;
+    // A carrier route is the CARRIER's progress, not the commander's. They are
+    // frequently not aboard when it jumps — off mining the tritium for the next
+    // hop, usually — and tracking their ship would leave the list frozen at the
+    // departure system for the whole trip.
+    const at = plotProgress(this.plot, this.plotReferenceSystem(this.plot));
+    if (at === null || at === this.plotIdx) return;
+    const advanced = at > this.plotIdx;
+    this.plotIdx = at;
+    this.persistPlot();
+    if (!live || !advanced) return;
+    const next = nextWaypoint(this.plot, at);
+    if (next) {
+      const left = plotRemaining(this.plot, at);
+      const said =
+        `${this.plot.kind === 'carrier' ? 'Carrier waypoint' : 'Waypoint'} reached. Next: ${next.system}` +
+        `${next.neutron ? ', a neutron — supercharge there' : ''}. ` +
+        `${left.jumps} jump${left.jumps === 1 ? '' : 's'} and ${fmtLy(left.ly)} to ${this.plot.destination}.`;
+      this.pushFeed('system', `🧭 ${said}`);
+      this.speak(said);
+      if (this.settings.trade.autoCopyRoute) void this.copyPlotWaypoint(at + 1);
+    } else {
+      const done = `${this.plot.destination} — that's the end of the plot, commander.`;
+      this.pushFeed('system', `🧭 ${done}`);
+      this.speak(done);
+      this.addSeed(`Reached ${this.plot.destination} at the end of a plotted route`);
+    }
   }
 
   /**
@@ -2326,6 +3336,8 @@ export class AppCore {
 
   private heartbeatTick(): void {
     this.heartbeatNudges();
+    this.maybeDeathClock();
+    this.maybeCarrierJump();
     this.maybeChatter();
     this.maybeReflect();
     this.maybeGlance();
@@ -2543,8 +3555,10 @@ export class AppCore {
   /** Lazily create the session conversation with the current commander's name. */
   private ensureCopilot(): void {
     if (this.copilot) return;
+    this.lastPlace = this.currentPlace();
     const system = buildCopilotSystem(this.sm.commanderName || undefined, {
       epic: this.settings.chatter.epic,
+      place: this.lastPlace,
     });
     // Bound the transcript against the window the engine is ACTUALLY running,
     // not a fixed turn count. The system prompt is ~2,900 tokens and an 8 GB
@@ -2731,6 +3745,14 @@ export class AppCore {
     // almost only on beats that had nothing real to say about a place.
     const lore = loreForSystem(this.sm.location.system);
     if (lore && !available.includes('place')) available.push('place');
+    // Real geography — region, distance from Sol, how far out they are. This is
+    // the material that stops the model reaching for the operator's own office
+    // every time it wants something concrete to say.
+    const where = placeFacts(this.currentPlace());
+    if (where) {
+      facts.push(where);
+      if (!available.includes('place')) available.push('place');
+    }
 
     if (this.copilot?.hasHistory()) {
       available.push('callback');
@@ -2807,7 +3829,7 @@ export class AppCore {
             : ''),
       );
     }
-    return [...facts, beatAngleHint(angle)].filter(Boolean).join('\n');
+    return [...facts, beatAngleHint(angle, this.currentPlace())].filter(Boolean).join('\n');
   }
 
   /** A compact STATE line so the same event reads differently under different
@@ -2882,6 +3904,10 @@ export class AppCore {
       add(m.destination?.station);
     }
     for (const sig of this.sm.getState().system?.signals ?? []) if (sig.isStation) add(sig.name);
+    // Landmarks the persona itself names (Jaques Station, when posted there).
+    // Without this the operator mentioning its OWN office reads as a fabricated
+    // place and the beat gets dropped.
+    for (const p of postPlaces(this.currentPlace())) add(p);
     if (this.copilot)
       for (const turn of this.copilot.transcript())
         if (turn.role === 'user') for (const p of extractPlaces(turn.content)) s.add(p);
@@ -3247,13 +4273,26 @@ export class AppCore {
       this.glanceActivityAt = Date.now();
     }
     if (manual) {
-      // The commander asked — always answer, notable or not.
-      const line = remark || `All quiet — looks like you're ${reply.activity || 'busy'}.`;
-      this.pushFeed('vision', `👁 I see: ${reply.activity || 'the screen'}. ${remark}`.trim());
+      // The commander asked — always answer, notable or not. A remark that
+      // trips a voice fence is dropped rather than spoken, but the answer still
+      // lands: staying silent is not an option when someone asked directly.
+      const clean = findVoiceViolation(remark) ? '' : remark;
+      const line = clean || `All quiet — looks like you're ${reply.activity || 'busy'}.`;
+      this.pushFeed('vision', `👁 I see: ${reply.activity || 'the screen'}. ${clean}`.trim());
       this.speak(line);
       return;
     }
     if (!notable) return;
+    // The voice fences. This path used to skip them entirely and speak straight
+    // to the feed, which is how "We're running on fumes" reached a live session
+    // — the collective-pronoun rule catches that line, it was simply never
+    // asked. There is no resample here (the glance prompt is one-shot against a
+    // screenshot), so a violation just means staying quiet.
+    const violation = findVoiceViolation(remark);
+    if (violation) {
+      this.noteGlance(`dropped a glance remark — ${violation.fence} "${violation.detail}"`);
+      return;
+    }
     const now = Date.now();
     if (now - this.lastGlanceRemarkAt < 10 * 60_000) return;
     if (remark === this.lastGlanceRemark) return;
@@ -3325,9 +4364,28 @@ export class AppCore {
     }
     const risk = this.stats.riskNote();
     if (risk) out.push(risk);
+    // The build the commander is hauling for. Without the ranked plan in front
+    // of it the model can only repeat the seventeen-line requirement back.
+    const depot = this.construction.depot;
+    if (depot && !depot.complete) {
+      const facts = architectFacts(
+        depot,
+        buildShoppingList(depot, {
+          cargo: this.cargoManifest,
+          localMarket: this.localMarketRecord(),
+          sources: this.architectSources,
+          cargoCapacity: this.stats.cargoCapacity || this.ship.current?.cargoCapacity || null,
+        }),
+      );
+      if (facts) out.push(facts);
+    }
     // Carrier ownership changes what a hold full of tritium MEANS.
     const carrier = this.carrier.contextLine();
     if (carrier) out.push(carrier);
+    // Doors already tried and shut — market data cannot see access, so this is
+    // the only record that a "best price" is one the commander cannot reach.
+    const shut = this.denials.contextLine();
+    if (shut) out.push(shut);
     // Live ship telemetry (Status.json): fuel, legal state, current mode.
     const stLine = this.liveStatusLine();
     if (stLine) out.push(stLine);
@@ -3359,6 +4417,9 @@ export class AppCore {
       );
     }
     if (this.route) out.push(`Community route data (Spansh): ${routeSummary(this.route)}`);
+    // The plotted trip, so the operator follows the same route the commander
+    // is flying — and knows about a tritium shortfall before advising on it.
+    if (this.plot) out.push(plotContextLine(this.plot, this.plotIdx));
     // The live market in front of the commander — grounds "what should I buy
     // here?" so the operator never invents commodities. Also flags when a
     // remembered Spansh route points at something no longer stocked here.
@@ -3633,6 +4694,18 @@ export class AppCore {
       materialsLine: this.materials.contextLine(),
       exploreLine: this.explore.contextLine(),
       systemIntelLine: describeSystemIntel(state),
+      // "Where is tritium cheapest" is really "where do I buy the 4,865 t my
+      // plotted carrier route needs" — so the market tool gets to see the
+      // shortfall and can rule out sellers who cannot fill it.
+      // Carriers honked in this system, so a callsign from market data can be
+      // reported as the name the nav panel actually shows.
+      systemSignals: state.system?.signals ?? [],
+      dockingDenied: (station, system) => this.denials.note(station, system),
+      commodityNeed: (commodity) => {
+        const t = this.plot?.tritium;
+        if (!t || t.shortfall <= 0) return null;
+        return /tritium/i.test(commodity) ? t.shortfall : null;
+      },
       planRoute: async ({ maxHops, requiresLargePad }) => {
         const raw = await spanshTradeRoute({
           system: this.sm.location.system,
@@ -3754,7 +4827,11 @@ export class AppCore {
   }
 
   selectedMission(): Mission | null {
-    return this.snap.missions.find((m) => m.id === this.selectedId) ?? null;
+    // Optional chain on purpose: this reads the last published snapshot, so
+    // anything called from INSIDE buildSnapshot() sees it undefined on the very
+    // first build. The cost of being wrong here is one null; the cost of
+    // throwing is the whole HUD failing to mount.
+    return this.snap?.missions.find((m) => m.id === this.selectedId) ?? null;
   }
 
   ask(question: string, via: 'text' | 'voice' = 'text'): void {
@@ -3812,6 +4889,7 @@ ${missionContext(mission, state)}`);
     if (this.navRouteJumps > 0 && this.navRouteDest) {
       knowledge.push(`Plotted route: ${this.navRouteJumps} jump(s) to ${this.navRouteDest}.`);
     }
+    if (this.plot) knowledge.push(plotContextLine(this.plot, this.plotIdx));
     knowledge.push(...this.contextExtras());
 
     // The SAME operator that has been talking all session, in answering mode —
@@ -3825,6 +4903,7 @@ ${missionContext(mission, state)}`);
     const persona =
       buildCopilotSystem(this.sm.commanderName || undefined, {
         epic: this.settings.chatter.epic,
+        place: this.currentPlace(),
         mode: 'answer',
       }) + (mission ? ` ${categoryGuidance(mission.category)}` : '');
     const system =
@@ -4410,29 +5489,25 @@ ${missionContext(mission, state)}`);
           dropBeat('dropped a beat — too close to one just spoken');
           return;
         }
-        // Parrot fence: a phrase copied out of its own instructions is not an
-        // observation, and lands wrong as often as not.
-        const lifted = findLiftedExample(groundedText);
-        if (lifted) {
-          if (resample(`resampling — parroted the example "${lifted}"`)) return;
-          dropBeat(`dropped a beat — parroted "${lifted}"`);
-          return;
-        }
-        // Voice fence: "we/us/our" is the model slipping out of its own skin
-        // and into play-by-play.
-        const collective = findCollectivePronoun(groundedText);
-        if (collective) {
-          if (resample(`resampling — said "${collective}" instead of speaking for itself`)) return;
-          dropBeat(`dropped a beat — collective "${collective}"`);
-          return;
-        }
-        // Atmosphere fence: "Jaques Station always smells like recycled air" —
-        // a habitual claim it cannot know. Measured to fire almost only on
-        // beats with nothing real to say, so this really detects empty beats.
-        const habitual = findHabitualGenerality(groundedText);
-        if (habitual) {
-          if (resample(`resampling — invented an atmosphere: "${habitual}"`)) return;
-          dropBeat(`dropped a beat — nothing to say but "${habitual}"`);
+        // The voice fences, in one decision shared with the glance path:
+        //   lifted     — a phrase copied out of its own instructions is not an
+        //                observation, and lands wrong as often as not.
+        //   collective — "we/us/our" is the model slipping out of its own skin
+        //                and into play-by-play.
+        //   habitual   — "Jaques Station always smells like recycled air", a
+        //                claim it cannot know. Measured to fire almost only on
+        //                beats with nothing real to say, so catching it really
+        //                catches an empty beat.
+        const violation = findVoiceViolation(groundedText);
+        if (violation) {
+          const { fence, detail } = violation;
+          const [retry, drop] = {
+            lifted: [`parroted the example "${detail}"`, `parroted "${detail}"`],
+            collective: [`said "${detail}" instead of speaking for itself`, `collective "${detail}"`],
+            habitual: [`invented an atmosphere: "${detail}"`, `nothing to say but "${detail}"`],
+          }[fence];
+          if (resample(`resampling — ${retry}`)) return;
+          dropBeat(`dropped a beat — ${drop}`);
           return;
         }
         // Fact fence — conversation beats only: copilotAllowedPlaces is built
@@ -4654,6 +5729,7 @@ ${missionContext(mission, state)}`);
 
   select(id: number): void {
     this.selectedId = id;
+    this.view = 'missions';
     this.emit();
   }
 
@@ -4663,6 +5739,28 @@ ${missionContext(mission, state)}`);
     const idx = Math.max(0, missions.findIndex((m) => m.id === this.selectedId));
     const next = missions[(idx + delta + missions.length) % missions.length];
     this.selectedId = next.id;
+    this.view = 'missions';
+    this.emit();
+  }
+
+  setView(v: 'missions' | 'deathclock' | 'plotter' | 'architect'): void {
+    this.view = v;
+    // Opening the list is the moment the commander wants to know where to buy
+    // — but only ask the network if nothing usable was fetched recently.
+    if (v === 'architect') void this.architectScan(false);
+    this.emit();
+  }
+
+  /** Manual death-clock calibration from the tab ("this is happening now"). */
+  deathClockMark(kind: DeathClockMarkKind): void {
+    this.deathClock.mark(kind, Date.now());
+    this.persistDeathClock();
+    if (kind === 'clear') {
+      this.pushFeed('system', '☠ Death clock cleared.');
+    } else {
+      const now = this.deathClockNow();
+      if (now) this.pushFeed('system', `☠ Death clock set — ${now}.`);
+    }
     this.emit();
   }
 
@@ -4727,6 +5825,7 @@ ${missionContext(mission, state)}`);
       this.copilot?.setSystem(
         buildCopilotSystem(this.sm.commanderName || undefined, {
           epic: next.chatter.epic,
+          place: this.currentPlace(),
         }),
       );
     }
@@ -4751,6 +5850,7 @@ ${missionContext(mission, state)}`);
     for (const ev of evs) {
       if (ev.event === 'Missions') this.sm.reconcile(ev);
       else this.sm.apply(ev);
+      if (this.deathClock.apply(ev)) this.persistDeathClock();
     }
     const n = this.sm.activeMissions().length;
     this.pushFeed('system', `Imported ${evs.length} event(s) — ${n} active mission(s).`);

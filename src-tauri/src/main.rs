@@ -352,6 +352,68 @@ fn start_watch(
     Ok(())
 }
 
+/// Search the WHOLE journal history (newest file first) for `Scan` events of
+/// one body and return up to `limit` matching raw lines. The death clock uses
+/// this: an orbit is periodic, so a scan from months ago is still a valid
+/// calibration — but the session bootstrap only replays recent journals and
+/// would never see it. Substring probes keep the sweep cheap; the TS side
+/// re-parses and validates the JSON before trusting a line.
+#[tauri::command]
+fn journal_scan_history(dir: Option<String>, body: String, limit: Option<usize>) -> Vec<String> {
+    let dir = match dir.as_deref() {
+        Some(d) if !d.trim().is_empty() => expand_dir(d),
+        _ => default_dir(),
+    };
+    let cap = limit.unwrap_or(3).clamp(1, 20);
+    let needle = format!("\"BodyName\":\"{body}\"");
+    let mut out = Vec::new();
+    for f in list_journals(&dir).iter().rev() {
+        let Ok(text) = fs::read_to_string(f) else { continue };
+        for line in text.lines().rev() {
+            if line.contains("\"event\":\"Scan\"") && line.contains(&needle) {
+                out.push(line.to_string());
+                if out.len() >= cap {
+                    return out;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Every completed organic sample in the WHOLE journal history on disk.
+///
+/// A sample is permanent — the commander logged those three specimens once and
+/// the galaxy remembers — but the session bootstrap replays only the last
+/// session or two. Standing on HIP 71120 2 e, the app was reporting all four
+/// genera still uncollected because the Tussock receipt was from August 2025.
+///
+/// Cheap despite the size: 194 MB of journals across 502 files held just 118
+/// Analyse lines, so the payload is tiny and the cost is one background read.
+#[tauri::command]
+fn journal_organic_history(dir: Option<String>, limit: Option<usize>) -> Vec<String> {
+    let dir = match dir.as_deref() {
+        Some(d) if !d.trim().is_empty() => expand_dir(d),
+        _ => default_dir(),
+    };
+    let cap = limit.unwrap_or(4000).clamp(1, 40_000);
+    let mut out = Vec::new();
+    // Oldest first, so a later re-scan of the same body wins on replay order.
+    for f in list_journals(&dir) {
+        let Ok(text) = fs::read_to_string(&f) else { continue };
+        for line in text.lines() {
+            if line.contains("\"event\":\"ScanOrganic\"") && line.contains("\"ScanType\":\"Analyse\"")
+            {
+                out.push(line.to_string());
+                if out.len() >= cap {
+                    return out;
+                }
+            }
+        }
+    }
+    out
+}
+
 // -------------------------------------------------------------------- Piper TTS
 
 /// Per-platform TTS resource dir: the Windows bundle carries `resources/tts`
@@ -1768,6 +1830,71 @@ fn urlencoding_light(s: &str) -> String {
         .collect()
 }
 
+/// Every commodity on sale at every station in ONE system (opt-in).
+///
+/// The `nearby` endpoint that `ardent_market` uses deliberately excludes the
+/// system it is asked about, so a commander hauling for a colonisation build in
+/// their own system was being routed 76 ly for steel while a crater outpost two
+/// hundred thousand Ls away held 371,309 t of it. This is the endpoint that
+/// sees home — and one request covers the whole system, rather than one per
+/// commodity. Sends only the system name.
+#[tauri::command]
+async fn ardent_system_commodities(system: String) -> Result<String, String> {
+    let enc = |s: &str| {
+        s.trim()
+            .replace(' ', "%20")
+            .replace('/', "%2F")
+            .replace('?', "")
+            .replace('#', "")
+    };
+    let url = format!(
+        "https://api.ardent-insight.com/v2/system/name/{}/commodities",
+        enc(&system)
+    );
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(8))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let body: serde_json::Value = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Ardent unreachable: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("Ardent error: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("Ardent returned unusable data: {e}"))?;
+
+    // A busy system answers with thousands of rows covering every commodity in
+    // both directions; only things actually ON SALE can be bought for a build.
+    let out: Vec<serde_json::Value> = body
+        .as_array()
+        .map(|a| a.to_vec())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|r| r["stock"].as_i64().unwrap_or(0) > 0 && !r["commodityName"].is_null())
+        .map(|r| {
+            json!({
+                "commodity": r["commodityName"],
+                "station": r["stationName"],
+                "system": r["systemName"],
+                // Same system: there is no jump to make, whatever the Ls.
+                "distanceLy": 0,
+                "price": r["buyPrice"],
+                "stock": r["stock"],
+                "demand": r["demand"],
+                "pad": r["maxLandingPadSize"],
+                "distanceLs": r["distanceToArrival"],
+                "carrier": r["stationType"].as_str().map(|t| t.eq_ignore_ascii_case("FleetCarrier")).unwrap_or(false),
+                "updatedAt": r["updatedAt"],
+            })
+        })
+        .collect();
+    serde_json::to_string(&out).map_err(|e| e.to_string())
+}
+
 /// Ardent Insight — galaxy-wide commodity markets built from crowdsourced EDDN
 /// data (AGPL, anonymous). OPT-IN ONLY — sends the system name and commodity
 /// being asked about, nothing else. `side`: "sell" finds importers paying the
@@ -1822,9 +1949,24 @@ async fn ardent_market(system: String, commodity: String, side: String) -> Resul
         })
         .collect();
     let key = if want == "exports" { "buyPrice" } else { "sellPrice" };
-    rows.sort_by_key(|r| {
-        let p = r[key].as_i64().unwrap_or(0);
-        if want == "exports" { p } else { -p } // cheapest to buy / dearest to sell
+    let qty_key = if want == "exports" { "stock" } else { "demand" };
+    // Price, THEN distance, THEN quantity — and the tie-breaks are what
+    // actually rank this. Sorting on price alone left eight carriers all at
+    // 2,565 cr in arbitrary order, so the truncation below could drop the
+    // nearest seller and the only ones holding enough to fill the order. The
+    // same ordering is applied again (and tested) in engine/tools.ts.
+    rows.sort_by(|a, b| {
+        let (pa, pb) = (a[key].as_i64().unwrap_or(0), b[key].as_i64().unwrap_or(0));
+        let price = if want == "exports" { pa.cmp(&pb) } else { pb.cmp(&pa) };
+        price
+            .then_with(|| {
+                let da = a["distance"].as_f64().unwrap_or(f64::MAX);
+                let db = b["distance"].as_f64().unwrap_or(f64::MAX);
+                da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| {
+                b[qty_key].as_i64().unwrap_or(0).cmp(&a[qty_key].as_i64().unwrap_or(0))
+            })
     });
     let out: Vec<serde_json::Value> = rows
         .into_iter()
@@ -2198,7 +2340,46 @@ async fn spansh_trade_route(
         .ok_or_else(|| format!("Spansh rejected the query: {submit}"))?
         .to_string();
 
-    // Poll for up to ~3 minutes.
+    spansh_await(&client, &job).await
+}
+
+/// A Spansh client with the timeouts and user agent every plotter call wants.
+fn spansh_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .user_agent("ED-Mission-Operator/0.1 (companion HUD)")
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+/// Submit a form to a Spansh planner and return its job id.
+async fn spansh_submit(
+    client: &reqwest::Client,
+    url: &str,
+    form: &[(&str, String)],
+) -> Result<String, String> {
+    let submit: serde_json::Value = client
+        .post(url)
+        .form(form)
+        .send()
+        .await
+        .map_err(|e| format!("Spansh unreachable: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("Spansh reply unreadable: {e}"))?;
+    submit["job"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| format!("Spansh rejected the query: {submit}"))
+}
+
+/// Poll a queued Spansh job to completion (~3 minutes), returning the raw body.
+///
+/// Every planner queues server-side and answers on the same /api/results
+/// endpoint, so this is shared. The body is handed back untouched — the parsing
+/// (and the decision about what counts as a usable route) lives in TypeScript.
+async fn spansh_await(client: &reqwest::Client, job: &str) -> Result<String, String> {
     for _ in 0..60 {
         tokio::time::sleep(Duration::from_secs(3)).await;
         let body = client
@@ -2216,6 +2397,66 @@ async fn spansh_trade_route(
         }
     }
     Err("Spansh is busy — route search timed out".into())
+}
+
+/// Neutron-highway route for the SHIP. OPT-IN — sends two system names and the
+/// ship's jump range, nothing about the commander.
+///
+/// `efficiency` is Spansh's own detour dial: 100 takes only jumps directly on
+/// the line, lower numbers accept longer detours for better supercharges. 60 is
+/// their default and the one the community quotes.
+#[tauri::command]
+async fn spansh_ship_route(
+    from: String,
+    to: String,
+    range: f64,
+    efficiency: u32,
+) -> Result<String, String> {
+    let client = spansh_client()?;
+    let form: Vec<(&str, String)> = vec![
+        ("from", from),
+        ("to", to),
+        ("range", format!("{:.2}", range.clamp(5.0, 200.0))),
+        ("efficiency", efficiency.clamp(1, 100).to_string()),
+    ];
+    let job = spansh_submit(&client, "https://spansh.co.uk/api/route", &form).await?;
+    spansh_await(&client, &job).await
+}
+
+/// Fleet-carrier route. OPT-IN — sends the two system names plus the carrier's
+/// own tonnage figures, which is what makes the tritium estimate real.
+///
+/// `destinations` is a repeatable field (Spansh supports a multi-stop tour);
+/// one entry is the ordinary case. `capacity_used` drives the mass, and so the
+/// fuel: an empty carrier and a full one burn very different amounts over the
+/// same distance.
+#[tauri::command]
+async fn spansh_carrier_route(
+    source: String,
+    destinations: Vec<String>,
+    capacity_used: u32,
+    current_fuel: u32,
+    tritium_amount: u32,
+) -> Result<String, String> {
+    let client = spansh_client()?;
+    let mut form: Vec<(&str, String)> = vec![
+        ("source", source),
+        ("capacity_used", capacity_used.min(25_000).to_string()),
+        ("current_fuel", current_fuel.min(1_000).to_string()),
+        ("tritium_amount", tritium_amount.min(25_000).to_string()),
+        // Ask for the departure load rather than assuming a full tank: with
+        // this off the planner quietly answers "you started with exactly
+        // enough", which is the one thing a commander cannot check.
+        ("calculate_starting_fuel", "1".into()),
+    ];
+    for d in destinations.into_iter().filter(|d| !d.trim().is_empty()) {
+        form.push(("destinations", d));
+    }
+    if form.iter().all(|(k, _)| *k != "destinations") {
+        return Err("No destination given".into());
+    }
+    let job = spansh_submit(&client, "https://spansh.co.uk/api/fleetcarrier/route", &form).await?;
+    spansh_await(&client, &job).await
 }
 
 // ------------------------------------------------------------------ window bits
@@ -2340,6 +2581,8 @@ fn main() {
             default_journal_dir,
             system_specs,
             start_watch,
+            journal_scan_history,
+            journal_organic_history,
             piper_available,
             piper_voices,
             piper_download_voice,
@@ -2356,8 +2599,11 @@ fn main() {
             stt_stop,
             stt_cancel,
             spansh_trade_route,
+            spansh_ship_route,
+            spansh_carrier_route,
             galnet_headlines,
             ardent_market,
+            ardent_system_commodities,
             ardent_trade_candidates,
             ardent_station_pads,
             ardent_trade_to,
