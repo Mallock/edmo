@@ -1055,19 +1055,26 @@ async fn llm_quick(
     max_tokens: Option<u32>,
     no_thinking: Option<bool>,
     api_key: Option<String>,
+    temperature: Option<f64>,
+    timeout_secs: Option<u64>,
 ) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(3))
-        // Short on purpose: a gate that has not answered in a few seconds has
-        // already cost more than the beat it was meant to save.
-        .timeout(Duration::from_secs(15))
+        // Short by default on purpose: a gate that has not answered in a few
+        // seconds has already cost more than the beat it was meant to save.
+        // Callers asking for PROSE must raise it — 750 tokens takes ~4 s on an
+        // idle card and considerably longer with the game holding the GPU.
+        .timeout(Duration::from_secs(timeout_secs.unwrap_or(15)))
         .build()
         .map_err(|e| e.to_string())?;
     let url = format!("{}/v1/chat/completions", endpoint.trim_end_matches('/'));
     let mut body = json!({
         "model": model,
         "messages": messages,
-        "temperature": 0,
+        // Zero for the gate, which wants the same verdict every time. Anything
+        // that writes for a reader wants variety: a news wire on temperature 0
+        // prints the same edition from the same brief for ever.
+        "temperature": temperature.unwrap_or(0.0),
         "max_tokens": max_tokens.unwrap_or(8),
         "stream": false,
     });

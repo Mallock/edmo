@@ -19,8 +19,22 @@ export function listSystemVoices(localOnly: boolean): SpeechSynthesisVoice[] {
   return localOnly ? all.filter((v) => v.localService) : all;
 }
 
+/**
+ * One queued utterance.
+ *
+ * The voice rides with the TEXT rather than being read off settings at speak
+ * time, because a bulletin and the operator's own line can be in the queue
+ * together — and the newsreader must not borrow the operator's voice just
+ * because the queue drained in a different order than it filled.
+ */
+interface Utterance {
+  text: string;
+  /** Piper voice id, or null/undefined for the operator's own voice. */
+  voice?: string | null;
+}
+
 export class Speaker {
-  private queue: string[] = [];
+  private queue: Utterance[] = [];
   private pumping = false;
   private recent = new Map<string, number>();
   private currentAudio: HTMLAudioElement | null = null;
@@ -36,8 +50,13 @@ export class Speaker {
     this.getSettings = getSettings;
   }
 
-  /** Queue text for speech (no-op when voice is disabled or text repeats). */
-  speak(text: string): void {
+  /**
+   * Queue text for speech (no-op when voice is disabled or text repeats).
+   *
+   * `voice` overrides the operator's own for this utterance only — how the
+   * news wire is read by somebody else.
+   */
+  speak(text: string, voice?: string | null): void {
     const s = this.getSettings();
     if (!s.voice.enabled) return;
     const clean = text.replace(/\s+/g, ' ').trim();
@@ -51,13 +70,17 @@ export class Speaker {
         if (now - t > DEDUPE_WINDOW_MS) this.recent.delete(k);
       }
     }
-    this.queue.push(clean);
+    this.queue.push({ text: clean, voice });
     void this.pump();
   }
 
-  /** Speak regardless of de-dupe (settings "test voice" button). */
-  test(): void {
-    this.queue.push('Voice check. Mission Operator online and tracking.');
+  /** Speak regardless of de-dupe (settings "test voice" buttons). */
+  test(voice?: string | null): void {
+    this.queue.push(
+      voice
+        ? { text: 'This is the local wire, reading the system bulletin.', voice }
+        : { text: 'Voice check. Mission Operator online and tracking.' },
+    );
     void this.pump();
   }
 
@@ -75,21 +98,21 @@ export class Speaker {
     this.pumping = true;
     try {
       while (this.queue.length) {
-        const text = this.queue.shift()!;
+        const { text, voice } = this.queue.shift()!;
         const s = this.getSettings();
         if (!s.voice.enabled) continue;
         try {
           if (s.voice.engine === 'piper' && isTauri && this.piperOk) {
-            await this.speakPiper(text, s);
+            await this.speakPiper(text, s, voice);
           } else {
-            await this.speakSystem(text, s);
+            await this.speakSystem(text, s, voice);
           }
         } catch {
           // If piper failed, degrade to system voices for this session.
           if (s.voice.engine === 'piper') {
             this.piperOk = false;
             try {
-              await this.speakSystem(text, s);
+              await this.speakSystem(text, s, voice);
             } catch {
               /* no speech available at all — stay silent */
             }
@@ -101,10 +124,10 @@ export class Speaker {
     }
   }
 
-  private async speakPiper(text: string, s: AppSettings): Promise<void> {
+  private async speakPiper(text: string, s: AppSettings, voice?: string | null): Promise<void> {
     // Piper speed: length_scale is inverse of rate (2.0 = twice as slow).
     const lengthScale = 1 / Math.min(2, Math.max(0.5, s.voice.rate));
-    const wav = await piperSpeak(text, lengthScale, s.voice.piperVoice);
+    const wav = await piperSpeak(text, lengthScale, voice ?? s.voice.piperVoice);
     const blob = new Blob([wav], { type: 'audio/wav' });
     const url = URL.createObjectURL(blob);
     try {
@@ -122,7 +145,7 @@ export class Speaker {
     }
   }
 
-  private speakSystem(text: string, s: AppSettings): Promise<void> {
+  private speakSystem(text: string, s: AppSettings, voice?: string | null): Promise<void> {
     return new Promise((resolve, reject) => {
       if (typeof speechSynthesis === 'undefined') {
         reject(new Error('speechSynthesis unavailable'));
@@ -130,8 +153,14 @@ export class Speaker {
       }
       const u = new SpeechSynthesisUtterance(text);
       const voices = listSystemVoices(s.voice.localVoicesOnly);
-      const wanted = s.voice.systemVoice
-        ? voices.find((v) => v.name === s.voice.systemVoice)
+      // A per-utterance override names a SYSTEM voice here, not a piper one;
+      // when it does not match anything installed we fall back rather than
+      // going silent, because a bulletin in the wrong voice still beats none.
+      const pick = voice ?? s.voice.systemVoice;
+      const wanted = pick
+        ? voices.find((v) => v.name === pick) ??
+          voices.find((v) => v.lang.startsWith('en')) ??
+          voices[0]
         : voices.find((v) => v.lang.startsWith('en')) ?? voices[0];
       if (wanted) u.voice = wanted;
       else if (s.voice.localVoicesOnly && voices.length === 0) {

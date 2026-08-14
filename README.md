@@ -1,12 +1,30 @@
 # Elite Dangerous — Mission Operator
 
+**Home page & downloads: [edmo.blinkki.com](https://edmo.blinkki.com)**
+
 An **always-on-top HUD** companion for Elite Dangerous. It reads your **active missions** live from
 the Player Journal, shows them as cards with synthesized objective checklists and countdown timers,
 gives **AI operator guidance** via a local LLM (its own bundled llama.cpp engine, or LM Studio if you
 prefer), speaks with a **bundled local neural
 voice** (Piper), and runs a **proactive heartbeat** that nudges you when you stall.
 
+Alongside the mission cards there are four tabs for the panels the game keeps somewhere you cannot
+read while flying: a **route plotter** (neutron highway for the ship, the whole carrier trip jump by
+jump, tritium counted), the **World of Death** landing-window clock, a **system architect** shopping
+list for colonisation builds, and a **local wire** that writes fictional news about the system you
+are actually in.
+
 Everything runs on your machine. No cloud, no telemetry, no account.
+
+<p align="center">
+  <img src="site/img/hud-missions.png" width="300" alt="The HUD showing four active missions restored from the journal, with an assassination card, its synthesized objectives and a live countdown">
+  &nbsp;
+  <img src="site/img/hud-architect.png" width="282" alt="The system architect tab: 6,703 tons wanted across seventeen commodities, grouped under 'In HIP 71120 — no jump', with a line expanded to show five sellers, their prices and how old each report is">
+</p>
+<p align="center">
+  <sub><b>Mission cards</b> — objectives the game never shows &nbsp;·&nbsp;
+  <b>System architect</b> — 6,703 t of build, sorted into a shopping run</sub>
+</p>
 
 ```
 ┌────────────────────────────────────┐
@@ -32,8 +50,8 @@ Everything runs on your machine. No cloud, no telemetry, no account.
 
 ## Install & run (one click)
 
-Grab **`ED Mission Operator_0.1.0_x64-setup.exe`** (built via `npm run tauri build`, output in
-`src-tauri/target/release/bundle/nsis/`), double-click it, done. It installs per-user (no admin),
+Download it from **[edmo.blinkki.com](https://edmo.blinkki.com)** — or build it yourself with
+`npm run tauri build` (output in `src-tauri/target/release/bundle/nsis/`). Double-click, done. It installs per-user (no admin),
 including the offline voice, and starts the HUD. Optional extras:
 
 1. **AI engine** — either let the app install its own (Settings → AI engine → *This app*: it fetches a
@@ -61,6 +79,40 @@ mission text never leaves your machine (unlike Windows "Natural" voices, which a
   voices are filtered out and clearly labelled `(CLOUD)` if you opt in.
 - Spoken events: mission accepted, redirect, arrival at hand-in, completion/failure, expiry
   warnings, and heartbeat nudges. A queue with de-duplication guarantees nothing is spoken twice.
+- The **local wire** can be read by a *different* voice (Settings → Local wire → newsreader voice),
+  so a bulletin does not sound like the operator talking about the news. The voice travels with
+  each queued utterance, not with the settings, so an operator line and a bulletin can be queued
+  together without borrowing each other's voice.
+
+## The local wire — fictional news for the system you are in
+
+Galnet reports the galaxy; nothing reports the system you are standing in. The 📰 tab writes it,
+using your own local model, from a brief of things the journal says are **true right now**: the
+faction board with real influence figures, the stations and signals, the markets you have read, the
+construction sites, and the doors that have refused you docking.
+
+<p align="center">
+  <img src="site/img/hud-news.png" width="520" alt="The local wire for HIP 71120: three stories tagged Civic, Industry and Economy, reporting real faction influence figures, extraction activity and commodity prices read from the journal">
+</p>
+<p align="center">
+  <sub>Every figure here came out of the journal — the model chose among them and wrote them up.</sub>
+</p>
+
+- **Six desks take turns** — civic, industry, economy, crime, sport, life — so it reads as a paper
+  rather than an almanac. A desk only opens when the brief can support it.
+- **The economy desk is a real market report.** A price with nothing to compare it against is a
+  listing, so the wire keeps its own price memory: what a commodity did since you last read that
+  board, the spread between two stations, and who is paying over the odds.
+- **It may invent people, teams and bars; it may not invent a faction, a station or a price.**
+  Anything it makes up is checked against the brief, and a new name shaped like a real place is
+  dropped unprinted.
+- **It remembers what it invented.** The dock-crew league keeps the same two teams from one edition
+  to the next; the cast is persisted and offered back to the model as continuity.
+- **House style** is switchable: *wry* (a veteran correspondent who has read every announcement
+  these people ever issued and believed none of them) or *straight* reporting.
+
+Off by default — it costs one model call per edition. Cadence runs from every 10 minutes to hourly,
+or Off with a **New edition** button in the tab.
 
 ## The heartbeat (proactive assist)
 
@@ -75,6 +127,16 @@ Nudges have cooldowns (no spam), escalate in severity, and are spoken. They only
 is actually live (journal/status activity in the last 90 s).
 
 ## The memory bank (long-term)
+
+<p align="center">
+  <img src="site/img/hud-memory.png" width="300" alt="The operator answering 'What do you remember about me?' from its long-term memory, then distilling the session into new memories">
+  &nbsp;
+  <img src="site/img/hud-operator.png" width="300" alt="The operator feed showing proactive heartbeat nudges about hunting grounds alongside a streaming AI answer">
+</p>
+<p align="center">
+  <sub><b>The memory</b> — ask it what it remembers about you &nbsp;·&nbsp;
+  <b>Operator feed</b> — a heartbeat nudge and a live answer</sub>
+</p>
 
 The operator **remembers you across sessions** in a local `memory.json` (app-data dir):
 
@@ -130,7 +192,7 @@ HUD never steals everyday shortcuts from other apps.)
 ## Architecture
 
 ```
-src/engine/          TypeScript mission intelligence (zero deps, Node 22.6+, 16 tests)
+src/engine/          TypeScript mission intelligence (zero deps, Node 22.6+, 495 tests)
   types.ts             Normalized Mission model
   parse.ts             JSON-lines parsing (browser-safe)
   detectType.ts        Mission category + BGS state from internal Name
@@ -141,6 +203,12 @@ src/engine/          TypeScript mission intelligence (zero deps, Node 22.6+, 16 
   memory.ts            CommanderMemory — persistent ledgers/records/notes,
                        replay-safe fold, recall, gated proactive remarks,
                        LLM session-reflection prompt + JSON folding
+  architect.ts         Colonisation shopping list — depot requirement folded
+                       into an ordered plan (hold / here / this system / galaxy)
+  news.ts              Local wire — grounded brief, six desks, price memory,
+                       persistent invented cast, fabrication guard
+  plotter.ts           Neutron + fleet-carrier route plotting and tritium maths
+  deathclock.ts        World of Death landing windows from any past scan
   glance.ts            Screen-glance prompts (vision) + reply parsing
   convo.ts             ConvoBuffer — short-term dialogue memory (follow-ups
                        work) + whisper transcript cleaning

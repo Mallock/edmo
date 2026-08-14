@@ -42,6 +42,26 @@ export interface AppSettings {
     bootstrapPreviousSessions: number;
     expiryWarningMin: number;
   };
+  /** Fictional local wire service for the current system, grounded in the
+   *  journal's own faction/station/signal data. Off by default: it costs a
+   *  model call, and a commander who never opens the tab should not pay it. */
+  news: {
+    enabled: boolean;
+    /** Minutes between editions; 0 is Off (see NEWS_INTERVALS). */
+    everyMin: number;
+    /** Stories per edition. */
+    perEdition: number;
+    /** 'wry' gives the wire an editorial voice; 'straight' reports flat. */
+    tone: 'straight' | 'wry';
+    /** Read new editions aloud. */
+    speak: boolean;
+    /**
+     * The newsreader's voice — a piper voice id, or null to use the
+     * operator's own. A bulletin read in the operator's voice sounds like the
+     * operator talking about the news; a different voice makes it a broadcast.
+     */
+    voice: string | null;
+  };
   chatter: {
     enabled: boolean; // fictional flavor stories about active missions
     intervalMin: number; // minimum minutes between automatic stories
@@ -138,6 +158,14 @@ export const DEFAULT_SETTINGS: AppSettings = {
     directory: null,
     bootstrapPreviousSessions: 1,
     expiryWarningMin: 30,
+  },
+  news: {
+    enabled: false,
+    everyMin: 30,
+    perEdition: 3,
+    tone: 'wry',
+    speak: true,
+    voice: null,
   },
   chatter: {
     enabled: true,

@@ -6,9 +6,9 @@ WHAT THIS IS
 
   index.html                              the page
   img/                                    screenshots + icons
-  ED-Mission-Operator-1.0.2-setup.exe       the Windows installer (~131 MB)
-  ED-Mission-Operator-1.0.2-amd64.deb       Linux beta, Ubuntu/Debian (~147 MB)
-  ED-Mission-Operator-1.0.2-x86_64.AppImage Linux beta, any distro (~242 MB)
+  ED-Mission-Operator-1.0.3-setup.exe       the Windows installer (~131 MB)
+  ED-Mission-Operator-1.0.3-amd64.deb       Linux beta, Ubuntu/Debian (~147 MB)
+  ED-Mission-Operator-1.0.3-x86_64.AppImage Linux beta, any distro (~231 MB)
 
 HOW TO PUT IT ON YOUR WEB HOTEL
   1. Open your web hotel's File Manager (or connect with FTP, e.g. FileZilla).
@@ -21,8 +21,37 @@ NOTES
   * The installer is ~131 MB. Browser-based file managers sometimes limit
     uploads (often to 100 MB) — if the .exe upload fails, use FTP instead,
     or upload it to a file service and change the download link in
-    index.html (search for "ED-Mission-Operator-1.0.2-setup.exe").
-  * 1.0.2 adds the SYSTEM ARCHITECT tab: dock at a colonisation construction
+    index.html (search for "ED-Mission-Operator-1.0.3-setup.exe").
+  * 1.0.3 adds the LOCAL WIRE tab: a fictional news feed for the system you
+    are in, written by your own local AI from a brief of things the journal
+    says are true — the faction board with real influence figures, the
+    stations and signals, the markets you have read, the construction sites,
+    and the doors that have refused you docking. Six desks take turns (civic,
+    industry, economy, crime, sport, life) so it reads as a paper rather than
+    an almanac. The economy desk is a genuine market report: what a price did
+    since you last read that board, the spread between two stations in the
+    system, and who is paying over the odds. It also keeps continuity — the
+    teams, bars and people it invents are recorded and reused, so the dock
+    league fields the same two crews next edition instead of new ones. It may
+    invent people and gossip; it may not invent a faction, a station or a
+    price, and a made-up name shaped like a real place is dropped unprinted.
+    Configurable cadence from every 10 minutes to hourly, or Off with a
+    "New edition" button. Off by default — it costs one model call per edition.
+    Also in 1.0.3:
+      - the operator no longer gets stuck on one subject. A visit tally was on
+        EVERY beat once you settled in a system, so a hauling run produced
+        "Nine times in two days?", "you still haven't found an exit sign" and
+        "the view's big enough for nine visits" in one session. The tally now
+        rides only on a callback beat, docking has its own angle, and a
+        same-subject gate resamples a third beat in a row about one thing.
+      - exobiology now sweeps the whole journal history on disk for completed
+        samples. It replayed one previous session, so a genus sampled months
+        ago counted as missing and the app reported more uncollected species
+        than were really on the rock.
+      - removed the construction-site "no large pad" warning. The game reports
+        Large 0 for orbital construction sites and it is simply wrong — the
+        warning fired while docked there in a large ship.
+  * 1.0.2 added the SYSTEM ARCHITECT tab: dock at a colonisation construction
     site and its whole requirement becomes a shopping list, ordered by what you
     can act on rather than alphabetically. Tons already in your hold come
     first, then what this station sells, then everything on sale in the build's
@@ -64,7 +93,7 @@ NOTES
     ranges and payout estimates; and four opt-in community lookups the operator
     calls only when asked (Spansh routes, galaxy-wide markets via Ardent
     Insight, the EDAstro exploration catalogue, and the Galnet news wire).
-  * All three installers are 1.0.2.
+  * All three installers are 1.0.3.
 
     Windows:  npm run tauri build
               -> src-tauri/target/release/bundle/nsis/

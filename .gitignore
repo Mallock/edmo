@@ -7,3 +7,4 @@ dist/
 site/*.exe
 site/*.AppImage
 site/*.deb
+linux-dist/

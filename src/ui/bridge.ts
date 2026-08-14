@@ -256,6 +256,22 @@ export async function llmQuick(opts: {
   /** Defaults to true (speed). Must be false for models the flag crashes. */
   noThinking?: boolean;
   apiKey?: string | null;
+  /** 0 (the default) for a gate that must answer the same way every time;
+   *  higher for anything a person will read twice. */
+  temperature?: number;
+  /** Seconds. Defaults to 15, which is a gate's budget, not prose's. */
+  timeoutSecs?: number;
+  /**
+   * Let the failure through instead of returning ''.
+   *
+   * The swallow is right for the beat gate — a gate that cannot answer should
+   * cost nothing and say nothing. It is wrong for anything with a UI, because
+   * a dead engine, a timeout and a model that genuinely returned nothing all
+   * arrive as the same empty string. The news tab spent an evening reporting
+   * "the model returned nothing the wire could parse" when the truth was that
+   * there was no engine running at all.
+   */
+  strict?: boolean;
 }): Promise<string> {
   try {
     return await invoke<string>('llm_quick', {
@@ -265,8 +281,11 @@ export async function llmQuick(opts: {
       maxTokens: opts.maxTokens ?? 8,
       noThinking: opts.noThinking ?? true,
       apiKey: opts.apiKey ?? null,
+      temperature: opts.temperature ?? null,
+      timeoutSecs: opts.timeoutSecs ?? null,
     });
-  } catch {
+  } catch (e) {
+    if (opts.strict) throw e;
     return '';
   }
 }

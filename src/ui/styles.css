@@ -1817,3 +1817,135 @@ body {
   padding: 0 3px;
   flex: none;
 }
+
+/* ------------------------------------------------------------------- the wire
+   A concourse news feed: masthead, then stories newest first. Neutral text
+   colour rather than an accent — this is reporting, not the operator talking. */
+.news-card {
+  border-color: rgba(216, 228, 240, 0.4);
+  overflow-y: auto;
+}
+
+.news-title {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.news-sub {
+  color: var(--dim);
+  font-size: 0.72em;
+}
+
+.news-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.news-refresh {
+  background: transparent;
+  border: 1px solid rgba(216, 228, 240, 0.45);
+  color: var(--text);
+  font-size: 0.7em;
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.news-refresh:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.news-note,
+.news-empty,
+.news-foot {
+  color: var(--dim);
+  font-size: 0.68em;
+  line-height: 1.3;
+}
+
+.news-empty {
+  margin-top: 10px;
+}
+
+.news-foot {
+  margin-top: 10px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  font-style: italic;
+}
+
+.news-warn {
+  margin-top: 8px;
+  padding: 4px 6px;
+  border-left: 2px solid var(--amber);
+  background: rgba(240, 160, 48, 0.08);
+  font-size: 0.74em;
+}
+
+.news-list {
+  list-style: none;
+  margin-top: 8px;
+}
+
+.news-item {
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.news-item.faded {
+  opacity: 0.55;
+}
+
+.news-headline {
+  font-size: 0.86em;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.news-body {
+  margin-top: 2px;
+  font-size: 0.76em;
+  color: var(--text);
+  opacity: 0.85;
+  line-height: 1.35;
+}
+
+.news-meta {
+  margin-top: 3px;
+  color: var(--dim);
+  font-size: 0.66em;
+}
+
+.news-divider {
+  margin-top: 12px;
+  color: var(--dim);
+  font-size: 0.66em;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+/* Desk chips: which part of the paper filed this. Each desk keeps one colour
+   so the eye can tell reportage (civic/industry) from invention (sport/life). */
+.news-desk {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 4px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  font-size: 0.92em;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.9;
+}
+
+.desk-civic { color: var(--cyan); }
+.desk-industry { color: var(--amber); }
+.desk-crime { color: var(--red); }
+.desk-sport { color: var(--green); }
+.desk-life { color: var(--dim); }
+
+.desk-economy { color: #b088f0; }

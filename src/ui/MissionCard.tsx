@@ -145,6 +145,13 @@ export interface ArchitectTab {
   onSelect: () => void;
 }
 
+/** The local wire tab: a dot when there are unread stories for this system. */
+export interface NewsTab {
+  active: boolean;
+  count: number;
+  onSelect: () => void;
+}
+
 export function MissionTabs({
   missions,
   selectedId,
@@ -153,6 +160,7 @@ export function MissionTabs({
   clock,
   plot,
   architect,
+  news,
 }: {
   missions: Mission[];
   selectedId: number | null;
@@ -161,9 +169,10 @@ export function MissionTabs({
   clock?: ClockTab;
   plot?: PlotTab;
   architect?: ArchitectTab;
+  news?: NewsTab;
 }) {
-  if (missions.length <= 1 && !clock && !plot && !architect) return null;
-  const otherActive = clock?.active || plot?.active || architect?.active;
+  if (missions.length <= 1 && !clock && !plot && !architect && !news) return null;
+  const otherActive = clock?.active || plot?.active || architect?.active || news?.active;
   return (
     <div className="tabs" role="tablist" aria-label="Active missions">
       {missions.map((m, i) => (
@@ -227,6 +236,20 @@ export function MissionTabs({
           />
           🏗
           {architect.label && <span className="tab-timer mono">{architect.label}</span>}
+        </button>
+      )}
+      {news && (
+        <button
+          role="tab"
+          aria-selected={news.active}
+          className={news.active ? 'tab active' : 'tab'}
+          style={{ borderColor: 'var(--text)' }}
+          title="Local wire — fictional news for this system, written from its own faction and station data"
+          onClick={news.onSelect}
+        >
+          <span className="tab-dot" style={{ background: news.count ? 'var(--text)' : 'var(--dim)' }} />
+          📰
+          {news.count > 0 && <span className="tab-timer mono">{news.count}</span>}
         </button>
       )}
     </div>

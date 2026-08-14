@@ -4,6 +4,7 @@ import type { AppSettings } from './settings.ts';
 import { listSystemVoices } from './tts.ts';
 import type { AppSnapshot } from './store.ts';
 import { core } from './store.ts';
+import { NEWS_INTERVALS, newsIntervalLabel } from '../engine/news.ts';
 import {
   classifyModel,
   fitLabel,
@@ -387,6 +388,111 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
           <button className="btn" onClick={() => core.testVoice()}>
             Test voice
           </button>
+        </section>
+
+        <section>
+          <h3>Local wire</h3>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={s.news.enabled}
+              onChange={(e) => set({ ...s, news: { ...s.news, enabled: e.target.checked } })}
+            />
+            Fictional local news for the system you are in
+          </label>
+          <div className="row">
+            <label>
+              New edition
+              <select
+                value={s.news.everyMin}
+                onChange={(e) => set({ ...s, news: { ...s.news, everyMin: Number(e.target.value) } })}
+              >
+                {NEWS_INTERVALS.map((m) => (
+                  <option key={m} value={m}>
+                    {newsIntervalLabel(m)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Stories each time
+              <input
+                type="number"
+                min={1}
+                max={5}
+                value={s.news.perEdition}
+                onChange={(e) =>
+                  set({ ...s, news: { ...s.news, perEdition: Number(e.target.value) } })
+                }
+              />
+            </label>
+          </div>
+          <div className="row">
+            <label>
+              House style
+              <select
+                value={s.news.tone}
+                onChange={(e) =>
+                  set({ ...s, news: { ...s.news, tone: e.target.value as 'straight' | 'wry' } })
+                }
+              >
+                <option value="wry">Wry — deadpan, unimpressed, takes the piss upwards</option>
+                <option value="straight">Straight — flat reporting, no opinion</option>
+              </select>
+            </label>
+          </div>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={s.news.speak}
+              onChange={(e) => set({ ...s, news: { ...s.news, speak: e.target.checked } })}
+            />
+            Read new editions aloud
+          </label>
+          {s.news.speak && (
+            <div className="row">
+              <label>
+                Newsreader voice
+                <select
+                  value={s.news.voice ?? ''}
+                  onChange={(e) => set({ ...s, news: { ...s.news, voice: e.target.value || null } })}
+                >
+                  <option value="">same as the operator</option>
+                  {snap.piperVoices.map((name) => {
+                    const info = PIPER_VOICE_CATALOG.find((v) => v.name === name);
+                    return (
+                      <option key={name} value={name}>
+                        {info?.label ?? name}
+                      </option>
+                    );
+                  })}
+                </select>
+              </label>
+              <button className="btn" onClick={() => core.testNewsVoice()}>
+                Hear it
+              </button>
+            </div>
+          )}
+          <p className="hint">
+            Written by your local AI from this system&rsquo;s own faction board, stations, signals and
+            construction sites. It may invent people and quotes; it may not invent a faction or a
+            station. &ldquo;Off&rdquo; still lets you press <b>New edition</b> in the tab.
+            {s.news.speak && s.voice.engine === 'system' && (
+              <>
+                {' '}
+                Your voice engine is set to <b>system voices</b>, so the newsreader list above is for
+                the offline Piper voices — pick a system voice by name only if you have one installed
+                under that name.
+              </>
+            )}
+            {s.news.speak && snap.piperVoices.length < 2 && s.voice.engine === 'piper' && (
+              <>
+                {' '}
+                Only one offline voice is installed, so the wire will sound like the operator.
+                Download another under <b>Voice</b> above to tell them apart.
+              </>
+            )}
+          </p>
         </section>
 
         <section>

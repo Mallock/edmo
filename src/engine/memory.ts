@@ -498,14 +498,38 @@ export class CommanderMemory {
    * Memory lines relevant to the current situation, for AI prompt injection.
    * Compact by design — at most ~5 lines, only genuinely notable history.
    */
-  recallForContext(ctx: { system?: string; faction?: string; targetFaction?: string }, nowMs: number): string[] {
+  recallForContext(
+    ctx: { system?: string; faction?: string; targetFaction?: string },
+    nowMs: number,
+    opts: {
+      /**
+       * Include the "visited N times" tally.
+       *
+       * Off for ambient beats. A visit count is TRUE on every single beat once
+       * a commander settles into a system, and a fact present on every beat
+       * becomes the only subject — the operator spent a hauling session saying
+       * "nine times in two days" five different ways. The tally is still worth
+       * having when something actually asks for it (a callback beat, or the
+       * commander asking a question), so it is a parameter and not a deletion.
+       */
+      includeVisits?: boolean;
+    } = {},
+  ): string[] {
     const out: string[] = [];
     if (ctx.system) {
       const led = this.systems[ctx.system];
-      if (led && (led.visits >= 4 || led.deaths > 0)) {
+      // A death here is news however often it is recalled; the tally is not.
+      const tally = !!led && opts.includeVisits !== false && led.visits >= 4;
+      const died = !!led && led.deaths > 0;
+      if (led && (tally || died)) {
         const days = Math.round((nowMs - led.firstAt) / (24 * 3600_000));
-        const bits = [`the commander has visited ${ctx.system} ${led.visits} times${days > 1 ? ` over ${days} days` : ''}`];
-        if (led.deaths > 0) bits.push(`and lost ${led.deaths === 1 ? 'a ship' : `${led.deaths} ships`} here`);
+        const lost = `lost ${led.deaths === 1 ? 'a ship' : `${led.deaths} ships`} in ${ctx.system}`;
+        const bits = tally
+          ? [
+              `the commander has visited ${ctx.system} ${led.visits} times${days > 1 ? ` over ${days} days` : ''}`,
+              ...(died ? [`and ${lost.replace(` in ${ctx.system}`, ' here')}`] : []),
+            ]
+          : [`the commander has ${lost}`];
         out.push(`Memory: ${bits.join(' ')}.`);
       }
     }

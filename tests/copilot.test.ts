@@ -20,6 +20,9 @@ import {
   isSilenceVerdict,
   stripVerdict,
   type BeatAngle,
+  overusedTopic,
+  topicOf,
+  type BeatTopic,
 } from '../src/engine/copilot.ts';
 import { placeOf } from '../src/engine/place.ts';
 import { stripFillerTics, suppressRoutineCoaching } from '../src/engine/glance.ts';
@@ -908,4 +911,61 @@ test('the shared fence agrees with the individual rules it replaced', () => {
       findLiftedExample(line) ?? findCollectivePronoun(line) ?? findHabitualGenerality(line);
     assert.equal(!!findVoiceViolation(line), !!individually, line);
   }
+});
+
+// ------------------------------------------- the same-subject gate
+
+/**
+ * Five beats from one live hauling session in HIP 71120. Every one is about
+ * the commander keeping coming back, and every one passed the word-overlap
+ * duplicate check, because they share almost no words.
+ */
+const STUCK_RECORD = [
+  "Nine times in two days? You're getting comfortable here.",
+  "Nine times in two days, and you still haven't found an exit sign.",
+  "The view's big enough for nine visits, if you ask me.",
+  "The pattern's clear. You're stuck in the routine.",
+  'Another routine transit through the same starfield.',
+];
+
+test('the word check cannot hear a stuck record; the subject check can', () => {
+  // Not duplicates by wording — which is exactly how all five reached a live
+  // session one after another.
+  for (let i = 1; i < STUCK_RECORD.length; i++) {
+    assert.equal(isNearDuplicate(STUCK_RECORD[i], STUCK_RECORD.slice(0, i)), false);
+  }
+  // ...but they are one subject.
+  for (const line of STUCK_RECORD) assert.equal(topicOf(line), 'return');
+});
+
+test('a subject gets two turns, not five', () => {
+  const spoken: BeatTopic[] = [];
+  const said: string[] = [];
+  for (const line of STUCK_RECORD) {
+    const t = topicOf(line);
+    if (overusedTopic(t, spoken)) continue; // the gate resamples or drops here
+    spoken.push(t);
+    said.push(line);
+  }
+  assert.equal(said.length, 2);
+  assert.deepEqual(said, STUCK_RECORD.slice(0, 2));
+});
+
+test('unclassified beats are never gagged', () => {
+  // 'other' is the bucket for everything the patterns do not name, so counting
+  // it would silence the operator for saying unrelated things.
+  const many: BeatTopic[] = ['other', 'other', 'other', 'other'];
+  assert.equal(overusedTopic('other', many), false);
+  assert.equal(overusedTopic(topicOf('Bawa wants the aluminium up front.'), []), false);
+});
+
+test('the subjects a hauling run actually cycles through stay distinct', () => {
+  assert.equal(topicOf('457 tons of tea off the ship and Bawa still wants more.'), 'haul');
+  assert.equal(topicOf('Vista paid 25.7 million for the set.'), 'money');
+  assert.equal(topicOf('Pad two, and the gear is holding.'), 'ship');
+  assert.equal(topicOf('First log on the Fungoida — nobody has sampled that one.'), 'find');
+  assert.equal(topicOf('Nothing on the scanner out here.'), 'quiet');
+  // One subject twice is fine; the gate only bites on the third.
+  assert.equal(overusedTopic('haul', ['haul']), false);
+  assert.equal(overusedTopic('haul', ['haul', 'money', 'haul']), true);
 });

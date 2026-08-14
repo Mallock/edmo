@@ -86,6 +86,19 @@ import {
   type DepotState,
   type ShoppingGroup,
 } from '../engine/architect.ts';
+import {
+  acceptNews,
+  buildNewsBrief,
+  buildNewsChat,
+  desksFor,
+  marketPulse,
+  newsDue,
+  newsMaxTokens,
+  trimCast,
+  type CastMember,
+  type NewsItem,
+  type PriceMemory,
+} from '../engine/news.ts';
 import { buildShipPanel, type ShipPanel } from '../engine/shippanel.ts';
 import { ExploreTracker, classifyBody, type ExploreLead } from '../engine/explore.ts';
 import {
@@ -174,6 +187,9 @@ import {
   copilotReactsTo,
   copilotDensityGapMs,
   isNearDuplicate,
+  overusedTopic,
+  topicOf,
+  type BeatTopic,
   isSilenceVerdict,
   stripVerdict,
   copilotSilenceGapMs,
@@ -349,6 +365,20 @@ export interface PlotterView {
   jumpState: CarrierJumpState;
 }
 
+/** Everything the News tab renders — data only; actions live on core. */
+export interface NewsView {
+  system: string;
+  /** Stories about where the commander is now, newest first. */
+  items: NewsItem[];
+  /** Older editions from systems left behind. */
+  archive: NewsItem[];
+  busy: boolean;
+  error: string | null;
+  lastAt: number | null;
+  everyMin: number;
+  enabled: boolean;
+}
+
 /** Everything the Architect tab renders — data only; actions live on core. */
 export interface ArchitectView {
   depot: DepotState;
@@ -400,9 +430,11 @@ export interface AppSnapshot {
   plotter: PlotterView;
   /** The construction shopping list — null until a depot has been seen. */
   architect: ArchitectView | null;
-  /** Which panel fills the card area: missions (default), clock, plotter or
-   *  the system architect's shopping list. */
-  view: 'missions' | 'deathclock' | 'plotter' | 'architect';
+  /** The local wire, or null when the feature is switched off. */
+  news: NewsView | null;
+  /** Which panel fills the card area: missions (default), clock, plotter,
+   *  the system architect's shopping list, or the local news wire. */
+  view: 'missions' | 'deathclock' | 'plotter' | 'architect' | 'news';
   shipPanel: ShipPanel;
   routeBusy: boolean;
   routeIdx: number;
@@ -725,8 +757,52 @@ export class AppCore {
   private saidMarketCover = '';
   /** Commodity key → tons in the hold, from Cargo.json's Inventory. */
   private cargoManifest = new Map<string, number>();
+  /**
+   * The local wire. Persisted per system, because a paper the commander opens
+   * after a relog should not be blank while it waits for the next edition.
+   */
+  private news: NewsItem[] = (() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem('edmo.news.v1') ?? '[]') as NewsItem[];
+      return Array.isArray(raw) ? raw.slice(-30) : [];
+    } catch {
+      return [];
+    }
+  })();
+  /**
+   * The paper's standing cast — the teams, bars and people it has invented and
+   * is now committed to. Persisted with the stories, because a dock league
+   * that fields different teams every edition is not a league.
+   */
+  private newsCast: CastMember[] = (() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem('edmo.newscast.v1') ?? '[]') as CastMember[];
+      return Array.isArray(raw) ? trimCast(raw) : [];
+    } catch {
+      return [];
+    }
+  })();
+  /**
+   * Last price seen per station+commodity, so the economy desk can report a
+   * MOVE rather than a listing. The market memory itself only holds the
+   * current board — record() overwrites — so without this there is nothing to
+   * compare against and every price is "steel costs 3,456".
+   */
+  private newsPrices: PriceMemory = (() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem('edmo.newsprices.v1') ?? '{}') as PriceMemory;
+      return raw && typeof raw === 'object' ? raw : {};
+    } catch {
+      return {};
+    }
+  })();
+  /** Editions filed, so the desk rotation moves on each time. */
+  private newsEdition = 0;
+  private newsAt: number | null = null;
+  private newsBusy = false;
+  private newsError: string | null = null;
   /** Which panel fills the card area; the clock and plotter are offered as tabs. */
-  private view: 'missions' | 'deathclock' | 'plotter' | 'architect' = 'missions';
+  private view: 'missions' | 'deathclock' | 'plotter' | 'architect' | 'news' = 'missions';
 
   // ------------------------------------------------------------- the plotter
   /**
@@ -833,6 +909,8 @@ export class AppCore {
   private recentComms: Array<{ text: string; at: number; used?: boolean }> = [];
   /** Last few spoken stories/commentaries — the anti-repetition ring. */
   private recentStories: string[] = [];
+  /** What the last few beats were ABOUT, for the same-subject gate. */
+  private recentTopics: BeatTopic[] = [];
   private commsSeen = new Map<string, number>();
 
   /** Unused fresh comms, marked consumed on take — each line rides once. */
@@ -848,6 +926,11 @@ export class AppCore {
     if (!text) return;
     this.recentStories.push(text);
     if (this.recentStories.length > 4) this.recentStories = this.recentStories.slice(-4);
+    // Subjects run deeper than wording: a stuck record is audible long before
+    // the words repeat, so the topic ring remembers more beats than the text
+    // ring does.
+    this.recentTopics.push(topicOf(text));
+    if (this.recentTopics.length > 6) this.recentTopics = this.recentTopics.slice(-6);
   }
 
   private marketMemory = (() => {
@@ -997,6 +1080,7 @@ export class AppCore {
       })(),
       plotter: this.plotterView(),
       architect: this.architectView(),
+      news: this.settings.news.enabled ? this.newsView() : null,
       view: this.view,
       shipPanel: this.shipPanel(),
       routeBusy: this.routeBusy,
@@ -2678,6 +2762,238 @@ export class AppCore {
     return dest && dest !== this.sm.location.system ? dest : null;
   }
 
+  // ------------------------------------------------------------- the local wire
+  /**
+   * What is true in this system right now, as a brief the model may print from.
+   *
+   * Everything here comes from the journal: the faction board with influence,
+   * the stations honked in the FSS, the construction sites being supplied, the
+   * markets the commander has actually read. The model chooses among these and
+   * writes them up; anything it adds is treated as a fabrication and dropped.
+   */
+  private newsBrief(): string[] {
+    const system = this.sm.location.system;
+    const state = this.sm.getState();
+    const depot = this.construction.depot;
+    const inSystem = (depot?.system ?? '').toLowerCase() === system.toLowerCase();
+    return buildNewsBrief(system, state.system, {
+      construction:
+        depot && inSystem && !depot.complete
+          ? [
+              {
+                station: depot.station ?? 'the construction site',
+                remaining: tonsRemaining(depot),
+                pct: depot.progress * 100,
+                top: [...depot.resources]
+                  .filter((r) => r.remaining > 0)
+                  .sort((a, b) => b.remaining - a.remaining)
+                  .slice(0, 3)
+                  .map((r) => r.name),
+              },
+            ]
+          : undefined,
+      markets: this.marketMemory
+        .all()
+        .filter((m) => m.system.toLowerCase() === system.toLowerCase())
+        .slice(0, 4)
+        .map((m) => ({
+          station: m.station,
+          sells: m.items.filter((i) => i.buy > 0 && i.stock > 0).slice(0, 4).map((i) => i.name),
+        })),
+      goals: this.sm.communityGoals
+        .filter((g) => g.system.toLowerCase() === system.toLowerCase())
+        .map((g) => ({ title: g.title, market: g.market, contributors: g.contributors })),
+      // The commander is a local trader in this paper, never its subject.
+      commanderDid: this.newsCommanderNotes(),
+      // What the boards have actually done since we last read them.
+      pulse: this.newsPulse(),
+      // Crime-desk material that is actually true: doors shut in this system.
+      denials: this.denials
+        .toJSON()
+        .filter((d) => (d.system ?? '').toLowerCase() === system.toLowerCase())
+        .slice(0, 3)
+        .map((d) => d.station),
+      // The paper's own continuity.
+      cast: this.newsCast,
+      previously: this.news.filter((n) => n.system === system).slice(0, 6).map((n) => n.headline),
+    });
+  }
+
+  /**
+   * The market report: what moved, where the spread is, who is paying.
+   *
+   * Reads the boards we have visited in this system and compares them against
+   * the last prices we saw there. The comparison is only committed once an
+   * edition is actually published (see refreshNews), so a story can say "up 8%"
+   * and the next edition still has the old number to measure the NEXT move
+   * from — updating on every read would flatten every price to "unchanged".
+   */
+  private newsPulse(): string[] {
+    const system = this.sm.location.system;
+    const here = this.marketMemory
+      .all()
+      .filter((m) => m.system.toLowerCase() === system.toLowerCase());
+    return marketPulse(here, this.newsPrices).lines;
+  }
+
+  /** One or two things the commander has actually done here, for colour. */
+  private newsCommanderNotes(): string[] {
+    const out: string[] = [];
+    if (this.stats.refinedOre) {
+      out.push(`a trader refined ${this.stats.refinedOre} t of ore in this system today`);
+    }
+    const depot = this.construction.depot;
+    if (depot && depot.progress > 0) {
+      const done = depot.resources.filter((r) => r.remaining <= 0).length;
+      if (done) out.push(`${done} of the site's commodity lines have been delivered in full`);
+    }
+    return out.slice(0, 2);
+  }
+
+  /** Write an edition. Silent on failure — a paper that cannot print says nothing. */
+  async refreshNews(force = false): Promise<void> {
+    if (!this.settings.news.enabled || this.newsBusy) return;
+    if (!this.lmOk || !this.activeModel()) {
+      this.newsError = 'The local AI engine is not running, so there is nobody to write it.';
+      this.emit();
+      return;
+    }
+    const system = this.sm.location.system;
+    if (!system || system === 'unknown') return;
+    if (!force && !newsDue(this.newsAt, this.settings.news.everyMin, Date.now())) return;
+    const brief = this.newsBrief();
+    // A masthead alone is not a paper: without faction or station facts there
+    // is nothing to write about that would not be invented.
+    if (brief.length < 3) {
+      this.newsError = `Not enough is known about ${system} yet — honk the system and dock somewhere.`;
+      this.emit();
+      return;
+    }
+    this.newsBusy = true;
+    this.newsError = null;
+    this.emit();
+    try {
+      const recent = this.news.filter((n) => n.system === system).map((n) => n.headline);
+      // One desk per story, rotated per edition — the variety is scheduled
+      // rather than hoped for, the same way beat angles are.
+      const desks = desksFor(brief, this.newsEdition).slice(0, this.settings.news.perEdition);
+      const raw = await llmQuick({
+        ...this.lmTarget(),
+        model: this.activeModel()!,
+        messages: buildNewsChat(
+          brief,
+          this.settings.news.perEdition,
+          recent,
+          desks,
+          this.settings.news.tone,
+        ) as unknown as ChatMessageWire[],
+        // MUST be set: llmQuick defaults to eight tokens (see newsMaxTokens).
+        maxTokens: newsMaxTokens(this.settings.news.perEdition),
+        noThinking: suppressThinkingForGate(profileFor(this.activeModel())),
+        // A paper on temperature 0 files the same edition from the same brief
+        // for ever; the gate's default is exactly wrong here.
+        temperature: 0.85,
+        // Prose, not a verdict — and the game is holding the GPU. Measured on
+        // this machine WITH Elite running: 7.86 tokens/second, against 60 on
+        // an idle card. One edition took 99.9 s and the 15 s default had long
+        // since given up, which is what made the tab look permanently broken.
+        timeoutSecs: 180,
+        // Say what actually went wrong. Swallowing this is why a stopped
+        // engine looked identical to an unparseable reply.
+        strict: true,
+      });
+      const { items, rejected, cast } = acceptNews(raw, {
+        brief,
+        system,
+        at: new Date().toISOString(),
+        recentHeadlines: recent,
+        max: this.settings.news.perEdition,
+        desks,
+        cast: this.newsCast,
+      });
+      this.newsEdition += 1;
+      // Only now do the prices we just reported on become "what we last saw".
+      // Committing them at read time would mean every board is always
+      // unchanged by the time an edition is written.
+      if (items.length) {
+        const here = this.marketMemory
+          .all()
+          .filter((m) => m.system.toLowerCase() === system.toLowerCase());
+        this.newsPrices = marketPulse(here, this.newsPrices).next;
+        try {
+          localStorage.setItem('edmo.newsprices.v1', JSON.stringify(this.newsPrices));
+        } catch {
+          /* the comparison still holds for this session */
+        }
+      }
+      if (items.length && this.settings.news.speak) this.readBulletin(items);
+      if (cast.length) {
+        this.newsCast = cast;
+        try {
+          localStorage.setItem('edmo.newscast.v1', JSON.stringify(cast));
+        } catch {
+          /* the cast still stands for this session */
+        }
+      }
+      for (const r of rejected) this.noteGlance(`news — dropped a story, ${r}`);
+      if (items.length) {
+        this.news = [...items, ...this.news].slice(0, 30);
+        try {
+          localStorage.setItem('edmo.news.v1', JSON.stringify(this.news));
+        } catch {
+          /* the edition still stands for this session */
+        }
+      } else {
+        // "Nothing printable" covered two very different failures — every
+        // story rejected, versus the model returning nothing usable at all —
+        // and only one of them is the wire working as designed.
+        this.newsError = rejected.length
+          ? `Every story was spiked this cycle (${rejected[0]}).`
+          : 'The model returned nothing the wire could parse. Try another edition.';
+      }
+      this.newsAt = Date.now();
+    } catch (e) {
+      this.newsError = `The wire did not answer (${String(e).slice(0, 70)}).`;
+    } finally {
+      this.newsBusy = false;
+      this.emit();
+    }
+  }
+
+  /**
+   * Read an edition out, in the newsreader's voice.
+   *
+   * Queued one story at a time rather than as a single block: the speaker
+   * serialises utterances, so a stop() lands between stories instead of the
+   * commander having to sit through the whole bulletin. The masthead goes
+   * first because the voice change is the cue that this is not the operator.
+   */
+  private readBulletin(items: readonly NewsItem[]): void {
+    const voice = this.settings.news.voice;
+    this.speaker.speak(`${items[0].system} local wire.`, voice);
+    for (const n of items) this.speaker.speak(`${n.headline}. ${n.body}`, voice);
+  }
+
+  /** Read the current edition on demand (the tab's speaker button). */
+  readNewsAloud(): void {
+    const items = this.news.filter((n) => n.system === this.sm.location.system);
+    if (items.length) this.readBulletin(items);
+  }
+
+  private newsView(): NewsView {
+    const system = this.sm.location.system;
+    return {
+      system,
+      items: this.news.filter((n) => n.system === system),
+      archive: this.news.filter((n) => n.system !== system).slice(0, 8),
+      busy: this.newsBusy,
+      error: this.newsError,
+      lastAt: this.newsAt,
+      everyMin: this.settings.news.everyMin,
+      enabled: this.settings.news.enabled,
+    };
+  }
+
   // ------------------------------------------------------- the system architect
   /**
    * The market at the station under the ship, when there is one.
@@ -3338,6 +3654,16 @@ export class AppCore {
     this.heartbeatNudges();
     this.maybeDeathClock();
     this.maybeCarrierJump();
+    // The wire keeps its own clock. Never while the model is busy talking —
+    // an edition is a background errand and must not delay a spoken beat.
+    if (
+      this.settings.news.enabled &&
+      !this.lmBusy &&
+      !this.copilotBeatInFlight &&
+      newsDue(this.newsAt, this.settings.news.everyMin, Date.now())
+    ) {
+      void this.refreshNews(false);
+    }
     this.maybeChatter();
     this.maybeReflect();
     this.maybeGlance();
@@ -3779,6 +4105,26 @@ export class AppCore {
     // Long-term memory — who the commander is to these people, and what has
     // happened to them here before. The single richest non-money source there
     // is, and until now the ambient voice never saw any of it.
+    // Docking is worth its own angle while the ship is actually on a pad. On a
+    // construction run that is a dozen arrivals an hour, and without it they
+    // all came out as 'place' beats about the station rather than the arrival.
+    if (this.statusTracker.current?.docked) available.push('dock');
+
+    // A story beat asks for scuttlebutt explicitly; ordinary beats never draw
+    // it, so the long form only appears on the chatter cadence.
+    const angle = this.storyBeatPending ? 'story' : pickBeatAngle(available, Math.random);
+    this.storyBeatPending = false;
+
+    // Long-term memory — who the commander is to these people, and what has
+    // happened to them here before. The single richest non-money source there
+    // is, and until now the ambient voice never saw any of it.
+    //
+    // The visit tally rides ONLY on a callback beat. It is true on every beat
+    // once a commander settles in, and a fact present on every beat becomes the
+    // only subject: a hauling session produced "Nine times in two days?", "and
+    // you still haven't found an exit sign", "the view's big enough for nine
+    // visits" and "you're stuck in the routine". Fourth proof of the same law,
+    // after the running tally, the community goals and the local lore.
     if (this.settings.memory.enabled) {
       const m = this.selectedMission();
       const recall = this.memory
@@ -3789,15 +4135,11 @@ export class AppCore {
             targetFaction: m?.targetFaction,
           },
           Date.now(),
+          { includeVisits: angle === 'callback' },
         )
         .slice(0, 3);
       if (recall.length) facts.push(...recall.map((r) => `HISTORY: ${r}`));
     }
-
-    // A story beat asks for scuttlebutt explicitly; ordinary beats never draw
-    // it, so the long form only appears on the chatter cadence.
-    const angle = this.storyBeatPending ? 'story' : pickBeatAngle(available, Math.random);
-    this.storyBeatPending = false;
     if (angle === 'story') {
       const seeds = this.freshSeeds();
       if (seeds.length) {
@@ -5489,6 +5831,18 @@ ${missionContext(mission, state)}`);
           dropBeat('dropped a beat — too close to one just spoken');
           return;
         }
+        // Same-subject gate. isNearDuplicate compares WORDS, and the operator
+        // can say one thing five ways without repeating a single one: "Nine
+        // times in two days?", "you still haven't found an exit sign", "the
+        // view's big enough for nine visits", "you're stuck in the routine".
+        // Every one of those passed the word check in a live session. Resample
+        // first — the model usually has something else to say if asked again.
+        const topic = topicOf(groundedText);
+        if (overusedTopic(topic, this.recentTopics)) {
+          if (resample(`resampling — third beat in a row about "${topic}"`)) return;
+          dropBeat(`dropped a beat — nothing new to say about "${topic}"`);
+          return;
+        }
         // The voice fences, in one decision shared with the glance path:
         //   lifted     — a phrase copied out of its own instructions is not an
         //                observation, and lands wrong as often as not.
@@ -5743,11 +6097,13 @@ ${missionContext(mission, state)}`);
     this.emit();
   }
 
-  setView(v: 'missions' | 'deathclock' | 'plotter' | 'architect'): void {
+  setView(v: 'missions' | 'deathclock' | 'plotter' | 'architect' | 'news'): void {
     this.view = v;
     // Opening the list is the moment the commander wants to know where to buy
     // — but only ask the network if nothing usable was fetched recently.
     if (v === 'architect') void this.architectScan(false);
+    // Opening the paper is a request for today's edition, if one is due.
+    if (v === 'news') void this.refreshNews(false);
     this.emit();
   }
 
@@ -5784,6 +6140,11 @@ ${missionContext(mission, state)}`);
 
   testVoice(): void {
     this.speaker.test();
+  }
+
+  /** Hear the newsreader before committing to it. */
+  testNewsVoice(): void {
+    this.speaker.test(this.settings.news.voice ?? this.settings.voice.piperVoice);
   }
 
   private async refreshPiperVoices(): Promise<void> {

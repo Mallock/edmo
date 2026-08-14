@@ -107,6 +107,7 @@ export type BeatAngle =
   | 'ahead'
   | 'opening'
   | 'self'
+  | 'dock'
   | 'story';
 
 export interface CopilotSystemOptions {
@@ -144,6 +145,14 @@ const ANGLE_HINTS: Readonly<Record<BeatAngle, string>> = {
     'its economy, the traffic, the berth, and any LOCAL LORE line — that lore is true and yours to ' +
     'riff on). If you have been told nothing, pick another angle.',
   callback: 'ANGLE: a callback — something from earlier in this run that this moment rhymes with.',
+  // Docking is the most repeated event in a hauling run — a dozen an hour on a
+  // construction contract — so it gets its own frame rather than falling back
+  // to 'place', which produced "Anders City sees you again" and "Anders City
+  // sticks to you" four beats apart. Anchored to THIS arrival's details: the
+  // pad, the approach, what came off the ship. Those change every time; the
+  // station name does not.
+  dock: 'ANGLE: this arrival — the pad you were given, the approach, what is coming off or going on ' +
+    'board. Something true about THIS docking, not about the station in general.',
   ahead: 'ANGLE: the road ahead — the next leg, not the one just finished.',
   // Point the commander at the opening the FACTS have already identified. This
   // angle deliberately does not ask for a comparison: asked to work out which
@@ -307,6 +316,59 @@ export function isNearDuplicate(beat: string, recent: readonly string[], thresho
     if (union > 0 && shared / union >= threshold) return true;
   }
   return false;
+}
+
+/**
+ * What a beat is ABOUT, as opposed to how it is worded.
+ *
+ * isNearDuplicate compares words, and two lines can share almost none while
+ * saying the same thing for the fourth time. From one real hauling session:
+ *
+ *   "Nine times in two days? You're getting comfortable here."
+ *   "Nine times in two days, and you still haven't found an exit sign."
+ *   "The view's big enough for nine visits, if you ask me."
+ *   "The pattern's clear. You're stuck in the routine."
+ *   "Another routine transit through the same starfield."
+ *
+ * Five beats, one subject, and word overlap low enough that every one passed.
+ * The commander hears a stuck record; the duplicate gate hears five new lines.
+ */
+export type BeatTopic = 'return' | 'haul' | 'money' | 'ship' | 'find' | 'quiet' | 'other';
+
+const TOPIC_PATTERNS: ReadonlyArray<readonly [BeatTopic, RegExp]> = [
+  // The fixation this exists for: "you keep coming back to the same rock".
+  [
+    'return',
+    // The count is spoken as a word as often as a digit — "nine visits" was
+    // the one line of the five that slipped through a digits-only pattern.
+    /\b(again|back (?:here|to|at)|been here|(?:\d+|two|three|four|five|six|seven|eight|nine|ten|dozen)\s+(?:times|visits|trips|runs)|routine|the same (?:place|rock|starfield|site|port|bay|run)|familiar|regular|usual|comfortable|pattern|stuck|pit stop|another (?:stop|transit|waypoint|trip|berth|run to))\b/i,
+  ],
+  ['haul', /\b(haul|hauling|cargo|hold|tons?|tonnes?|freight|load|loaded|deliver|delivery|unload|manifest)\b/i],
+  ['money', /\b(credits?|cr\b|paid|payout|profit|margin|earn|earnings|million|wage|wages)\b/i],
+  ['ship', /\b(ship|thrusters?|hull|drive|engine|fuel|tank|canopy|landing gear|pad|dock(?:ed|ing)?)\b/i],
+  ['find', /\b(sample|specimen|bio|genus|species|scan|survey|discover|first log|signal)\b/i],
+  ['quiet', /\b(quiet|silence|still|empty|nothing|calm|peace|dark)\b/i],
+];
+
+/** The single subject a beat leads with, for the repetition guard. */
+export function topicOf(line: string): BeatTopic {
+  for (const [topic, re] of TOPIC_PATTERNS) if (re.test(line)) return topic;
+  return 'other';
+}
+
+/**
+ * Has this subject already had its turn?
+ *
+ * 'other' is never overused — it is the bucket for everything the patterns do
+ * not name, so counting it would gag the operator for saying unrelated things.
+ */
+export function overusedTopic(
+  topic: BeatTopic,
+  recent: readonly BeatTopic[],
+  limit = 2,
+): boolean {
+  if (topic === 'other') return false;
+  return recent.filter((t) => t === topic).length >= limit;
 }
 
 /**

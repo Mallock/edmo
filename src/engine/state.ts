@@ -496,16 +496,31 @@ export class MissionStateManager {
     this.systemIntel.controllingFaction =
       (faction && str(faction.Name)) || this.systemIntel.controllingFaction;
     this.systemIntel.population = num(ev.Population) ?? this.systemIntel.population;
+    this.systemIntel.economy =
+      str(ev.SystemEconomy_Localised) ?? str(ev.SystemEconomy) ?? this.systemIntel.economy;
+    this.systemIntel.government =
+      str(ev.SystemGovernment_Localised) ?? str(ev.SystemGovernment) ?? this.systemIntel.government;
     // Local minor factions in an active BGS state — the ones offering war/boom/
     // election work. Only kept when the journal actually carries Factions[].
     if (Array.isArray(ev.Factions)) {
       const active: Array<{ name: string; state: string }> = [];
+      const board: NonNullable<SystemIntel['factions']> = [];
       for (const raw of ev.Factions as Array<Record<string, unknown>>) {
         const name = str(raw.Name);
+        if (!name) continue;
         const fstate = str(raw.FactionState);
-        if (name && fstate && fstate !== 'None') active.push({ name, state: fstate });
+        if (fstate && fstate !== 'None') active.push({ name, state: fstate });
+        board.push({
+          name,
+          influence: num(raw.Influence) ?? 0,
+          state: fstate && fstate !== 'None' ? fstate : undefined,
+          allegiance: str(raw.Allegiance),
+        });
       }
       this.systemIntel.factionStates = active.length ? active : undefined;
+      // Strongest first: who runs this place, and who is close enough to care.
+      board.sort((a, b) => b.influence - a.influence);
+      this.systemIntel.factions = board.length ? board : undefined;
     }
   }
 

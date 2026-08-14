@@ -115,6 +115,20 @@ export interface SystemIntel {
   allegiance?: string; // e.g. "Independent"
   controllingFaction?: string;
   population?: number;
+  /** e.g. "High Tech" — what the system does for a living. */
+  economy?: string;
+  /** e.g. "Democracy" — how the controlling faction runs it. */
+  government?: string;
+  /**
+   * EVERY minor faction here with its share of influence, strongest first.
+   *
+   * factionStates below keeps only the ones in an active BGS state, because
+   * that is what spawns war/boom/election work. The full board is a different
+   * question — who actually runs this place and by how much — and it is the
+   * raw material local news is made of: "Explorer on Tour holds 42.7% and is
+   * expanding; HIP 71462 Council sits second on 30.6%".
+   */
+  factions?: Array<{ name: string; influence: number; state?: string; allegiance?: string }>;
   signals: SystemSignal[];
   /** Local minor factions in an active BGS state (War, Boom, Election, …) —
    *  the states that spawn combat/BGS missions. From FSDJump/Location Factions[]. */
