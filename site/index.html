@@ -1,15 +1,37 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ED Mission Operator — a mission HUD with a voice, for Elite Dangerous</title>
-<meta name="description" content="Free always-on-top mission HUD for Elite Dangerous: live journal-driven mission tracking, a proactive AI operator with offline neural voices, profitable trade runs, exobiology worked out while you walk, and a space-opera chronicle of your career. 100% local, no cloud — it installs its own AI.">
+<meta name="description" content="A free always-on-top mission HUD for Elite Dangerous. Reads your journal live, speaks in offline neural voices, and runs its AI entirely on your machine — no cloud, no account, no telemetry.">
 <link rel="icon" href="img/favicon.png">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Michroma&family=Saira:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
+/* Self-hosted, and not for speed. This page's whole claim is that nothing you
+   do here reaches a third party — a page that pings Google for a typeface
+   before the reader gets as far as the privacy section is arguing against
+   itself. Both faces are OFL-1.1; texts sit next to them in fonts/. */
+@font-face{
+  font-family:'Michroma';font-style:normal;font-weight:400;font-display:swap;
+  src:url(fonts/michroma-latin.woff2) format('woff2');
+  unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+@font-face{
+  font-family:'Michroma';font-style:normal;font-weight:400;font-display:swap;
+  src:url(fonts/michroma-latin-ext.woff2) format('woff2');
+  unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF;
+}
+/* Saira ships variable, so 400–600 is one file rather than three. */
+@font-face{
+  font-family:'Saira';font-style:normal;font-weight:400 600;font-display:swap;
+  src:url(fonts/saira-latin.woff2) format('woff2');
+  unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+@font-face{
+  font-family:'Saira';font-style:normal;font-weight:400 600;font-display:swap;
+  src:url(fonts/saira-latin-ext.woff2) format('woff2');
+  unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF;
+}
 :root{
   --bg:oklch(0.16 0.028 255);
   --bg-deep:oklch(0.13 0.025 255);
@@ -39,7 +61,15 @@ body{
 h1,h2,h3,.disp{font-family:"Michroma",sans-serif;font-weight:400;line-height:1.3}
 .mono{font-family:"Cascadia Mono",Consolas,monospace}
 a{color:var(--cyan)}
+a.a-amber{color:var(--amber)}
+a.a-dim{color:var(--dim)}
 img{max-width:100%;height:auto;display:block}
+:where(a,button,[tabindex]):focus-visible{outline:2px solid var(--amber);outline-offset:3px}
+@media (prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  *,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}
+  .dl:hover{transform:none}
+}
 .wrap{max-width:1100px;margin:0 auto;padding:0 clamp(16px,4vw,40px)}
 
 /* ---- top status strip (mimics the HUD footer) ---- */
@@ -71,6 +101,7 @@ img{max-width:100%;height:auto;display:block}
 h1{font-size:clamp(1.9rem,5vw,3.2rem);letter-spacing:0.02em;color:var(--text)}
 h1 em{font-style:normal;color:var(--amber)}
 .lede{margin-top:var(--space-6);font-size:clamp(1.05rem,1.8vw,1.25rem);color:var(--dim);max-width:54ch}
+.lede + .lede{margin-top:var(--space-4);font-size:1.05rem}
 .lede b{color:var(--text);font-weight:500}
 .cta-row{margin-top:var(--space-8);display:flex;gap:var(--space-4) var(--space-6);align-items:center;flex-wrap:wrap}
 .dl{
@@ -100,7 +131,9 @@ h1 em{font-style:normal;color:var(--amber)}
   padding-top:var(--space-3);line-height:1.5
 }
 .shot figcaption b{color:var(--cyan);font-weight:500}
-.zoom-hint{color:oklch(0.5 0.03 250);text-transform:none;letter-spacing:0.02em}
+/* Was 0.5 L, which is 3.2:1 on this background — a caption nobody over 40 could
+   read. 0.62 keeps it subordinate to --dim and clears 4.5:1. */
+.zoom-hint{color:oklch(0.62 0.025 250);text-transform:none;letter-spacing:0.02em}
 
 /* ---- sections ---- */
 section{padding:var(--space-16) 0}
@@ -115,24 +148,39 @@ section{padding:var(--space-16) 0}
 .sec-label .tail{margin-left:auto;font-size:0.75rem;letter-spacing:0.18em;color:var(--dim);text-transform:uppercase}
 @media (max-width:560px){.sec-label .tail{display:none}}
 
-/* feature manifest */
+/* feature manifest
+   Seventeen features used to run A–Q in one flat grid, which made them read as
+   seventeen equal things and the letters as a taxonomy they never were. They
+   group four ways — what it reads, who it is, what it shows you, what it will
+   go and fetch — so they are grouped, and the alphabet is gone. */
+.mgroup + .mgroup{margin-top:var(--space-16)}
+.mgroup-title{
+  display:flex;align-items:baseline;gap:var(--space-2) var(--space-4);flex-wrap:wrap;
+  font-size:0.95rem;letter-spacing:0.14em;text-transform:uppercase;color:var(--amber);
+  margin-bottom:var(--space-8);
+}
+.mgroup-title span{
+  font-family:"Saira",sans-serif;font-size:0.9rem;letter-spacing:0.01em;
+  text-transform:none;color:var(--dim);font-weight:400;
+}
 .manifest{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr));gap:var(--space-8) var(--space-12)}
-.mi{display:grid;grid-template-columns:auto minmax(0,1fr);gap:var(--space-4)}
-.mi .n{font-family:"Michroma",sans-serif;color:var(--amber);font-size:0.9rem;padding-top:5px}
-.mi h3{font-size:1.08rem;letter-spacing:0.04em;margin-bottom:var(--space-2);color:var(--text)}
+.mi h4{font-size:1.08rem;letter-spacing:0.04em;margin-bottom:var(--space-2);color:var(--text);font-family:"Michroma",sans-serif;font-weight:400;line-height:1.35}
 .mi p{font-size:1rem;color:var(--dim);max-width:52ch}
 .mi p b{color:var(--text);font-weight:500}
+.mi .opt{color:var(--dim);font-size:0.72em;letter-spacing:0.08em}
 
 /* gallery — screenshots at generous size */
 .gallery{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,400px),1fr));gap:var(--space-12) var(--space-8);align-items:start;justify-items:center}
 .gallery .shot{max-width:480px;width:100%}
 
 /* requirements readout */
+/* Hairline grid: the gap *is* the rule, so cells meet on one 1px line instead
+   of the doubled 2px seam you get from bordering every cell inside a border. */
 .readout{
   display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,230px),1fr));
-  border:1px solid var(--line);background:var(--panel);
+  gap:1px;border:1px solid var(--line);background:var(--line);
 }
-.readout div{padding:var(--space-6);border:1px solid oklch(0.32 0.035 255 / 0.4)}
+.readout div{padding:var(--space-6);background:var(--panel)}
 .readout dt{font-size:0.75rem;letter-spacing:0.18em;text-transform:uppercase;color:var(--cyan);margin-bottom:var(--space-2)}
 .readout dd{font-size:1rem;color:var(--text)}
 .readout dd small{display:block;color:var(--dim);font-size:0.88rem;margin-top:3px}
@@ -220,18 +268,15 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
       <p class="kicker">A companion tool for Elite Dangerous commanders</p>
       <h1>A mission HUD<br>with a <em>voice</em>.</h1>
       <p class="lede">
-        A small always-on-top panel that reads your Player Journal live: mission cards with
-        objectives and timers, a <b>proactive operator</b> that nudges you when you stall, and an
-        <b>AI wingman</b> that answers out loud in offline neural voices. It watches your ship in
-        real time — <b>fuel, heat, shields, interdictions, your docking pad</b> — checks whether
-        your hold and cabins can carry a job before you fly it, <b>finds you a profitable trade
-        run</b>, <b>plots a neutron route for your ship — or your fleet carrier's whole trip, jump
-        by jump, tritium counted</b>, does the <b>exobiology arithmetic</b> while you walk, and
-        writes the session up as a space-opera episode when you log off. It <b>remembers you</b> across sessions — your
-        factions, your records, where you lost a ship — and you can <b>talk to it</b>: hold a key,
-        speak, and it answers. Give it a vision model and it turns copilot, <b>riding the whole
-        session with you</b>. <b>Everything runs on your machine</b> — including the AI, which it
-        installs itself.
+        A small always-on-top panel that reads your Player Journal as you fly: mission cards with
+        the objective checklist the game never gives you, live expiry timers, and an operator that
+        notices when you have stalled and says so — out loud, in a neural voice synthesized on
+        your own machine.
+      </p>
+      <p class="lede">
+        Ask it anything and the answer comes from your real missions, your real hold and the
+        market you are actually docked at. <b>Everything runs here</b> — including the AI, which
+        it installs itself.
       </p>
       <div class="cta-row">
         <a class="dl" href="ED-Mission-Operator-1.0.3-setup.exe" download>
@@ -240,9 +285,9 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
         </a>
         <p class="cta-note">Free hobby project. Two offline voices included. AI features optional.</p>
         <p class="cta-note">🐧 <b>Linux beta:</b>
-          <a href="ED-Mission-Operator-1.0.3-amd64.deb" download style="color:var(--amber)">.deb (147 MB)</a>
+          <a href="ED-Mission-Operator-1.0.3-amd64.deb" download class="a-amber">.deb (147 MB)</a>
           ·
-          <a href="ED-Mission-Operator-1.0.3-x86_64.AppImage" download style="color:var(--amber)">AppImage (231 MB)</a>
+          <a href="ED-Mission-Operator-1.0.3-x86_64.AppImage" download class="a-amber">AppImage (231 MB)</a>
           — journals auto-detected from the Steam Proton prefix; X11 recommended
           (global hotkeys don't exist on Wayland); screen glances are Windows-only for now.
           Fresh out of the forge — reports welcome. AppImage users: install an emoji font
@@ -261,9 +306,11 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
 <section id="features">
   <div class="wrap">
     <div class="sec-label"><span class="idx">01</span><h2>What it does</h2><span class="tail">module manifest</span></div>
-    <div class="manifest">
-      <div class="mi"><span class="n">A</span><div>
-        <h3>Live mission tracking</h3>
+    <div class="mgroup">
+      <h3 class="mgroup-title">What it reads <span>the journal is the whole input — nothing is guessed</span></h3>
+      <div class="manifest">
+      <div class="mi"><div>
+        <h4>Live mission tracking</h4>
         <p>Reads the game's own journal files as you play. Cards show category, destination,
         reward, <b>kill and cargo counters</b>, gift commodities for VIPs, and a synthesized
         objective checklist the game never gives you — with live expiry timers. It reads
@@ -271,8 +318,32 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
         assassinations, plus <b>donations, scans, hacks, sabotage, smuggling and on-foot
         (Odyssey) work</b> — each with its own checklist and tailored advice.</p>
       </div></div>
-      <div class="mi"><span class="n">B</span><div>
-        <h3>Proactive heartbeat</h3>
+      <div class="mi"><div>
+        <h4>Flight safety &amp; ship status</h4>
+        <p>The operator watches the game's real-time status feed. A compact strip shows your
+        <b>fuel gauge</b> and live hazards, and it speaks the ones that matter: <b>"interdiction —
+        submit and boost"</b>, overheating, shields down, low fuel. It reads out your
+        <b>docking pad number</b> the instant control clears you, warns before a jump when the
+        next star can't refuel you, and knows when you're deep in a menu so it won't nag you for
+        "stalling" while you plan a route.</p>
+      </div></div>
+      <div class="mi"><div>
+        <h4>Knows your ship, mats &amp; surveys</h4>
+        <p>From your loadout it does the check the mission board never does: <b>"that delivery
+        won't fit your hold"</b>, <b>"you don't have cabins for these VIPs"</b>, <b>"you're not
+        rigged to mine this"</b>. It keeps a running tally of your <b>engineering materials and
+        unlocked engineers</b>, and while you explore it flags the bodies actually <b>worth
+        mapping</b> — Earth-likes, water and ammonia worlds, terraformables — with an estimate of
+        the survey data riding in your hold.</p>
+      </div></div>
+      </div>
+    </div>
+
+    <div class="mgroup">
+      <h3 class="mgroup-title">The operator <span>one personality, and it does the talking</span></h3>
+      <div class="manifest">
+      <div class="mi"><div>
+        <h4>Proactive heartbeat</h4>
         <p>The operator notices when you stall: docked too long with hand-ins waiting, parked in a
         kill system without engaging, a contract about to expire. It tells you — <b>out loud</b> —
         and names the actual RES site or Nav Beacon it detected in-system. It keeps a miner
@@ -280,8 +351,8 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
         on rich rocks, and tonnage milestones as the refinery fills — quietly, on strict
         cooldowns.</p>
       </div></div>
-      <div class="mi"><span class="n">C</span><div>
-        <h3>AI operator <span style="color:var(--dim);font-size:0.82em">(optional)</span></h3>
+      <div class="mi"><div>
+        <h4>AI operator <span class="opt">(optional)</span></h4>
         <p>Turn the AI on with <b>one button</b> — the app installs its own engine and model, with
         nothing else to download or configure — then ask it anything. <i>"What should I do
         first?"</i> gets an answer grounded in your real missions, system intel and expiry order,
@@ -289,40 +360,21 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
         Prefer to run your own? Point it at LM Studio instead, and a built-in advisor reads your
         RAM and graphics card and tells you which models actually fit.</p>
       </div></div>
-      <div class="mi"><span class="n">D</span><div>
-        <h3>Offline neural voices</h3>
+      <div class="mi"><div>
+        <h4>Offline neural voices</h4>
         <p>Two bundled Piper voices speak briefings, warnings and stories — <b>no cloud, ever</b>.
         Six more voices are a one-click download away. Text never leaves your machine.</p>
       </div></div>
-      <div class="mi"><span class="n">E</span><div>
-        <h3>Trade leads &amp; profitable runs</h3>
-        <p>Every commodities market you open is remembered, and when a buy-low / sell-high spread
-        clears your threshold a dismissible <b>trade lead card</b> appears. Ask what's worth
-        hauling and it goes further: it searches community market data for the best
-        <b>buy-here, sell-there run</b> out of your system, sized to your hold and filtered to
-        <b>pads your ship can actually land on</b>. The answer arrives as a card with the numbers
-        you act on — credits a ton, credits a full hold, how far — and a <b>copy button on every
-        destination</b>, so the system name is on your clipboard ready for a Ctrl+V in the galaxy
-        map. A multi-hop Spansh loop is one question away when you want one.</p>
+      <div class="mi"><div>
+        <h4>Ears <span class="opt">(optional, off by default)</span></h4>
+        <p><b>Talk to it.</b> Hold <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>Space</kbd> — even with
+        the game in focus — speak, release, and the operator answers out loud. Speech recognition
+        runs on a local Whisper model (a one-time download on your click); your voice never
+        leaves the machine. And it holds the thread: <i>"and how far is that?"</i> works, because
+        the operator remembers what it just told you — including its own stories and warnings.</p>
       </div></div>
-      <div class="mi"><span class="n">F</span><div>
-        <h3>The Saga</h3>
-        <p>When you log off, the operator narrates your session as a numbered <b>space-opera
-        episode</b> — real events, real credits, real names, with continuity from the previous
-        chapter and a cliffhanger for the next. Plus in-flight scuttlebutt about your passengers
-        and the places on your route.</p>
-      </div></div>
-      <div class="mi"><span class="n">G</span><div>
-        <h3>A memory</h3>
-        <p>The operator <b>remembers you across sessions</b>: your history with every faction,
-        every system you've visited (and where you lost a ship), personal records — richest
-        contract, biggest bounty, best session. It brings memories up at the right moment
-        ("that's your best session ever") and stays quiet the rest of the time — strict cooldowns
-        make chatter-flooding impossible. On its first run it reads your recent journals, so it
-        knows you from day one.</p>
-      </div></div>
-      <div class="mi"><span class="n">H</span><div>
-        <h3>Eyes &amp; a living copilot <span style="color:var(--dim);font-size:0.82em">(optional, off by default)</span></h3>
+      <div class="mi"><div>
+        <h4>Eyes &amp; a living copilot <span class="opt">(optional, off by default)</span></h4>
         <p>With the AI turned on, the operator can <b>glance at your screen</b>
         and understand what you're doing — even in situations the journal doesn't record. It never
         reacts to a single frame in isolation: your undockings, jumps, interdictions, arrivals and
@@ -335,56 +387,30 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
         it never floods you. The screenshot travels only to your own machine's LM endpoint and is
         never saved.</p>
       </div></div>
-      <div class="mi"><span class="n">I</span><div>
-        <h3>Ears <span style="color:var(--dim);font-size:0.82em">(optional, off by default)</span></h3>
-        <p><b>Talk to it.</b> Hold <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>Space</kbd> — even with
-        the game in focus — speak, release, and the operator answers out loud. Speech recognition
-        runs on a local Whisper model (a one-time download on your click); your voice never
-        leaves the machine. And it holds the thread: <i>"and how far is that?"</i> works, because
-        the operator remembers what it just told you — including its own stories and warnings.</p>
+      <div class="mi"><div>
+        <h4>A memory</h4>
+        <p>The operator <b>remembers you across sessions</b>: your history with every faction,
+        every system you've visited (and where you lost a ship), personal records — richest
+        contract, biggest bounty, best session. It brings memories up at the right moment
+        ("that's your best session ever") and stays quiet the rest of the time — strict cooldowns
+        make chatter-flooding impossible. On its first run it reads your recent journals, so it
+        knows you from day one.</p>
       </div></div>
-      <div class="mi"><span class="n">J</span><div>
-        <h3>Flight safety &amp; ship status</h3>
-        <p>The operator watches the game's real-time status feed. A compact strip shows your
-        <b>fuel gauge</b> and live hazards, and it speaks the ones that matter: <b>"interdiction —
-        submit and boost"</b>, overheating, shields down, low fuel. It reads out your
-        <b>docking pad number</b> the instant control clears you, warns before a jump when the
-        next star can't refuel you, and knows when you're deep in a menu so it won't nag you for
-        "stalling" while you plan a route.</p>
+      <div class="mi"><div>
+        <h4>The Saga</h4>
+        <p>When you log off, the operator narrates your session as a numbered <b>space-opera
+        episode</b> — real events, real credits, real names, with continuity from the previous
+        chapter and a cliffhanger for the next. Plus in-flight scuttlebutt about your passengers
+        and the places on your route.</p>
       </div></div>
-      <div class="mi"><span class="n">K</span><div>
-        <h3>Knows your ship, mats &amp; surveys</h3>
-        <p>From your loadout it does the check the mission board never does: <b>"that delivery
-        won't fit your hold"</b>, <b>"you don't have cabins for these VIPs"</b>, <b>"you're not
-        rigged to mine this"</b>. It keeps a running tally of your <b>engineering materials and
-        unlocked engineers</b>, and while you explore it flags the bodies actually <b>worth
-        mapping</b> — Earth-likes, water and ammonia worlds, terraformables — with an estimate of
-        the survey data riding in your hold.</p>
-      </div></div>
-      <div class="mi"><span class="n">L</span><div>
-        <h3>Reads your live data on the fly</h3>
-        <p>Ask <i>"what's worth buying here?"</i> and the operator doesn't guess — it <b>reads the
-        live commodities market</b> in front of you before it answers. With a tool-calling model it
-        can reach for exactly what a question needs: the current market, where to buy or sell a
-        commodity across the stations you've visited, <b>a profitable run out of here</b>, a
-        multi-hop Spansh loop, whether cargo fits your hold, your missions, materials or system
-        intel. No more being sent to buy
-        something that <b>sold out hours ago</b> — and if your model can't call tools, it still
-        answers grounded in the market it can see. All local; nothing leaves your machine.</p>
-      </div></div>
-      <div class="mi"><span class="n">M</span><div>
-        <h3>Exobiology, worked out for you</h3>
-        <p>Odyssey makes you take three samples of a species, each one far enough from the last —
-        and never tells you how far. The operator does: <b>500 m for Bacterium, 800 m for
-        Osseus</b>, called out the moment you take a sample, and then a single "far enough" when
-        you've walked it. Before you commit to a landing it tells you what's down there, roughly
-        <b>what a full set is worth</b>, and how much walking it will cost. If nobody has logged
-        that body before, it says so — <b>a first sample pays five times as much</b>. And when you
-        cash it all in at Vista Genomics, the payout goes into your session ledger and your
-        records, bonuses included.</p>
-      </div></div>
-      <div class="mi"><span class="n">N</span><div>
-        <h3>Route plotter — ship &amp; fleet carrier <span style="color:var(--dim);font-size:0.82em">(opt-in)</span></h3>
+      </div>
+    </div>
+
+    <div class="mgroup">
+      <h3 class="mgroup-title">The panels the game keeps from you <span>everything here exists because you cannot read it while flying</span></h3>
+      <div class="manifest">
+      <div class="mi"><div>
+        <h4>Route plotter — ship &amp; fleet carrier <span class="opt">(opt-in)</span></h4>
         <p>A plotter tab for the two routes the galaxy map won't give you. For your <b>ship</b>, the
         <b>neutron highway</b> — every supercharge star between here and there, plotted against
         your real jump range. For your <b>fleet carrier</b>, the thing the game refuses to do at
@@ -399,8 +425,8 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
         route you do: it calls each waypoint out loud and knows about the shortfall before it
         advises you on anything.</p>
       </div></div>
-      <div class="mi"><span class="n">O</span><div>
-        <h3>System architect — the build, as a shopping list</h3>
+      <div class="mi"><div>
+        <h4>System architect — the build, as a shopping list</h4>
         <p>Dock at a <b>construction site</b> and the whole requirement comes across into its own
         tab. The game states it once, on the contribution panel, as an alphabetical wall of
         <i>required / provided</i> — and you cannot read it at all once you undock to go shopping.
@@ -417,8 +443,8 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
         again. It also counts the <b>trips</b> against your actual hold — <i>"×6"</i> next to a
         line is six full loads — and credits your deliveries the moment you make them.</p>
       </div></div>
-      <div class="mi"><span class="n">P</span><div>
-        <h3>The local wire — news for the system you are in <span style="color:var(--dim);font-size:0.82em">(new in 1.0.3)</span></h3>
+      <div class="mi"><div>
+        <h4>The local wire — news for the system you are in <span class="opt">(new in 1.0.3)</span></h4>
         <p>Galnet reports the galaxy. <b>Nothing reports the system you are standing in</b> — who runs
         it, who is gaining on them, what the construction sites are short of, what steel did this
         week. So your own AI writes the local paper, from a brief of things the journal says are
@@ -434,8 +460,47 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
         Choose how often it files, from every ten minutes to hourly, or off with a button to run one
         on demand.</p>
       </div></div>
-      <div class="mi"><span class="n">Q</span><div>
-        <h3>The wider galaxy, on request <span style="color:var(--dim);font-size:0.82em">(opt-in)</span></h3>
+      <div class="mi"><div>
+        <h4>Trade leads &amp; profitable runs</h4>
+        <p>Every commodities market you open is remembered, and when a buy-low / sell-high spread
+        clears your threshold a dismissible <b>trade lead card</b> appears. Ask what's worth
+        hauling and it goes further: it searches community market data for the best
+        <b>buy-here, sell-there run</b> out of your system, sized to your hold and filtered to
+        <b>pads your ship can actually land on</b>. The answer arrives as a card with the numbers
+        you act on — credits a ton, credits a full hold, how far — and a <b>copy button on every
+        destination</b>, so the system name is on your clipboard ready for a Ctrl+V in the galaxy
+        map. A multi-hop Spansh loop is one question away when you want one.</p>
+      </div></div>
+      <div class="mi"><div>
+        <h4>Exobiology, worked out for you</h4>
+        <p>Odyssey makes you take three samples of a species, each one far enough from the last —
+        and never tells you how far. The operator does: <b>500 m for Bacterium, 800 m for
+        Osseus</b>, called out the moment you take a sample, and then a single "far enough" when
+        you've walked it. Before you commit to a landing it tells you what's down there, roughly
+        <b>what a full set is worth</b>, and how much walking it will cost. If nobody has logged
+        that body before, it says so — <b>a first sample pays five times as much</b>. And when you
+        cash it all in at Vista Genomics, the payout goes into your session ledger and your
+        records, bonuses included.</p>
+      </div></div>
+      </div>
+    </div>
+
+    <div class="mgroup">
+      <h3 class="mgroup-title">What it will go and fetch <span>only when you ask, and only what the question needs</span></h3>
+      <div class="manifest">
+      <div class="mi"><div>
+        <h4>Reads your live data on the fly</h4>
+        <p>Ask <i>"what's worth buying here?"</i> and the operator doesn't guess — it <b>reads the
+        live commodities market</b> in front of you before it answers. With a tool-calling model it
+        can reach for exactly what a question needs: the current market, where to buy or sell a
+        commodity across the stations you've visited, <b>a profitable run out of here</b>, a
+        multi-hop Spansh loop, whether cargo fits your hold, your missions, materials or system
+        intel. No more being sent to buy
+        something that <b>sold out hours ago</b> — and if your model can't call tools, it still
+        answers grounded in the market it can see. All local; nothing leaves your machine.</p>
+      </div></div>
+      <div class="mi"><div>
+        <h4>The wider galaxy, on request <span class="opt">(opt-in)</span></h4>
         <p>Three community sources the operator touches <b>only when you ask it to</b>. <i>"Any
         news?"</i> reads the <b>Galnet wire</b> and passes the stories on as news — not as
         something you were there for. <i>"Where can I sell this?"</i> searches markets
@@ -446,6 +511,7 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
         nobody has been yet, not that there is nothing to find. Each is off until you switch it
         on, and each sends the bare minimum: a system name, a commodity, or nothing at all.</p>
       </div></div>
+      </div>
     </div>
   </div>
 </section>
@@ -631,7 +697,7 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
           <li><b>Memory stays home.</b> The operator's long-term memory is one local JSON file you can open, inspect, or wipe with one click ("Forget everything"). Screen glances are off by default; when enabled, screenshots go only to your local LM endpoint and are never written to disk.</li>
           <li><b>Your voice stays home.</b> Push-to-talk is off by default; when enabled, speech is transcribed by a local Whisper model on your own CPU. No cloud speech service, ever — the microphone is only live while you hold the key.</li>
           <li><b>Open source.</b> Don't take any of this on faith — the full source is on
-          <a href="https://github.com/Mallock/edmo" rel="noopener" style="color:var(--amber)">GitHub (MIT license)</a>:
+          <a href="https://github.com/Mallock/edmo" rel="noopener" class="a-amber">GitHub (MIT license)</a>:
           the tested TypeScript mission engine, the Rust shell, the prompts, everything.
           Build it yourself with Node + Rust, or read the network code for yourself — every
           request the app can make is in the Rust shell, and each one is named on this page.</li>
@@ -671,9 +737,9 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
 
 <footer>
   <div class="wrap">
-    <span><b style="color:var(--amber)">ED MISSION OPERATOR</b></span>
+    <span><b class="a-amber">ED MISSION OPERATOR</b></span>
     <span>a hobby project · not affiliated with Frontier Developments</span>
-    <span><a href="https://github.com/Mallock/edmo" rel="noopener" style="color:var(--dim)">github.com/Mallock/edmo · MIT</a></span>
+    <span><a href="https://github.com/Mallock/edmo" rel="noopener" class="a-dim">github.com/Mallock/edmo · MIT</a></span>
     <span><span class="dot"></span>JRNL · LM · PIPER</span>
     <span class="o7">o7 CMDR</span>
   </div>

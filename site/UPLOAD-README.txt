@@ -6,6 +6,7 @@ WHAT THIS IS
 
   index.html                              the page
   img/                                    screenshots + icons
+  fonts/                                  the two webfonts, self-hosted
   ED-Mission-Operator-1.0.3-setup.exe       the Windows installer (~131 MB)
   ED-Mission-Operator-1.0.3-amd64.deb       Linux beta, Ubuntu/Debian (~147 MB)
   ED-Mission-Operator-1.0.3-x86_64.AppImage Linux beta, any distro (~231 MB)
@@ -118,4 +119,9 @@ NOTES
   * When you ship a new version, copy the new setup .exe here, rename it to
     match, and update the version number + file name in index.html
     (it appears in the version strip, the download button, and step 01).
-  * Everything else (fonts) loads from Google Fonts automatically.
+  * The fonts are SELF-HOSTED in fonts/ (Michroma + Saira, ~90 KB, OFL-1.1
+    with the licence texts alongside them). They used to come from Google
+    Fonts, which meant every visitor's IP reached Google before they got as
+    far as the page's "no cloud, no telemetry" section — the page now makes
+    no third-party request at all. Upload the fonts/ folder with the rest;
+    if it is missing the page still reads, but falls back to a system sans.

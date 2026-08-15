@@ -47,7 +47,7 @@ function JumpClock({ phase }: { phase: CarrierPhase }) {
         ? 'NEXT JUMP IN'
         : 'READY TO JUMP';
   return (
-    <div className="plot-clock" style={{ borderLeftColor: colour }}>
+    <div className="plot-clock" style={{ borderColor: colour }}>
       <div className="plot-clock-label" style={{ color: colour }}>
         {label}
       </div>

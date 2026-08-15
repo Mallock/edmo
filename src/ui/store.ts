@@ -365,6 +365,15 @@ export interface PlotterView {
   jumpState: CarrierJumpState;
 }
 
+/**
+ * Stories on the front page at once.
+ *
+ * Four fits the card without a scrollbar of its own. The wire keeps far more
+ * than this — history is what stops it repeating itself — but a news panel
+ * that grows without bound stops being a front page.
+ */
+const NEWS_ON_PAGE = 4;
+
 /** Everything the News tab renders — data only; actions live on core. */
 export interface NewsView {
   system: string;
@@ -796,8 +805,17 @@ export class AppCore {
       return {};
     }
   })();
-  /** Editions filed, so the desk rotation moves on each time. */
-  private newsEdition = 0;
+  /**
+   * Editions filed, so the desk rotation moves on each time.
+   *
+   * Persisted: in memory only, every restart began at edition 0 and the civic
+   * desk led the paper again — which is how the same faction board got written
+   * up twice within half an hour.
+   */
+  private newsEdition = (() => {
+    const n = Number(localStorage.getItem('edmo.newsedition.v1') ?? '0');
+    return Number.isFinite(n) && n >= 0 ? n : 0;
+  })();
   private newsAt: number | null = null;
   private newsBusy = false;
   private newsError: string | null = null;
@@ -2815,7 +2833,10 @@ export class AppCore {
         .map((d) => d.station),
       // The paper's own continuity.
       cast: this.newsCast,
-      previously: this.news.filter((n) => n.system === system).slice(0, 6).map((n) => n.headline),
+      previously: this.news
+        .filter((n) => n.system === system)
+        .slice(0, 6)
+        .map((n) => `${n.headline} — ${n.body.slice(0, 70)}…`),
     });
   }
 
@@ -2850,6 +2871,49 @@ export class AppCore {
     return out.slice(0, 2);
   }
 
+  /**
+   * Is anything already talking to the engine?
+   *
+   * The bundled engine runs with `--parallel 1` — one slot, deliberately, so a
+   * second decode cannot steal frames from the game. A request that arrives
+   * while the slot is busy does not queue politely: the news call landed
+   * during a streaming copilot beat and came back with an empty completion and
+   * HTTP 200, which reads exactly like a model that had nothing to say.
+   *
+   * One predicate, so every caller agrees on what "busy" means.
+   */
+  private engineBusy(): boolean {
+    return this.engineBusyExceptNews() || this.newsBusy;
+  }
+
+  /**
+   * Everything except the wire itself.
+   *
+   * The wire claims `newsBusy` synchronously — before it awaits anything — so
+   * that a beat cannot slip in during the tick it spends queueing. It then has
+   * to wait on a predicate that does not include its own claim, or it would be
+   * waiting for itself.
+   */
+  private engineBusyExceptNews(): boolean {
+    return this.lmBusy || this.copilotBeatInFlight || this.beatGateInFlight || this.glanceInFlight;
+  }
+
+  /**
+   * Wait for the engine to go quiet, up to `ms`.
+   *
+   * Background work waits its turn rather than colliding. Nothing the
+   * commander is waiting on calls this — a spoken beat that queued behind a
+   * 30-second bulletin would be worse than one that never fired.
+   */
+  private async waitForEngine(ms: number): Promise<boolean> {
+    const until = Date.now() + ms;
+    while (this.engineBusyExceptNews()) {
+      if (Date.now() > until) return false;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    return true;
+  }
+
   /** Write an edition. Silent on failure — a paper that cannot print says nothing. */
   async refreshNews(force = false): Promise<void> {
     if (!this.settings.news.enabled || this.newsBusy) return;
@@ -2869,14 +2933,37 @@ export class AppCore {
       this.emit();
       return;
     }
+    // Claim the slot NOW, synchronously, so no beat can start in the tick this
+    // spends queueing — refreshNews is fire-and-forget, and the heartbeat calls
+    // maybeChatter() on the very next line.
     this.newsBusy = true;
     this.newsError = null;
     this.emit();
+    // Then wait for whatever is already talking to finish. On a manual press
+    // the commander is watching, so wait a good while; the heartbeat has
+    // already checked and will simply come back next tick.
+    if (!(await this.waitForEngine(force ? 90_000 : 5_000))) {
+      this.newsBusy = false;
+      if (force) {
+        this.newsError =
+          'The operator is still talking — the wire waited its turn and gave up. Try again in a moment.';
+      }
+      this.emit();
+      return;
+    }
+    // An edition may have been filed by someone else while we queued.
+    if (!force && !newsDue(this.newsAt, this.settings.news.everyMin, Date.now())) {
+      this.newsBusy = false;
+      return;
+    }
     try {
       const recent = this.news.filter((n) => n.system === system).map((n) => n.headline);
       // One desk per story, rotated per edition — the variety is scheduled
       // rather than hoped for, the same way beat angles are.
-      const desks = desksFor(brief, this.newsEdition).slice(0, this.settings.news.perEdition);
+      const desks = desksFor(brief, this.newsEdition, this.settings.news.perEdition).slice(
+        0,
+        this.settings.news.perEdition,
+      );
       const raw = await llmQuick({
         ...this.lmTarget(),
         model: this.activeModel()!,
@@ -2889,15 +2976,22 @@ export class AppCore {
         ) as unknown as ChatMessageWire[],
         // MUST be set: llmQuick defaults to eight tokens (see newsMaxTokens).
         maxTokens: newsMaxTokens(this.settings.news.perEdition),
-        noThinking: suppressThinkingForGate(profileFor(this.activeModel())),
+        // LET IT THINK. This is the one call in the app with real writing to
+        // do — six desks, a fact brief it must not contradict, and a voice to
+        // hold — and reasoning is free on a local engine. The gate suppresses
+        // thinking because it answers one word; the wire is the opposite case.
+        // The budget above covers the thinking pass so it cannot crowd out the
+        // stories, which is what made this look broken.
+        noThinking: false,
         // A paper on temperature 0 files the same edition from the same brief
         // for ever; the gate's default is exactly wrong here.
         temperature: 0.85,
-        // Prose, not a verdict — and the game is holding the GPU. Measured on
-        // this machine WITH Elite running: 7.86 tokens/second, against 60 on
-        // an idle card. One edition took 99.9 s and the 15 s default had long
-        // since given up, which is what made the tab look permanently broken.
-        timeoutSecs: 180,
+        // Prose AND a reasoning pass, on a GPU the game is also using.
+        // Measured with Elite running: 7.86 tokens/second against 60 on an idle
+        // card, so the same edition is 30 s or 5 minutes depending on the
+        // scene. Generous, because the wire is background work and the only
+        // cost of waiting is the wire itself.
+        timeoutSecs: 420,
         // Say what actually went wrong. Swallowing this is why a stopped
         // engine looked identical to an unparseable reply.
         strict: true,
@@ -2907,11 +3001,19 @@ export class AppCore {
         system,
         at: new Date().toISOString(),
         recentHeadlines: recent,
+        // Bodies too: two civic stories with different headlines carried the
+        // same four faction percentages and both got printed.
+        published: this.news.filter((n) => n.system === system).slice(0, 12),
         max: this.settings.news.perEdition,
         desks,
         cast: this.newsCast,
       });
       this.newsEdition += 1;
+      try {
+        localStorage.setItem('edmo.newsedition.v1', String(this.newsEdition));
+      } catch {
+        /* the rotation still advances for this session */
+      }
       // Only now do the prices we just reported on become "what we last saw".
       // Committing them at read time would mean every board is always
       // unchanged by the time an edition is written.
@@ -2947,9 +3049,21 @@ export class AppCore {
         // "Nothing printable" covered two very different failures — every
         // story rejected, versus the model returning nothing usable at all —
         // and only one of them is the wire working as designed.
-        this.newsError = rejected.length
-          ? `Every story was spiked this cycle (${rejected[0]}).`
-          : 'The model returned nothing the wire could parse. Try another edition.';
+        //
+        // The unparseable case now shows what actually came back. Every guess
+        // at this failure from the outside was wrong — the prompt, the data,
+        // the model id and the engine all reproduce cleanly on a bench — and
+        // an error that describes the symptom instead of the evidence is what
+        // kept it unsolved. A hundred characters of the real reply ends it.
+        if (rejected.length) {
+          this.newsError = `Every story was spiked this cycle (${rejected[0]}).`;
+        } else {
+          const sample = raw.replace(/\s+/g, ' ').trim().slice(0, 100);
+          this.newsError = sample
+            ? `The model did not answer in a shape the wire could read. It said: "${sample}…"`
+            : 'The model returned nothing at all — an empty reply from the engine.';
+          this.noteGlance(`news — unparseable reply (${raw.length} chars): ${sample}`);
+        }
       }
       this.newsAt = Date.now();
     } catch (e) {
@@ -2984,8 +3098,13 @@ export class AppCore {
     const system = this.sm.location.system;
     return {
       system,
-      items: this.news.filter((n) => n.system === system),
-      archive: this.news.filter((n) => n.system !== system).slice(0, 8),
+      // The front page, not the archive. Editions accumulate every ten minutes
+      // and the card grew a scrollbar of its own inside a 420 px HUD — by the
+      // eighth story the newest was above the fold and everything else was
+      // just history the commander had already read. The rest is still kept
+      // (persisted, and fed to the duplicate gate); it simply is not shown.
+      items: this.news.filter((n) => n.system === system).slice(0, NEWS_ON_PAGE),
+      archive: this.news.filter((n) => n.system !== system).slice(0, 3),
       busy: this.newsBusy,
       error: this.newsError,
       lastAt: this.newsAt,
@@ -3658,8 +3777,7 @@ export class AppCore {
     // an edition is a background errand and must not delay a spoken beat.
     if (
       this.settings.news.enabled &&
-      !this.lmBusy &&
-      !this.copilotBeatInFlight &&
+      !this.engineBusy() &&
       newsDue(this.newsAt, this.settings.news.everyMin, Date.now())
     ) {
       void this.refreshNews(false);
@@ -3768,7 +3886,7 @@ export class AppCore {
 
   private maybeGlance(): void {
     if (!this.settings.vision.enabled || !isTauri) return;
-    if (!this.lmOk || this.lmBusy || this.glanceInFlight) return;
+    if (!this.lmOk || this.engineBusy()) return;
     if (!this.activeModelIsVlm()) return;
     if (Date.now() - this.lastGameActivity >= GAME_LIVE_WINDOW_MS) return;
     if (Date.now() - this.lastGlanceAt < this.settings.vision.intervalMin * 60_000) return;
@@ -4389,7 +4507,7 @@ export class AppCore {
    */
   private maybeCopilotIdle(): void {
     if (!this.settings.vision.commentary || !isTauri) return;
-    if (!this.lmOk || this.lmBusy || this.glanceInFlight) return;
+    if (!this.lmOk || this.engineBusy()) return;
     if (Date.now() - this.lastGameActivity >= GAME_LIVE_WINDOW_MS) return;
     if (Date.now() - this.lastCombatAt < 60_000) return;
     // Mid-walk between samples the commander is listening for one specific
@@ -4437,7 +4555,7 @@ export class AppCore {
    *  what makes the copilot feel present between screen glances. */
   private copilotReact(tier: ReactionTier, note: string): void {
     if (!this.settings.vision.commentary || !isTauri) return;
-    if (!this.lmOk || this.lmBusy || this.glanceInFlight || this.beatGateInFlight) return;
+    if (!this.lmOk || this.engineBusy()) return;
     if (Date.now() - this.lastGameActivity >= GAME_LIVE_WINDOW_MS) return;
     if (Date.now() - this.lastCombatAt < 60_000) return; // don't cut into a fight
     const inv = this.settings.vision.involvement;
@@ -4484,7 +4602,7 @@ export class AppCore {
       return;
     }
     // The world moved while we were asking; re-check what the gate raced past.
-    if (!this.settings.vision.commentary || !this.lmOk || this.lmBusy || this.glanceInFlight) return;
+    if (!this.settings.vision.commentary || !this.lmOk || this.engineBusy()) return;
     if (Date.now() - this.lastGameActivity >= GAME_LIVE_WINDOW_MS) return;
     this.noteGlance(note);
     this.fireCopilotBeat(null);
@@ -4520,7 +4638,7 @@ export class AppCore {
       this.noteGlance('glance — nothing on screen worth a word.');
       return;
     }
-    if (!this.settings.vision.commentary || !this.lmOk || this.lmBusy || this.glanceInFlight) return;
+    if (!this.settings.vision.commentary || !this.lmOk || this.engineBusy()) return;
     this.noteGlance('copilot — looking at the screen…');
     this.fireCopilotBeat(scene);
   }

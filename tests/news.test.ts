@@ -23,9 +23,12 @@ import {
   newsMaxTokens,
   newsIntervalLabel,
   parseNewsItems,
+  saysNothingNew,
+  storyFacts,
 } from '../src/engine/news.ts';
 import type { SystemIntel } from '../src/engine/types.ts';
 import type { MarketRecord } from '../src/engine/trade.ts';
+import { isNearDuplicate } from '../src/engine/copilot.ts';
 
 const INTEL: SystemIntel = {
   population: 99_298_561,
@@ -213,14 +216,14 @@ test('the wire runs on its own clock, and Off means off', () => {
 
 test('desks are offered only when the brief can support them, and they rotate', () => {
   const b = brief();
-  assert.deepEqual(desksFor(b, 0), ['civic', 'industry', 'crime', 'sport', 'life']);
+  assert.deepEqual(desksFor(b, 0), ['civic', 'industry', 'crime', 'sport', 'life', 'gossip', 'celebrity']);
   // Rotation means the same desk does not lead every edition.
   assert.equal(desksFor(b, 1)[0], 'industry');
   assert.equal(desksFor(b, 2)[0], 'crime');
   // A system with nothing but a masthead has no politics or industry to report,
   // but the invented desks still run — that is the point of them.
-  assert.deepEqual(desksFor(['SYSTEM: Sol.'], 0), ['crime', 'sport', 'life']);
-  assert.deepEqual(desksFor([], 0), ['sport', 'life']);
+  assert.deepEqual(desksFor(['SYSTEM: Sol.'], 0), ['crime', 'sport', 'life', 'gossip', 'celebrity']);
+  assert.deepEqual(desksFor([], 0), ['sport', 'life', 'gossip', 'celebrity']);
 });
 
 test('the sport desk may invent a team; the civic desk may not invent a faction', () => {
@@ -416,6 +419,9 @@ test('an edition is budgeted for prose, not for a one-word verdict', () => {
   // Three stories measured ~940 characters against the real model.
   assert.ok(newsMaxTokens(3) >= 700, 'three stories need room for ~940 chars');
   assert.ok(newsMaxTokens(1) > 8 * 20, 'even one story dwarfs the llmQuick default');
+  // The model reasons before it writes and that is wanted, but a measured
+  // ~700-token thinking pass must not be able to crowd out the stories.
+  assert.ok(newsMaxTokens(3) - 220 * 3 >= 1000, 'budget must cover the reasoning pass too');
   assert.equal(newsMaxTokens(5) > newsMaxTokens(3), true);
   assert.equal(newsMaxTokens(0), newsMaxTokens(1)); // never budget nothing
 });
@@ -454,4 +460,116 @@ test('the brief still rides in the user message, not the system one', () => {
   assert.doesNotMatch(chat[0].content, /HIP 71120/); // no facts in the persona
   assert.match(chat[1].content, /FACTION: Explorer on Tour/);
   assert.match(chat[1].content, /desk "civic"/);
+});
+
+test('the same story under a new headline does not run twice', () => {
+  // Both of these were printed on the live wire half an hour apart. The
+  // headlines share 11% of their words so the headline gate waved the second
+  // one through; the bodies — same four factions, same four percentages —
+  // share 35%.
+  const first = {
+    headline: 'Power structures remain predictably cumbersome',
+    body: 'The political landscape is dominated by Explorer on Tour, holding 42.9% influence and currently in Expansion. The HIP 71462 Council remains a close second with 30.9% influence. Meanwhile, The Dark Wheel maintains 16.2% influence.',
+  };
+  const second = {
+    desk: 'civic',
+    headline: 'Influence shifts remain predictable, if tedious',
+    body: 'The political landscape in HIP 71120 continues to be dominated by established interests. Explorer on Tour retains the highest influence at 42.9%, though the HIP 71462 Council maintains a solid 30.9% footing. The Dark Wheel holds 16.2% influence.',
+  };
+  // The old gate — headlines only — lets it through.
+  assert.equal(isNearDuplicate(second.headline, [first.headline]), false);
+  // The published-story gate does not.
+  const { items, rejected } = acceptNews(JSON.stringify([second]), {
+    brief: brief(),
+    system: 'HIP 71120',
+    at: 'x',
+    desks: ['civic'],
+    published: [first],
+  });
+  assert.deepEqual(items, []);
+  assert.match(rejected[0], /repeat of "Influence shifts remain predictable/);
+});
+
+test('a genuinely different story on the same desk still prints', () => {
+  const first = {
+    headline: 'Power structures remain predictably cumbersome',
+    body: 'Explorer on Tour holds 42.9% influence and is in Expansion.',
+  };
+  const { items } = acceptNews(
+    JSON.stringify([
+      { desk: 'civic', headline: 'Council quietly gains ground', body: 'HIP 71462 Council has crept to 30.9%, and nobody at the top has mentioned it once.' },
+    ]),
+    { brief: brief(), system: 'HIP 71120', at: 'x', desks: ['civic'], published: [first] },
+  );
+  assert.equal(items.length, 1);
+});
+
+// ------------------------------------------- the same claims, different words
+
+test('a rewrite of a printed story is caught by its facts, not its wording', () => {
+  // Both ran on the live wire. Word overlap is 26% — under the duplicate
+  // threshold — while 89% of the second story's figures and names had already
+  // been printed. The prose is what changes; the claims are what repeat.
+  const printed =
+    'The power distribution in HIP 71120 remains stubbornly static. Explorer on Tour maintains its ' +
+    '42.9% influence, steadily expanding its reach. The HIP 71462 Council holds a significant, but ' +
+    'watchful, 30.9% influence. The remaining factions—The Dark Wheel and GR Virginis Dominion—are ' +
+    'simply holding the perimeter, waiting for a vacuum that seems unlikely to form.';
+  const rewrite =
+    'Influence shifts remain predictable, if tedious. The political landscape in HIP 71120 continues ' +
+    'to be dominated by established interests. Explorer on Tour retains the highest influence at ' +
+    '42.9%, though the HIP 71462 Council maintains a solid 30.9% footing. The Dark Wheel holds 16.2% ' +
+    'influence, while GR Virginis Dominion at 9.9% appear content to merely exist.';
+  assert.equal(isNearDuplicate(rewrite, [printed]), false, 'words alone let it through');
+  assert.equal(saysNothingNew(rewrite, [printed]), true, 'its facts were all printed already');
+});
+
+test('a story with genuinely new figures still prints', () => {
+  const printed = 'Explorer on Tour holds 42.9% influence. HIP 71462 Council holds 30.9%.';
+  const fresh =
+    'Steel at Niinimäki is 3,905 cr, up 13% since the last reading, and Anders City wants ' +
+    '1,269,378 t of Hydrogen Peroxide.';
+  assert.equal(saysNothingNew(fresh, [printed]), false);
+});
+
+test('a thin story is never spiked for having few facts', () => {
+  // A sport result naming one team must not be gagged for naming it again.
+  const printed = 'The Meridian Hawks won at Anders City.';
+  assert.equal(saysNothingNew('The Meridian Hawks lost.', [printed]), false);
+  assert.equal(storyFacts('The Meridian Hawks lost.').size < 3, true);
+});
+
+test('every desk gets a turn, and consecutive editions never overlap', () => {
+  const b = ['SYSTEM: X.', 'FACTION: A.', 'CONSTRUCTION: B.', 'MOVE: C.'];
+  const ed0 = desksFor(b, 0, 3).slice(0, 3);
+  const ed1 = desksFor(b, 1, 3).slice(0, 3);
+  const ed2 = desksFor(b, 2, 3).slice(0, 3);
+  assert.deepEqual(ed0, ['civic', 'industry', 'economy']);
+  // Rotating by ONE used to hand back industry/economy/crime here — two of the
+  // three desks repeating ten minutes later, re-reporting the same facts.
+  assert.deepEqual(ed1, ['crime', 'sport', 'life']);
+  assert.equal(ed0.some((d) => ed1.includes(d)), false, 'no desk twice in a row');
+  // ...and the invented desks actually come up rather than idling at the back.
+  assert.ok([...ed1, ...ed2].includes('sport'));
+  assert.ok([...ed1, ...ed2].includes('gossip'));
+  assert.ok([...ed1, ...ed2].includes('celebrity'));
+});
+
+test('gossip and celebrity may invent people; the reported desks may not', () => {
+  const raw = JSON.stringify([
+    { desk: 'gossip', headline: 'Night shift talk', body: 'Word is that Sal Vance has stopped speaking to the loading crew.' },
+    { desk: 'celebrity', headline: 'Local hero, allegedly', body: 'Ring-runner Kaelen Roe has been telling everyone about the record again.' },
+    { desk: 'economy', headline: 'A new broker', body: 'The Vega Combine has opened a desk here.' },
+  ]);
+  const { items, rejected, cast } = acceptNews(raw, {
+    brief: brief(),
+    system: 'HIP 71120',
+    at: '2026-08-15T01:00:00Z',
+    desks: ['gossip', 'celebrity', 'economy'],
+  });
+  assert.deepEqual(items.map((i) => i.desk), ['gossip', 'celebrity']);
+  assert.match(rejected[0], /invented "Vega Combine" on the economy desk/);
+  // Recorded as printed: a job title in front of a name is part of the run, and
+  // reusing it verbatim next edition is exactly the continuity we want.
+  assert.deepEqual(cast.map((c) => c.name).sort(), ['Ring-runner Kaelen Roe', 'Sal Vance']);
 });

@@ -193,7 +193,10 @@ export function ArchitectCard({
           <span style={{ width: `${Math.round(built * 100)}%` }} />
         </div>
         <div className="arc-progress-line">
-          <b className="mono">{tons(view.totalRemaining)}</b> still wanted of {tons(view.totalRequired)}
+          <span>
+            <b className="mono">{tons(view.totalRemaining)}</b> still wanted of{' '}
+            {tons(view.totalRequired)}
+          </span>
           <span className="arc-pct mono">{pct}% built</span>
         </div>
       </div>
@@ -221,7 +224,7 @@ export function ArchitectCard({
                 className="arc-group-head"
                 aria-expanded={!shut}
                 onClick={() => toggle(g.bucket)}
-                style={{ borderLeftColor: bucketColour[g.bucket] }}
+                style={{ borderBottomColor: bucketColour[g.bucket] }}
               >
                 <span className="arc-twist">{shut ? '▸' : '▾'}</span>
                 <span className="arc-group-title" style={{ color: bucketColour[g.bucket] }}>

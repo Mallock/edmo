@@ -28,7 +28,15 @@ import { isNearDuplicate } from './copilot.ts';
  * commander's face. sport and life are invention — but invention that is kept
  * (see NewsCast), so the dock league has the same two teams next week.
  */
-export type NewsDesk = 'civic' | 'industry' | 'economy' | 'crime' | 'sport' | 'life';
+export type NewsDesk =
+  | 'civic'
+  | 'industry'
+  | 'economy'
+  | 'crime'
+  | 'sport'
+  | 'life'
+  | 'gossip'
+  | 'celebrity';
 
 export const DESK_LABEL: Readonly<Record<NewsDesk, string>> = {
   civic: 'Civic',
@@ -37,6 +45,8 @@ export const DESK_LABEL: Readonly<Record<NewsDesk, string>> = {
   crime: 'Crime',
   sport: 'Sport',
   life: 'Life',
+  gossip: 'Gossip',
+  celebrity: 'Celebrity',
 };
 
 const DESK_BRIEF: Readonly<Record<NewsDesk, string>> = {
@@ -52,7 +62,24 @@ const DESK_BRIEF: Readonly<Record<NewsDesk, string>> = {
   life:
     'ordinary life — bars, shift patterns, weddings, complaints, the concourse. Invent the people, ' +
     'but keep the SAME people you have used before',
+  gossip:
+    'the rumour mill — who fell out with whom on the dock, what the night shift is saying, which ' +
+    'contract everybody knows is going badly. Attribute it to nobody and believe none of it. ' +
+    'Invent the people, and keep the SAME people you have used before',
+  celebrity:
+    'local fame — a ring-runner with a following, a station manager who gave a speech, a haulier ' +
+    'who got rich and will not stop mentioning it. Treat their importance as the joke. Invent them, ' +
+    'and keep the SAME ones you have used before',
 };
+
+/**
+ * Desks allowed to make people up.
+ *
+ * The reported desks work from the journal and may invent nothing. These four
+ * are fiction by definition — the game has no dock league and no barman — and
+ * they are what stop the paper being an almanac.
+ */
+const INVENTS = new Set<NewsDesk>(['sport', 'life', 'gossip', 'celebrity', 'crime']);
 
 /** An invented thing the paper has committed to: a team, a bar, a person. */
 export interface CastMember {
@@ -95,7 +122,7 @@ export const newsIntervalLabel = (m: number): string =>
  * and life always run, because they are invented, and they are what stop four
  * consecutive editions from being four readings of the same influence figure.
  */
-export function desksFor(brief: readonly string[], edition = 0): NewsDesk[] {
+export function desksFor(brief: readonly string[], edition = 0, perEdition = 1): NewsDesk[] {
   const has = (p: string): boolean => brief.some((l) => l.startsWith(p));
   const pool: NewsDesk[] = [];
   if (has('FACTION:') || has('CONTROLLING FACTION:')) pool.push('civic');
@@ -104,9 +131,17 @@ export function desksFor(brief: readonly string[], edition = 0): NewsDesk[] {
   // spread and no demand is a listing, and a listing is not a market report.
   if (has('MOVE:') || has('SPREAD:') || has('DEMAND:')) pool.push('economy');
   if (has('SECURITY:') || has('DENIED:') || has('SYSTEM:')) pool.push('crime');
-  pool.push('sport', 'life');
-  // Rotate the running order per edition so the same desk does not always lead.
-  const at = ((edition % pool.length) + pool.length) % pool.length;
+  pool.push('sport', 'life', 'gossip', 'celebrity');
+  // Advance by a WHOLE edition, not by one desk.
+  //
+  // Rotating by one meant consecutive editions shared all but one desk — file
+  // civic/industry/economy, then industry/economy/crime ten minutes later — so
+  // the same desk re-reported the same standing fact twice running, which is
+  // where the duplicates came from. It also meant the invented desks sat at the
+  // back of the queue and never came up: a commander watched the wire all
+  // evening and never once saw sport.
+  const stride = Math.max(1, perEdition);
+  const at = (((edition * stride) % pool.length) + pool.length) % pool.length;
   return [...pool.slice(at), ...pool.slice(0, at)];
 }
 
@@ -192,6 +227,8 @@ export function buildNewsBrief(
   for (const c of extras.cast ?? []) {
     out.push(`RECURRING: ${c.name} (${DESK_LABEL[c.desk]}), mentioned ${c.mentions}× before.`);
   }
+  // A headline alone does not stop the model rewriting the same paragraph
+  // under a new one, so the opening of each story rides along too.
   for (const p of (extras.previously ?? []).slice(0, 6)) out.push(`PREVIOUSLY: ${p}`);
   return out;
 }
@@ -275,6 +312,51 @@ export function marketPulse(
   // Movement leads: it is the only one of the three that is actually new.
   const lines = [...pick(moves, 3), ...pick(spreads, 2), ...pick(demand, 2)].slice(0, max);
   return { lines, next };
+}
+
+/**
+ * The checkable claims in a story: its figures and its proper names.
+ *
+ * Word overlap is the wrong instrument for a wire. The model rewords freely —
+ * two civic stories about the identical faction board scored 26% on words,
+ * under the duplicate threshold, while citing the same four factions and the
+ * same four percentages. What repeats is never the prose; it is the FACTS.
+ *
+ * Bare capitalised words are skipped ("The", "Meanwhile" — sentence starts,
+ * not claims); a name has to be a multi-word run to count.
+ */
+export function storyFacts(text: string): Set<string> {
+  const out = new Set<string>();
+  for (const m of text.matchAll(/\d[\d,]*(?:\.\d+)?%?/g)) out.add(m[0].replace(/,/g, '').toLowerCase());
+  for (const m of text.matchAll(nameRun())) {
+    const name = m[0].trim();
+    if (/\s/.test(name)) out.add(name.toLowerCase());
+  }
+  return out;
+}
+
+/**
+ * Has this story already been told, whatever words it uses this time?
+ *
+ * Containment, not similarity: the question is what fraction of the NEW
+ * story's claims were already printed, so a short rewrite of a longer piece is
+ * still caught. Stories with barely any facts are exempt — a sport result
+ * naming one team should not be spiked for citing that team again.
+ */
+export function saysNothingNew(
+  story: string,
+  printed: readonly string[],
+  threshold = 0.7,
+): boolean {
+  const mine = storyFacts(story);
+  if (mine.size < 3) return false;
+  for (const prior of printed) {
+    const theirs = storyFacts(prior);
+    if (!theirs.size) continue;
+    const shared = [...mine].filter((f) => theirs.has(f)).length;
+    if (shared / mine.size >= threshold) return true;
+  }
+  return false;
 }
 
 /** Cast entries worth keeping: the most recently used, capped. */
@@ -553,6 +635,16 @@ export function acceptNews(
     system: string;
     at: string;
     recentHeadlines?: readonly string[];
+    /**
+     * Stories already on the wire, in full.
+     *
+     * The headline check alone let the same story run twice: "Influence shifts
+     * remain predictable, if tedious" and "Power structures remain predictably
+     * cumbersome" share 11% of their words, while the bodies underneath — the
+     * same four factions, the same four percentages — share 35%. A desk with
+     * one standing fact will re-report it for ever unless the BODY is checked.
+     */
+    published?: ReadonlyArray<{ headline: string; body: string }>;
     max?: number;
     /** Desks handed to the model, used when a story does not name its own. */
     desks?: readonly NewsDesk[];
@@ -566,7 +658,9 @@ export function acceptNews(
   const cast = trimCast(opts.cast ?? []);
   for (const c of cast) allowed.add(c.name.toLowerCase());
   const byName = new Map(cast.map((c) => [c.name.toLowerCase(), c]));
-  const recent = [...(opts.recentHeadlines ?? [])];
+  const recent = [...(opts.recentHeadlines ?? []), ...(opts.published ?? []).map((p) => p.headline)];
+  // Full text of everything already printed here, for the body comparison.
+  const printed = (opts.published ?? []).map((p) => `${p.headline}. ${p.body}`);
   const desks = opts.desks ?? [];
   const items: NewsItem[] = [];
   const rejected: string[] = [];
@@ -583,7 +677,7 @@ export function acceptNews(
     // to make up a faction, which is the opposite of the safe direction.
     const desk = it.desk ?? desks[items.length] ?? 'civic';
     // Sport and life exist to be invented; the reported desks do not.
-    const mayInvent = desk === 'sport' || desk === 'life' || desk === 'crime';
+    const mayInvent = INVENTS.has(desk);
     // ALL of them, not just the first — an unregistered second name is a team
     // the paper forgets it has, and reinvents next week under another name.
     const invented = findInventions(it, allowed);
@@ -607,8 +701,15 @@ export function acceptNews(
       allowed.add(name.toLowerCase());
       byName.set(name.toLowerCase(), { name, desk, firstAt: opts.at, lastAt: opts.at, mentions: 1 });
     }
-    if (isNearDuplicate(it.headline, recent)) {
+    const full = `${it.headline}. ${it.body}`;
+    if (isNearDuplicate(it.headline, recent) || isNearDuplicate(full, printed)) {
       rejected.push(`repeat of "${it.headline}"`);
+      continue;
+    }
+    // Different words, same claims. This is the one that catches a desk with a
+    // standing fact rewriting it every edition.
+    if (saysNothingNew(full, printed)) {
+      rejected.push(`nothing new in "${it.headline}"`);
       continue;
     }
     // Anyone from the cast named in this story has been seen again.
@@ -618,23 +719,33 @@ export function acceptNews(
       byName.set(key, { ...member, lastAt: opts.at, mentions: member.mentions + 1 });
     }
     recent.push(it.headline);
+    printed.push(full);
     items.push({ headline: it.headline, body: it.body, at: opts.at, system: opts.system, desk });
   }
   return { items, rejected, cast: trimCast([...byName.values()]) };
 }
 
 /**
- * Token budget for one edition.
+ * Token budget for one edition — reasoning included.
  *
- * Lives here because the caller cannot be trusted to guess it: llmQuick — the
- * helper the store reaches for — defaults to EIGHT tokens, which is right for
- * the one-word beat gate it was written for and catastrophic here. At 8 the
- * model returns "```json\n[\n  {" and stops, parseNewsItems finds nothing, and
- * the tab reports "nothing printable came back" on every single edition with
- * no clue why. Measured: three stories come back at ~940 characters.
+ * Two lessons are baked into this number.
+ *
+ * llmQuick, the helper the store reaches for, defaults to EIGHT tokens: right
+ * for the one-word beat gate it was written for, catastrophic here. At 8 the
+ * model returns "```json\n[\n  {" and stops.
+ *
+ * And the model THINKS before it writes, which is wanted — reasoning is free
+ * on a local engine and the stories are better for it. But hidden reasoning
+ * spends the same budget as the answer: an edition was measured burning ~700
+ * tokens on thinking, leaving nothing for the JSON and returning empty content
+ * that read, from the outside, like a model with nothing to say. So the budget
+ * has to cover the thinking AND the stories, not just the stories.
  */
 export function newsMaxTokens(perEdition: number): number {
-  return 200 * Math.max(1, perEdition) + 150;
+  const stories = 220 * Math.max(1, perEdition);
+  // Headroom for the reasoning pass. Costs nothing when the model does not use
+  // it — max_tokens is a ceiling, not a target.
+  return stories + 1200;
 }
 
 /** Is the wire due another edition? */

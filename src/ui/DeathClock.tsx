@@ -131,7 +131,7 @@ export function DeathClockCard({
 
       <div
         className={zone === 'board' ? 'wod-status warn' : 'wod-status'}
-        style={{ borderLeftColor: color }}
+        style={{ borderColor: color }}
       >
         <div className="wod-state" style={{ color }}>
           {zone ? ZONE_TITLE[zone] : 'NOT CALIBRATED'}
