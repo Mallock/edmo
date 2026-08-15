@@ -152,6 +152,13 @@ export interface NewsTab {
   onSelect: () => void;
 }
 
+/** The orrery tab: how many bodies this system has given up so far. */
+export interface OrreryTab {
+  active: boolean;
+  count: number;
+  onSelect: () => void;
+}
+
 export function MissionTabs({
   missions,
   selectedId,
@@ -161,6 +168,7 @@ export function MissionTabs({
   plot,
   architect,
   news,
+  orrery,
 }: {
   missions: Mission[];
   selectedId: number | null;
@@ -170,9 +178,11 @@ export function MissionTabs({
   plot?: PlotTab;
   architect?: ArchitectTab;
   news?: NewsTab;
+  orrery?: OrreryTab;
 }) {
-  if (missions.length <= 1 && !clock && !plot && !architect && !news) return null;
-  const otherActive = clock?.active || plot?.active || architect?.active || news?.active;
+  if (missions.length <= 1 && !clock && !plot && !architect && !news && !orrery) return null;
+  const otherActive =
+    clock?.active || plot?.active || architect?.active || news?.active || orrery?.active;
   return (
     <div className="tabs" role="tablist" aria-label="Active missions">
       {missions.map((m, i) => (
@@ -250,6 +260,20 @@ export function MissionTabs({
           <span className="tab-dot" style={{ background: news.count ? 'var(--text)' : 'var(--dim)' }} />
           📰
           {news.count > 0 && <span className="tab-timer mono">{news.count}</span>}
+        </button>
+      )}
+      {orrery && (
+        <button
+          role="tab"
+          aria-selected={orrery.active}
+          className={orrery.active ? 'tab active' : 'tab'}
+          style={{ borderColor: 'var(--cyan)' }}
+          title="Orrery — where this system's bodies are right now, from their scanned orbits"
+          onClick={orrery.onSelect}
+        >
+          <span className="tab-dot" style={{ background: 'var(--cyan)' }} />
+          🪐
+          <span className="tab-timer mono">{orrery.count}</span>
         </button>
       )}
     </div>

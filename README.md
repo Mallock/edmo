@@ -8,11 +8,11 @@ gives **AI operator guidance** via a local LLM (its own bundled llama.cpp engine
 prefer), speaks with a **bundled local neural
 voice** (Piper), and runs a **proactive heartbeat** that nudges you when you stall.
 
-Alongside the mission cards there are four tabs for the panels the game keeps somewhere you cannot
+Alongside the mission cards there are five tabs for the panels the game keeps somewhere you cannot
 read while flying: a **route plotter** (neutron highway for the ship, the whole carrier trip jump by
-jump, tritium counted), the **World of Death** landing-window clock, a **system architect** shopping
-list for colonisation builds, and a **local wire** that writes fictional news about the system you
-are actually in.
+jump, tritium counted), an **orrery** showing where this system's bodies are right now, the **World
+of Death** landing-window clock, a **system architect** shopping list for colonisation builds, and a
+**local wire** that writes fictional news about the system you are actually in.
 
 Everything runs on your machine. No cloud, no telemetry, no account.
 
@@ -114,6 +114,73 @@ construction sites, and the doors that have refused you docking.
 Off by default — it costs one model call per edition. Cadence runs from every 10 minutes to hourly,
 or Off with a **New edition** button in the tab.
 
+## The orrery — where everything is, right now
+
+Every `Scan` since game v4.0 U14 carries the body's whole Keplerian element set — semi-major axis,
+eccentricity, inclination, argument of periapsis, ascending node, mean anomaly and period, with the
+scan timestamp as the epoch. That is enough to place the body at any instant, so the 🪐 tab is a
+closed form rather than a simulation: warping time evaluates the same equations at a different `t`,
+and nothing drifts because nothing integrates.
+
+- **Top-down, deliberately.** Three dimensions in a 420 px panel buys a camera angle to fiddle with
+  and loses the thing the panel is for. Inclination is applied and then projected, so a steeply
+  inclined moon draws where it really is from above.
+- **Distances are compressed per level**, which is what keeps a moon visible around a planet 400 ls
+  from its star. Order is preserved, spacing is not — and the card says which mode it is in, always.
+  A **true distances** toggle shows the real thing, with the inner system collapsed onto the star,
+  because that is where it is.
+- **Overlaps are separated, because separation is the point.** A map answers "what is here, and
+  what is near what"; two moons drawn as one dot answer neither. Bodies that would collide are
+  relaxed apart, deterministically (no jitter between frames) and within a hard displacement
+  budget, so each stays recognisably on its own orbit ring — and the selected body draws a leader
+  back to its true position rather than letting the ring quietly disagree with the dot. Measured on
+  a real 36-body system: **21 overlapping pairs before, none after, mean displacement 2.7 px.**
+  It does not run in true-distance mode; that mode exists to be believed.
+- **Every body is named**, not just the stars — you cannot look up "the green one". Each name is
+  offered four berths around its body and takes the first that clashes with neither another name
+  nor any body; one with nowhere to go is skipped rather than stacked. That skip is what makes
+  zooming worth doing: berths open as bodies spread, so the names fill in as you go (24 of 36 at
+  full-system view, 35 zoomed in, and none overlapping at either).
+- **Lit from their own star.** Each body is shaded with the terminator facing the star that
+  actually lights it — nearest star, which matters in a binary — so the day side on screen is the
+  day side in the game. That direction comes from the same elements as the positions, making it
+  the one part of a drawn planet that is derived rather than invented. Measured: lit limb within
+  **1.4°** of the true bearing.
+- **Surfaces are generated, not downloaded.** Elite ships no texture maps and this app ships no
+  asset files, so planets are painted from the one thing the journal does state — their class.
+  Icy reads as ice, gas giants get bands, metal-rich goes ochre. It is `feTurbulence` (Perlin
+  noise the browser composites on the GPU) baked into one `<pattern>` per class, so the cost is
+  fixed no matter how many bodies a system has, and it only switches on past 2.2× zoom where
+  there is a surface big enough to see. The grain is invention and is kept generic on purpose;
+  nothing claims to be a photograph of that particular world.
+- **Landable worlds keep their green**, now as a rim rather than a fill, so painting bodies by
+  class did not cost the one fact on the map you can act on.
+- **Scroll to zoom, drag to pan**, double-click to reframe. Zoom is anchored on the pointer, and
+  bodies grow sub-linearly with it (`^0.55`) — visible enough to have a surface, never so large
+  that two planets fill the panel.
+- **Tap a body for its card.** Distances, orbital period, eccentricity, surface temperature,
+  atmosphere, volcanism, tidal lock — and **gravity in G**, amber past 2 and red past 3, because
+  that is the number that writes off ships rather than trivia. Landable bodies list their
+  **surface materials richest first, each annotated with how many you already carry**, since the
+  materials tracker has been folding your grid all along. Rarity does the shouting, not the
+  percentage: iron at 21% stays grey while you hold 300 of it; *tellurium at 1% with none held* is
+  the line worth flying for. First footfall is called out where nobody has walked yet.
+- **Only what you scanned — but everything you ever scanned.** No EDSM, no backfill, no bodies
+  placed "approximately" at periapsis. The honk carries no orbits (`FSSDiscoveryScan` reports how
+  many bodies exist and lists signal sources; the elements only ever ride on a `Scan`), and the
+  session bootstrap replays one journal or two. So arriving in a system re-reads the **whole
+  journal history on disk** for that system's address — 126 scans across 510 files in under a
+  second, in one real case — and the map is complete before you touch the FSS. Elements are
+  constants: a body scanned in 2025 is in the same orbit today, and Kepler propagates from any
+  epoch, so old scans are as good as new ones.
+
+Elite's parent chains do not mean what they look like, and the tab handles all of it: belt clusters
+whose parent is a `Ring` that never gets scanned, `BodyID:0` as a real star with no `Parents` at all,
+barycentres that only exist because some moon three levels down mentioned them, and bodies scanned
+before their parents. The traps and the additive parent-chain simplification are documented in
+CMDR TerjeRu's MIT-licensed [Orrery](https://github.com/TerjeRu/orrery) — credit where it is due;
+the implementation here is this codebase's own.
+
 ## The heartbeat (proactive assist)
 
 | Rule | Fires when |
@@ -208,6 +275,8 @@ src/engine/          TypeScript mission intelligence (zero deps, Node 22.6+, 495
   news.ts              Local wire — grounded brief, six desks, price memory,
                        persistent invented cast, fabrication guard
   plotter.ts           Neutron + fleet-carrier route plotting and tritium maths
+  orrery.ts            System map — Keplerian elements folded from Scans,
+                       parent-chain summation, per-level distance compression
   deathclock.ts        World of Death landing windows from any past scan
   glance.ts            Screen-glance prompts (vision) + reply parsing
   convo.ts             ConvoBuffer — short-term dialogue memory (follow-ups

@@ -1996,6 +1996,239 @@ body {
 .desk-gossip { color: #e878c0; }
 .desk-celebrity { color: #f0d060; }
 
+/* -------------------------------------------------------------------- orrery
+   A map, not a diagram: the plot takes the space and the chrome around it is
+   kept to one line each. Everything inside the SVG is coloured from the same
+   canon as the rest of the HUD — amber stars, cyan planets, green for a body
+   you are at or can land on — so a hue still means one thing. */
+.orr-count {
+  float: right;
+  font-size: var(--fs-micro);
+  color: var(--dim);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.orr-plot {
+  margin: 8px 0 4px;
+  /* The void reads as depth, and separates the map from the card it sits in. */
+  background: radial-gradient(ellipse at center, rgba(64, 208, 240, 0.05), transparent 70%);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+}
+
+.orr-plot svg {
+  width: 100%;
+  height: auto;
+  display: block;
+  /* The map is dragged, so it must not start a text/image selection instead —
+     and the pointer should say which of the two it is about to do. */
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.orr-plot svg.dragging {
+  cursor: grabbing;
+}
+
+.orr-body {
+  cursor: pointer;
+}
+
+.orr-body:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 2px;
+}
+
+.orr-label {
+  /* Small, because every body carries one now and the map has to survive it.
+     8px is the floor at which the short designations ED uses — "5 a", "1 b" —
+     are still read rather than decoded. */
+  font-size: 8px;
+  letter-spacing: 0.04em;
+  pointer-events: none;
+  /* The map is dense and labels cross orbit lines; a dark rim keeps them legible
+     without a filled plate covering what is underneath. */
+  paint-order: stroke;
+  stroke: rgba(10, 22, 40, 0.85);
+  stroke-width: 2.5px;
+  stroke-linejoin: round;
+}
+
+/* The one being inspected steps forward out of the crowd. */
+.orr-label.picked {
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+}
+
+.orr-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.orr-warp {
+  display: flex;
+  gap: 4px;
+}
+
+.orr-chip {
+  font: inherit;
+  font-size: var(--fs-micro);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 4px;
+  padding: 3px 7px;
+  cursor: pointer;
+}
+
+.orr-chip:hover {
+  color: var(--text);
+  border-color: var(--dim);
+}
+
+.orr-chip.active {
+  color: var(--cyan);
+  border-color: var(--cyan);
+}
+
+/* The scale caveat, never optional. A map that quietly lies about spacing is
+   worse than one that refuses to draw, so the mode is always on screen. */
+.orr-note {
+  margin-top: 5px;
+  font-size: var(--fs-micro);
+  color: var(--dim);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.orr-empty,
+.orr-hint {
+  margin-top: 6px;
+  font-size: var(--fs-meta);
+  color: var(--dim);
+}
+
+.orr-detail {
+  margin-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 6px;
+}
+
+.orr-detail-head {
+  font-size: var(--fs-lead);
+  letter-spacing: 0.04em;
+}
+
+.orr-detail-kind {
+  float: right;
+  font-size: var(--fs-micro);
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.orr-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(84px, 1fr));
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.orr-detail-grid .k {
+  font-size: var(--fs-micro);
+  letter-spacing: 0.12em;
+  color: var(--dim);
+  text-transform: uppercase;
+}
+
+.orr-detail-grid .v {
+  font-size: var(--fs-body);
+  font-variant-numeric: tabular-nums;
+}
+
+.orr-detail-note {
+  margin-top: 4px;
+  font-size: var(--fs-meta);
+  color: var(--dim);
+}
+
+/* Gravity is the one number here that can end a session. It leaves the neutral
+   colour as soon as a landing stops being routine. */
+.orr-detail-grid .grav-mid {
+  color: var(--amber);
+}
+.orr-detail-grid .grav-hi {
+  color: var(--red);
+}
+
+.orr-mats {
+  margin-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 6px;
+}
+
+.orr-mats-head {
+  font-size: var(--fs-micro);
+  letter-spacing: 0.12em;
+  color: var(--dim);
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+
+.orr-first {
+  float: right;
+  color: var(--green);
+  letter-spacing: 0.08em;
+}
+
+.orr-mat-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 1px 10px;
+}
+
+.orr-mat {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 6px;
+  align-items: baseline;
+  font-size: var(--fs-meta);
+}
+
+.orr-mat-name {
+  text-transform: capitalize;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.orr-mat-pct {
+  font-variant-numeric: tabular-nums;
+  color: var(--dim);
+}
+
+.orr-mat-have {
+  font-size: var(--fs-micro);
+  color: var(--dim);
+  min-width: 4.5em;
+  text-align: right;
+}
+
+/* Grade, not percentage, is the reason to land: iron at 21% is the dullest
+   line on any scan and tellurium at 1.2% is why you came. The rarer it is, the
+   further it steps out of the grey. */
+.orr-mat.g1 .orr-mat-name { color: var(--dim); }
+.orr-mat.g2 .orr-mat-name { color: var(--text); }
+.orr-mat.g3 .orr-mat-name { color: var(--cyan); }
+.orr-mat.g4 .orr-mat-name { color: var(--amber); font-weight: 500; }
+
 /* ------------------------------------------------------------ reduced motion
    Six things in this HUD flash and none of them asked permission. They stop —
    but they may not go silent, because in every case the flashing *is* the

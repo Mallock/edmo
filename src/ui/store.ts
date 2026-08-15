@@ -101,6 +101,8 @@ import {
 } from '../engine/news.ts';
 import { buildShipPanel, type ShipPanel } from '../engine/shippanel.ts';
 import { ExploreTracker, classifyBody, type ExploreLead } from '../engine/explore.ts';
+import { OrreryTracker } from '../engine/orrery.ts';
+import type { OrreryView } from './Orrery.tsx';
 import {
   DeathClock,
   DeathClockAnnouncer,
@@ -241,6 +243,7 @@ import {
   onWatchStatus,
   journalScanHistory,
   journalOrganicHistory,
+  journalSystemScans,
   piperAvailable,
   piperDownloadVoice,
   piperVoices,
@@ -441,9 +444,11 @@ export interface AppSnapshot {
   architect: ArchitectView | null;
   /** The local wire, or null when the feature is switched off. */
   news: NewsView | null;
+  /** The system map, or null until something in this system has been scanned. */
+  orrery: OrreryView | null;
   /** Which panel fills the card area: missions (default), clock, plotter,
-   *  the system architect's shopping list, or the local news wire. */
-  view: 'missions' | 'deathclock' | 'plotter' | 'architect' | 'news';
+   *  the system architect's shopping list, the local news wire, or the orrery. */
+  view: 'missions' | 'deathclock' | 'plotter' | 'architect' | 'news' | 'orrery';
   shipPanel: ShipPanel;
   routeBusy: boolean;
   routeIdx: number;
@@ -820,7 +825,7 @@ export class AppCore {
   private newsBusy = false;
   private newsError: string | null = null;
   /** Which panel fills the card area; the clock and plotter are offered as tabs. */
-  private view: 'missions' | 'deathclock' | 'plotter' | 'architect' | 'news' = 'missions';
+  private view: 'missions' | 'deathclock' | 'plotter' | 'architect' | 'news' | 'orrery' = 'missions';
 
   // ------------------------------------------------------------- the plotter
   /**
@@ -912,6 +917,21 @@ export class AppCore {
       /* start empty */
     }
     return e;
+  })();
+  /**
+   * Body positions for the orrery tab.
+   *
+   * Persisted, unlike the explore ledger, because orbital elements do not go
+   * stale — they are Frontier's own constants for that system. A system
+   * scanned last week still draws correctly today, so re-honking to get the
+   * map back would be a chore invented by this app rather than by the game.
+   */
+  private orrery = (() => {
+    try {
+      return OrreryTracker.fromJSON(JSON.parse(localStorage.getItem('edmo.orrery.v1') ?? 'null'));
+    } catch {
+      return new OrreryTracker();
+    }
   })();
   /** Last hyperspace target star class + remaining jumps (FSDTarget). */
   private lastFsdStarClass: string | null = null;
@@ -1096,6 +1116,7 @@ export class AppCore {
           (this.navRouteDest ?? '').trim().toLowerCase() === WOD_SYSTEM.toLowerCase();
         return inSystem || routed ? { state: this.deathClock.state, inSystem } : null;
       })(),
+      orrery: this.orreryView(),
       plotter: this.plotterView(),
       architect: this.architectView(),
       news: this.settings.news.enabled ? this.newsView() : null,
@@ -1558,6 +1579,13 @@ export class AppCore {
       this.ship.apply(ev);
       this.materials.apply(ev);
       this.explore.apply(ev);
+      this.orrery.apply(ev);
+      // Arrived somewhere: go and find whatever this commander has already
+      // scanned here, in any session, ever. Fire-and-forget — the map fills in
+      // a moment later and nothing waits on it.
+      if (ev.event === 'Location' || ev.event === 'FSDJump' || ev.event === 'CarrierJump') {
+        void this.sweepOrreryHistory(this.orrery.currentAddress);
+      }
       // Any scan of the World of Death recalibrates its landing clock — even
       // one replayed from an old journal, since the orbit is periodic.
       if (this.deathClock.apply(ev)) {
@@ -1671,6 +1699,92 @@ export class AppCore {
         /* still tracked in-session */
       }
     }
+    this.persistOrrery();
+  }
+
+  // ----------------------------------------------------------------- orrery
+  /** Systems already swept this session, so arriving twice costs one read. */
+  private orrerySwept = new Set<string>();
+
+  /**
+   * Fill the orrery from every scan this commander has ever taken here.
+   *
+   * The honk does not carry orbits. `FSSDiscoveryScan` says how many bodies
+   * exist and lists the signal sources; the elements only ever arrive on a
+   * `Scan`. So a commander who honks a system they surveyed last year sees an
+   * empty map and is told, in effect, to go and do the FSS again — work the
+   * galaxy already remembers them doing.
+   *
+   * It does not have to be that way, because orbital elements are constants.
+   * A body scanned in 2025 is in exactly the same orbit today; only the epoch
+   * differs, and Kepler propagates from any epoch. So the disk is authority:
+   * one scoped read of the journal history and the map is complete.
+   *
+   * Runs once per system per session, in the background, and is silent when it
+   * finds nothing — which is the normal case out in the black.
+   */
+  private async sweepOrreryHistory(address: string): Promise<void> {
+    if (!isTauri || !address || this.orrerySwept.has(address)) return;
+    this.orrerySwept.add(address);
+    try {
+      const lines = await journalSystemScans(address, this.settings.journal.directory);
+      if (!lines.length) return;
+      const before = this.orrery.get(address)?.bodies.size ?? 0;
+      for (const line of lines) {
+        const ev = parseJournalLine(line);
+        // Replay order does not matter: elements are constants, so an older
+        // scan of a body describes the same orbit as a newer one.
+        if (ev) this.orrery.apply(ev);
+      }
+      const after = this.orrery.get(address)?.bodies.size ?? 0;
+      if (after > before) {
+        this.persistOrrery();
+        this.emit();
+      }
+    } catch {
+      /* no history, or no shell — live scans still fill the map */
+    }
+  }
+
+  private persistOrrery(): void {
+    if (!this.orrery.dirty) return;
+    this.orrery.dirty = false;
+    try {
+      localStorage.setItem('edmo.orrery.v1', JSON.stringify(this.orrery.toJSON()));
+    } catch {
+      /* still tracked in-session */
+    }
+  }
+
+  /**
+   * The system map for where the commander is standing.
+   *
+   * Null until this system holds something placeable. A tab that opens onto an
+   * empty circle teaches the commander the feature is broken; one that only
+   * appears once there is a map teaches them that honking fills it.
+   */
+  private orreryView(): OrreryView | null {
+    const sys = this.orrery.current();
+    if (!sys) return null;
+    // Belts alone are not a map — a lone star with three belt clusters draws as
+    // one dot and three rings, which is true but not worth a tab.
+    const placeable = [...sys.bodies.values()].filter((b) => b.kind !== 'belt').length;
+    if (placeable < 2) return null;
+    // What the commander already carries, for every material this system's
+    // surfaces mention. Scoped to those names rather than the whole grid: the
+    // card only ever asks about materials it is about to print.
+    const matCounts: Record<string, number> = {};
+    for (const b of sys.bodies.values()) {
+      for (const m of b.materials ?? []) {
+        if (!(m.name in matCounts)) matCounts[m.name] = this.materials.count(m.name);
+      }
+    }
+    return {
+      system: sys,
+      hereBodyId: this.orrery.currentBodyId,
+      bodyCount: placeable,
+      matCounts,
+    };
   }
 
   // ------------------------------------------------------------- death clock
@@ -6215,7 +6329,7 @@ ${missionContext(mission, state)}`);
     this.emit();
   }
 
-  setView(v: 'missions' | 'deathclock' | 'plotter' | 'architect' | 'news'): void {
+  setView(v: 'missions' | 'deathclock' | 'plotter' | 'architect' | 'news' | 'orrery'): void {
     this.view = v;
     // Opening the list is the moment the commander wants to know where to buy
     // — but only ask the network if nothing usable was fetched recently.
@@ -6330,7 +6444,16 @@ ${missionContext(mission, state)}`);
       if (ev.event === 'Missions') this.sm.reconcile(ev);
       else this.sm.apply(ev);
       if (this.deathClock.apply(ev)) this.persistDeathClock();
+      // Manual import is the documented way to try the app with no game
+      // running, so the panels it can fill, it should. Scans carry their own
+      // orbits, which makes the orrery work from pasted lines alone — no
+      // journal, no shell, no network.
+      this.orrery.apply(ev);
+      // And the grid, because the orrery's body card reads it: a surface
+      // material means little without "how many of these do I already carry".
+      this.materials.apply(ev);
     }
+    this.persistOrrery();
     const n = this.sm.activeMissions().length;
     this.pushFeed('system', `Imported ${evs.length} event(s) — ${n} active mission(s).`);
     this.bootstrapped = true;

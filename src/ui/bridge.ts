@@ -105,6 +105,25 @@ export async function journalOrganicHistory(dir: string | null, limit = 4000): P
   return invoke<string[]>('journal_organic_history', { dir, limit });
 }
 
+/**
+ * Every body scan ever taken in one SYSTEM, from the whole history on disk.
+ *
+ * Orbital elements do not go stale — a system surveyed a year ago is still in
+ * the same place — so having scanned it once should be enough. Without this
+ * the orrery is blank in a system the commander mapped personally, and the
+ * only way to fill it is to open the FSS and do the work twice.
+ *
+ * Not to be confused with `journalScanHistory` above: that finds one body by
+ * name for the death clock; this one takes a system address.
+ */
+export async function journalSystemScans(
+  systemAddress: string,
+  dir: string | null,
+  limit = 3000,
+): Promise<string[]> {
+  return invoke<string[]>('journal_system_scans', { systemAddress, dir, limit });
+}
+
 export async function setClickThrough(enabled: boolean): Promise<void> {
   await invoke('set_click_through', { enabled });
 }

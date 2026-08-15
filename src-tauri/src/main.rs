@@ -414,6 +414,56 @@ fn journal_organic_history(dir: Option<String>, limit: Option<usize>) -> Vec<Str
     out
 }
 
+/// Every body scan this commander has ever taken IN ONE SYSTEM.
+///
+/// Orbital elements are constants of the system — Frontier's own numbers for
+/// where a body sits and how fast it goes round. Once scanned, they are true
+/// for ever, so a commander who surveyed HIP 71120 last year should not have
+/// to open the FSS again to see it drawn. The bootstrap replays one session or
+/// two; this reaches the other five hundred files.
+///
+/// Scoped to one `SystemAddress` on purpose. Returning every scan on disk would
+/// be tens of thousands of lines to hand across the bridge for a map that shows
+/// exactly one system, and the address is the cheapest possible pre-filter: a
+/// substring test that rejects almost every line before any JSON is parsed.
+///
+/// Distinct from `journal_scan_history` above, which finds one BODY by name for
+/// the death clock. This one wants a whole system and keys on its address.
+#[tauri::command]
+fn journal_system_scans(
+    system_address: String,
+    dir: Option<String>,
+    limit: Option<usize>,
+) -> Vec<String> {
+    let addr = system_address.trim();
+    if addr.is_empty() || !addr.bytes().all(|b| b.is_ascii_digit()) {
+        return Vec::new();
+    }
+    let dir = match dir.as_deref() {
+        Some(d) if !d.trim().is_empty() => expand_dir(d),
+        _ => default_dir(),
+    };
+    let cap = limit.unwrap_or(3000).clamp(1, 30_000);
+    let needle = format!("\"SystemAddress\":{addr}");
+    let mut out = Vec::new();
+    // Oldest first, so a later re-scan of the same body wins on replay order.
+    for f in list_journals(&dir) {
+        let Ok(text) = fs::read_to_string(&f) else { continue };
+        for line in text.lines() {
+            if !line.contains(&needle) {
+                continue;
+            }
+            if line.contains("\"event\":\"Scan\"") || line.contains("\"event\":\"ScanBaryCentre\"") {
+                out.push(line.to_string());
+                if out.len() >= cap {
+                    return out;
+                }
+            }
+        }
+    }
+    out
+}
+
 // -------------------------------------------------------------------- Piper TTS
 
 /// Per-platform TTS resource dir: the Windows bundle carries `resources/tts`
@@ -2590,6 +2640,7 @@ fn main() {
             start_watch,
             journal_scan_history,
             journal_organic_history,
+            journal_system_scans,
             piper_available,
             piper_voices,
             piper_download_voice,
