@@ -19,6 +19,7 @@ import {
   DEFAULT_SCALE,
   bodyRadiusPx,
   orbitPath,
+  legProgress,
   lightSource,
   materialGrade,
   placeBelts,
@@ -28,6 +29,7 @@ import {
   surfaceOf,
   type OrreryBody,
   type OrrerySystem,
+  type ShipLeg,
   type PlacedBody,
   type ScaleOptions,
 } from '../engine/orrery.ts';
@@ -112,6 +114,16 @@ const fmtPeriod = (seconds: number): string => {
   return `${(d / 365.25).toFixed(1)} y`;
 };
 
+/**
+ * A dock name at map size. The game's construction-site names are sentences —
+ * "Planetary Construction Site: Stein's Garrison" — and the interesting half
+ * is the second one.
+ */
+const shortPortName = (name: string): string => {
+  const s = name.replace(/^(Planetary|Orbital) Construction Site: /, '').trim();
+  return s.length > 22 ? `${s.slice(0, 21)}…` : s;
+};
+
 const describe = (b: OrreryBody): string => {
   if (b.kind === 'star') return `Class ${b.starType ?? '?'} star`;
   if (b.kind === 'barycentre') return 'Barycentre — a point two bodies orbit';
@@ -133,12 +145,40 @@ export interface OrreryView {
    * a reason to land, and the app already tracks the second half.
    */
   matCounts: Record<string, number>;
+  /**
+   * The supercruise leg under way, or null when parked.
+   *
+   * Drawn as an interval rather than a dot: the game reports no in-system
+   * position, so where the ship is between two bodies is genuinely unknown.
+   */
+  ship: (ShipLeg & { destName?: string }) | null;
+  /**
+   * The exact dock the ship is at, when it is at one — so the marker can ring
+   * the station itself, not just the world it orbits.
+   */
+  herePortId: number | null;
+  /**
+   * In supercruise toward somewhere the map cannot place (an unvisited
+   * station, an unscanned body): the destination's name, for the note. The
+   * alternative was silence, and silence reads as a broken feature.
+   */
+  shipUnresolved: string | null;
 }
 
 export function OrreryCard({ view, nowMs }: { view: OrreryView; nowMs: number }) {
   const [warp, setWarp] = useState<number>(1);
   const [trueScale, setTrueScale] = useState(false);
   const [picked, setPicked] = useState<number | null>(null);
+  /**
+   * Keep the camera on the ship.
+   *
+   * Zoomed in on your own leg, every tick of the estimate slides the marker
+   * toward the edge and off it — the one thing being watched is the one thing
+   * that leaves the frame. Follow recentres after every movement instead.
+   * Grabbing the map disengages it, because a drag IS the statement "I want
+   * to look somewhere else".
+   */
+  const [follow, setFollow] = useState(false);
   /**
    * Zoom and pan as ONE piece of state.
    *
@@ -210,7 +250,12 @@ export function OrreryCard({ view, nowMs }: { view: OrreryView; nowMs: number })
     return () => el.removeEventListener('wheel', onWheel);
   }, [toView]);
 
-  const resetView = () => setCam({ zoom: 1, x: 0, y: 0 });
+  const resetView = () => {
+    // Double-click means "frame the whole system", which following would
+    // immediately undo by re-centring on the ship.
+    setFollow(false);
+    setCam({ zoom: 1, x: 0, y: 0 });
+  };
 
   /**
    * Simulated time, anchored rather than accumulated.
@@ -337,6 +382,119 @@ export function OrreryCard({ view, nowMs }: { view: OrreryView; nowMs: number })
   const textured = zoom >= 2.2;
 
   /**
+   * The leg being flown, as a band of possible progress along it.
+   *
+   * `nowMs` is in the dependencies on purpose: this is the one thing on the
+   * map that must advance with the wall clock even at 1× and even while the
+   * bodies barely move.
+   */
+  const flight = useMemo(() => {
+    const leg = view.ship;
+    if (!leg || !sys) return null;
+    /**
+     * A leg endpoint as something with a position.
+     *
+     * Belt clusters are drawn as bands, not points, so they are not in
+     * `drawn` — and a commander drops at belt clusters constantly, to mine.
+     * A belt is a ring around its parent, so the parent's position is the
+     * honest stand-in: "left the belt around 2 b" starts at 2 b.
+     */
+    const endpoint = (id: number) => {
+      const direct = drawn.find((d) => d.p.body.id === id);
+      if (direct) return direct;
+      const parentId = sys.bodies.get(id)?.parentId;
+      return parentId != null ? drawn.find((d) => d.p.body.id === parentId) : undefined;
+    };
+    const a = endpoint(leg.fromId);
+    const b = endpoint(leg.toId);
+    if (!a || !b || a === b) return null;
+    const sepLs = Math.hypot(
+      (a.p.body.distanceLs ?? 0) - (b.p.body.distanceLs ?? 0),
+      0,
+    );
+    const prog = legProgress(leg, nowMs, sepLs);
+    const at = (f: number) => ({ x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f });
+    return { a, b, prog, lo: at(prog.lo), hi: at(prog.hi), mid: at(prog.mid), to: b.p.body };
+  }, [view.ship, drawn, nowMs, sys]);
+
+  /**
+   * Docks, placed beside the body they belong to.
+   *
+   * A port has no orbit of its own — the journal gives it a distance from the
+   * star and, for surface ports, a world and a latitude, but never a position.
+   * So each one is pinned to its body and fanned out around it by index, which
+   * says "these docks are here" without inventing where in the orbit they sit.
+   */
+  const ports = useMemo(() => {
+    if (!sys) return [];
+    const byParent = new Map<number, number>();
+    const out: Array<{ id: number; name: string; x: number; y: number; surface: boolean }> = [];
+    // Sorted by id, so a port keeps its berth around the body between renders
+    // and sessions — discovery order would reshuffle the fan every time a new
+    // dock was learned.
+    for (const port of [...sys.ports.values()].sort((a, b) => a.id - b.id)) {
+      if (port.parentId == null) continue;
+      const host = drawn.find((d) => d.p.body.id === port.parentId);
+      if (!host) continue;
+      const n = byParent.get(port.parentId) ?? 0;
+      byParent.set(port.parentId, n + 1);
+      // Fan around the host, starting up-right, so several docks on one world
+      // stay countable instead of stacking.
+      const ang = (-45 + n * 72) * (Math.PI / 180);
+      const off = host.r + 4.5;
+      out.push({
+        id: port.id,
+        name: port.name,
+        x: host.x + Math.cos(ang) * off,
+        y: host.y + Math.sin(ang) * off,
+        surface: port.latitude != null,
+      });
+    }
+    return out;
+  }, [sys, drawn]);
+
+  /**
+   * The ship at rest: docked, dropped, or orbiting somewhere known.
+   *
+   * The leg band only exists in supercruise, which left the ship invisible for
+   * most of a session — parked at a station is where a commander actually IS
+   * most of the time, and "where am I on this map" deserves an answer then
+   * too. Anchored to the exact dock when at one, else to the body.
+   */
+  const parked = useMemo(() => {
+    if (view.ship) return null; // in flight, the band is the marker
+    if (view.herePortId != null) {
+      const port = ports.find((p) => p.id === view.herePortId);
+      if (port) return { x: port.x, y: port.y, name: shortPortName(port.name) };
+    }
+    if (view.hereBodyId != null) {
+      const host = drawn.find((d) => d.p.body.id === view.hereBodyId);
+      if (host) return { x: host.x + host.r + 2, y: host.y - host.r - 2, name: host.p.body.label };
+    }
+    return null;
+  }, [view.ship, view.herePortId, view.hereBodyId, ports, drawn]);
+
+  /**
+   * The follow loop: nudge the camera until the ship sits at the centre.
+   *
+   * Everything here is linear, so one nudge lands exactly and the effect's
+   * next run measures a delta of zero — the epsilon guard is what parks the
+   * loop rather than letting a recentred frame re-trigger itself for ever.
+   * Runs off the same recomputes that move the marker: the estimate ticking
+   * forward, a zoom changing the projection, an arrival turning the band into
+   * a chevron. Whatever moved it, the next frame re-centres it.
+   */
+  useEffect(() => {
+    if (!follow) return;
+    const anchor = flight ? flight.mid : parked;
+    if (!anchor) return;
+    const dx = CX - anchor.x;
+    const dy = CY - anchor.y;
+    if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return;
+    setCam((c) => ({ ...c, x: c.x + dx, y: c.y + dy }));
+  }, [follow, flight, parked]);
+
+  /**
    * Name every body that has somewhere to put its name.
    *
    * Priority decides who gets the good berth when two names want the same
@@ -362,8 +520,24 @@ export function OrreryCard({ view, nowMs }: { view: OrreryView; nowMs: number })
         : p.body.landable ? 3
         : 4,
     }));
+    // Dock names, once zoomed in enough that there is room to write them.
+    // Lowest priority — a station never costs a planet its name — and keyed
+    // negatively so they cannot collide with a body id.
+    if (zoom >= 3) {
+      for (const port of ports) {
+        wishes.push({
+          key: -port.id,
+          text: shortPortName(port.name),
+          x: port.x,
+          y: port.y,
+          r: 2.5,
+          width: shortPortName(port.name).length * 4.9,
+          priority: 6,
+        });
+      }
+    }
     return placeLabels(wishes, { bodies: drawn });
-  }, [drawn, view.hereBodyId, picked]);
+  }, [drawn, view.hereBodyId, picked, ports, zoom]);
 
   const colourFor = useMemo(() => {
     const m = new Map<number, string>();
@@ -456,6 +630,8 @@ export function OrreryCard({ view, nowMs }: { view: OrreryView; nowMs: number })
               if (Math.hypot(dx, dy) < DRAG_SLOP) return;
               d.active = true;
               setDragging(true);
+              // A deliberate drag is the commander taking the camera back.
+              setFollow(false);
               el.setPointerCapture(e.pointerId);
             }
             // Drag in CSS pixels, pan in viewBox units — the panel is scaled to
@@ -642,6 +818,89 @@ export function OrreryCard({ view, nowMs }: { view: OrreryView; nowMs: number })
               </g>
             );
           })}
+          {/*
+            The leg under way. The thin line is the route, which is certain.
+            The thick segment is where the ship might be, which is not: the
+            game reports no in-system position, so this is an interval derived
+            from elapsed time against the slowest and fastest legs this
+            commander has actually flown. It slides and narrows as it goes.
+          */}
+          {flight && (
+            <g className="orr-flight" pointerEvents="none">
+              <line
+                x1={flight.a.x}
+                y1={flight.a.y}
+                x2={flight.b.x}
+                y2={flight.b.y}
+                stroke="var(--cyan)"
+                strokeWidth="0.8"
+                strokeDasharray="3 3"
+                opacity="0.55"
+              />
+              <line
+                x1={flight.lo.x}
+                y1={flight.lo.y}
+                x2={flight.hi.x}
+                y2={flight.hi.y}
+                stroke="var(--cyan)"
+                strokeWidth="3"
+                opacity="0.3"
+                strokeLinecap="round"
+              />
+              {/* Hollow, because a filled dot would read as a fix. */}
+              <circle
+                cx={flight.mid.x}
+                cy={flight.mid.y}
+                r="3.4"
+                fill="none"
+                stroke="var(--cyan)"
+                strokeWidth="1.3"
+              />
+              <circle cx={flight.mid.x} cy={flight.mid.y} r="1" fill="var(--cyan)" />
+              <text
+                x={flight.mid.x + 6}
+                y={flight.mid.y + 3}
+                className="orr-label"
+                fill="var(--cyan)"
+              >
+                ~you
+              </text>
+            </g>
+          )}
+          {/* Docks: a hollow square for an orbital, a filled one for a surface
+              port. Small, because they annotate a body rather than compete
+              with it. */}
+          {ports.map((p) => (
+            <rect
+              key={`port-${p.id}`}
+              x={p.x - 1.8}
+              y={p.y - 1.8}
+              width={3.6}
+              height={3.6}
+              fill={p.surface ? 'var(--amber)' : 'none'}
+              stroke="var(--amber)"
+              strokeWidth="0.9"
+              opacity="0.9"
+            >
+              <title>{p.name}</title>
+            </rect>
+          ))}
+          {/* The ship at rest: a filled chevron, because here it IS a fix —
+              the journal stated this arrival outright. Only the in-flight
+              marker is hollow, being an estimate. */}
+          {parked && (
+            <g className="orr-flight" pointerEvents="none">
+              <path
+                d={`M ${parked.x} ${parked.y - 3.6} L ${parked.x + 2.8} ${parked.y + 2.6} L ${parked.x} ${parked.y + 1.1} L ${parked.x - 2.8} ${parked.y + 2.6} Z`}
+                fill="var(--cyan)"
+                stroke="rgba(0,0,0,0.6)"
+                strokeWidth="0.5"
+              />
+              <text x={parked.x + 5} y={parked.y + 3} className="orr-label" fill="var(--cyan)">
+                you
+              </text>
+            </g>
+          )}
           {/* Names last, so they sit over the lines rather than under them.
               Drawn as one layer because placement is a decision about the map
               as a whole, not about any single body. */}
@@ -652,7 +911,7 @@ export function OrreryCard({ view, nowMs }: { view: OrreryView; nowMs: number })
               y={l.y}
               textAnchor={l.anchor}
               className={l.key === picked ? 'orr-label picked' : 'orr-label'}
-              fill={colourFor.get(l.key) ?? 'var(--text)'}
+              fill={l.key < 0 ? 'var(--amber)' : (colourFor.get(l.key) ?? 'var(--text)')}
             >
               {l.text}
             </text>
@@ -673,6 +932,19 @@ export function OrreryCard({ view, nowMs }: { view: OrreryView; nowMs: number })
             </button>
           ))}
         </div>
+        <button
+          className={follow ? 'orr-chip active' : 'orr-chip'}
+          aria-pressed={follow}
+          disabled={!flight && !parked}
+          title={
+            !flight && !parked
+              ? 'No ship on this map to follow'
+              : 'Keep the camera centred on your ship — dragging the map lets go'
+          }
+          onClick={() => setFollow(!follow)}
+        >
+          ▲ follow
+        </button>
         {zoom > 1.01 && (
           <button className="orr-chip" onClick={resetView} title="Back to the whole system">
             {zoom.toFixed(1)}× ✕
@@ -700,6 +972,33 @@ export function OrreryCard({ view, nowMs }: { view: OrreryView; nowMs: number })
           : 'Compressed & separated · order preserved, spacing is not'}
         {warp !== 1 && ' · warped'}
       </div>
+
+      {/* Say plainly that the ship marker is a guess, and how wide a guess.
+          The game gives no in-system position; the worst thing this map could
+          do is imply otherwise. */}
+      {flight && (
+        <div className="orr-flight-note">
+          <b>~</b> In supercruise to <b>{view.ship?.destName ?? flight.to.label}</b> ·{' '}
+          {Math.round(flight.prog.elapsedS)} s
+          out · somewhere in the {Math.round(flight.prog.lo * 100)}–
+          {Math.round(flight.prog.hi * 100)}% of the way — estimated, the game does not report
+          position
+        </div>
+      )}
+      {/* Flying somewhere the map cannot place. Without this line the feature
+          simply looks broken — the commander is in supercruise and nothing on
+          the card says the app noticed. */}
+      {!flight && view.shipUnresolved && (
+        <div className="orr-flight-note">
+          <b>~</b> In supercruise to <b>{view.shipUnresolved}</b> — not on this map yet; it will
+          be once you arrive
+        </div>
+      )}
+      {parked && (
+        <div className="orr-flight-note">
+          <b>▲</b> You are at <b>{parked.name}</b>
+        </div>
+      )}
 
       {sel ? (
         <div className="orr-detail">
@@ -761,6 +1060,22 @@ export function OrreryCard({ view, nowMs }: { view: OrreryView; nowMs: number })
             </div>
           )}
 
+          {/* The docks on or around this body — the map shows them as marks;
+              the card is where their full names fit. */}
+          {sys.ports.size > 0 &&
+            (() => {
+              const here = [...sys.ports.values()]
+                .filter((p) => p.parentId === sel.body.id)
+                .sort((a, b) => a.id - b.id);
+              if (!here.length) return null;
+              return (
+                <div className="orr-detail-note">
+                  {here
+                    .map((p) => `${p.latitude != null || p.id >= 1_000_000 ? '■' : '□'} ${p.name}`)
+                    .join(' · ')}
+                </div>
+              );
+            })()}
           {sel.body.landable && (
             <div className="orr-mats">
               <div className="orr-mats-head">

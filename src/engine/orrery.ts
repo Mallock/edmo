@@ -157,10 +157,49 @@ export interface OrreryBody {
   scanned: boolean;
 }
 
+/**
+ * A place you can dock: an orbital station, an outpost, a surface port, a
+ * settlement, a construction depot.
+ *
+ * Ports are not bodies and never receive a `Scan`, so they carry no orbit and
+ * cannot be placed the way a planet is. What the journal does give:
+ *
+ *   Location (BodyType "Station")  the port's own BodyID, its name, and
+ *                                  DistFromStarLS
+ *   Location (docked, BodyType     the PLANET's BodyID — a surface port, whose
+ *   "Planet")                      parent is stated outright
+ *   ApproachSettlement             BodyID of the world plus latitude/longitude
+ *   Docked                         name and DistFromStarLS, but NO BodyID
+ *   SupercruiseExit (BodyType      the port's BodyID as you drop at it
+ *   "Station")
+ *
+ * So a surface port knows its world exactly, and an orbital one has to be
+ * matched to the body it orbits by distance from the arrival star — both
+ * measure the same thing, so they agree to a fraction of a light-second.
+ */
+export interface OrreryPort {
+  /** The port's own BodyID, which is never a scanned body. */
+  id: number;
+  name: string;
+  /** Station type as the journal words it: Coriolis, Outpost, Settlement… */
+  type?: string;
+  /** ls from the arrival star — the only positional fact a station reports. */
+  distanceLs?: number;
+  /** The body it belongs to: stated for surface ports, inferred for orbitals. */
+  parentId?: number;
+  /** True when `parentId` came from the journal rather than a distance match. */
+  parentKnown?: boolean;
+  /** Surface ports only. */
+  latitude?: number;
+  longitude?: number;
+}
+
 export interface OrrerySystem {
   address: string;
   name: string;
   bodies: Map<number, OrreryBody>;
+  /** Docks, keyed by their own BodyID. */
+  ports: Map<number, OrreryPort>;
   /** Newest scan timestamp folded, so a stale system can be labelled. */
   lastScanMs: number;
 }
@@ -461,6 +500,71 @@ export function lightSource(
 const MAX_SYSTEMS = 12;
 
 /**
+ * Surface ports are keyed by their world's BodyID plus this, so they never
+ * collide with the body itself or with an orbital station's own id.
+ */
+const PORT_ID_OFFSET = 1_000_000;
+
+/**
+ * How close a station's distance must be to a body's before we call it its
+ * parent, in light-seconds.
+ *
+ * Both are measured from the arrival star, so a station and the body it
+ * orbits agree to a fraction of an ls: Anders City reports 970.04 and its
+ * world 970.0. Moons of one planet sit within a couple of ls of each other,
+ * though, so a match inside a cluster can pick the neighbour — which is why
+ * `parentKnown` exists, and why nothing claims exactness it has not got.
+ */
+const PORT_MATCH_LS = 6;
+
+/**
+ * Turn any BodyID the journal hands us into one the map can actually draw.
+ *
+ * Half the ids in a session are not bodies. `SupercruiseExit` reported
+ * `BodyType:"Station"` 36 times in one commander's journals, `Docked` gives no
+ * id whatsoever, and the nav target in Status.json is nearly always a station —
+ * so both ends of a supercruise leg routinely arrive as dock ids that no
+ * `Scan` will ever describe. Each resolves to the body it belongs to.
+ *
+ * Null when it cannot be resolved, which is the honest outcome: better to draw
+ * no leg than one anchored to a guess.
+ */
+export function resolveBodyId(sys: OrrerySystem, id: number | null | undefined): number | null {
+  if (id == null) return null;
+  if (sys.bodies.has(id)) return id;
+  const port = sys.ports.get(id);
+  if (port?.parentId != null && sys.bodies.has(port.parentId)) return port.parentId;
+  return null;
+}
+
+/**
+ * Attach orbital stations to the body they orbit, by distance from the star.
+ *
+ * Surface ports already know their world and are left alone. Anything that
+ * cannot be matched keeps `parentId` undefined and simply is not drawn —
+ * better an absent dock than one floating beside the wrong planet.
+ */
+export function resolvePorts(sys: OrrerySystem): void {
+  const candidates = [...sys.bodies.values()].filter(
+    (b) => b.kind !== 'belt' && b.scanned && b.distanceLs != null,
+  );
+  if (!candidates.length) return;
+  for (const port of sys.ports.values()) {
+    if (port.parentKnown || port.distanceLs == null) continue;
+    let best: OrreryBody | null = null;
+    let bestD = Infinity;
+    for (const b of candidates) {
+      const d = Math.abs((b.distanceLs ?? 0) - port.distanceLs);
+      if (d < bestD) {
+        bestD = d;
+        best = b;
+      }
+    }
+    port.parentId = best && bestD <= PORT_MATCH_LS ? best.id : undefined;
+  }
+}
+
+/**
  * Folds Scan events into per-system body tables.
  *
  * Systems are kept whole. A partial system is the normal state of affairs —
@@ -479,6 +583,16 @@ export class OrreryTracker {
    * think to doubt.
    */
   currentBodyId: number | null = null;
+  /**
+   * The supercruise leg under way, or null when parked somewhere known.
+   *
+   * `SupercruiseEntry` carries no body, so where the ship left from is
+   * whatever the tracker last established — the exit, docking or approach
+   * before it. Not persisted: a leg is only meaningful inside the session that
+   * is flying it, and restoring one would draw a ship in transit that landed
+   * hours ago.
+   */
+  leg: ShipLeg | null = null;
   /** Set after a fold that changed persistable state. */
   dirty = false;
 
@@ -487,6 +601,7 @@ export class OrreryTracker {
       case 'FSDJump':
       case 'CarrierJump':
         this.currentBodyId = null;
+        this.leg = null;
       // falls through — a jump sets the system exactly like a Location does
       case 'Location':
         this.currentSystem = str(ev.StarSystem) ?? this.currentSystem;
@@ -496,16 +611,151 @@ export class OrreryTracker {
       case 'ApproachBody':
       case 'SupercruiseExit':
       case 'Touchdown':
+      case 'Docked':
+        // Arrival is the one moment the position is certain. Any estimate in
+        // flight is discarded here rather than allowed to disagree with it.
         this.currentBodyId = num(ev.BodyID) ?? this.currentBodyId;
+        this.leg = null;
         break;
+      case 'SupercruiseEntry': {
+        // Dropping into supercruise starts a leg from wherever we last knew
+        // the ship to be. Destination is filled in by the caller, live, since
+        // retargeting mid-flight is normal.
+        const at = Date.parse(ev.timestamp);
+        this.leg =
+          this.currentBodyId != null && Number.isFinite(at)
+            ? { fromId: this.currentBodyId, toId: this.currentBodyId, departedMs: at }
+            : null;
+        this.currentBodyId = null;
+        break;
+      }
       case 'LeaveBody':
-      case 'SupercruiseEntry':
         this.currentBodyId = null;
         break;
       case 'Scan':
       case 'ScanBaryCentre':
         this.onScan(ev);
         break;
+      default:
+        break;
+    }
+    // Ports are learned from several of the same events, so this runs
+    // alongside rather than inside the switch.
+    this.notePort(ev);
+  }
+
+  /**
+   * Fold a line from the PAST: learn its bodies and its docks, touch nothing
+   * else.
+   *
+   * The history sweep replays old Location and SupercruiseExit lines to find
+   * stations, and `apply` reads those same events as navigation — so sweeping
+   * mid-flight would teleport the tracker into last week: the live leg nulled
+   * by a year-old arrival, `currentBodyId` pointing at a body the commander
+   * left in March. Knowledge accretes; state must not.
+   */
+  applyHistoric(ev: JournalEvent): void {
+    switch (ev.event) {
+      case 'Scan':
+      case 'ScanBaryCentre':
+        this.onScan(ev);
+        break;
+      default:
+        break;
+    }
+    this.notePort(ev);
+  }
+
+  /**
+   * Record a dock wherever the journal happens to mention one.
+   *
+   * Five different events each know a different part of it, and none knows all
+   * of it, so they are merged by the port's own BodyID — or by name for
+   * `Docked`, which is the one that gives a distance but no id at all.
+   *
+   * Creates the system entry if none exists yet. It used to require one, which
+   * was a race: at boot the live journal replays immediately while the history
+   * sweep that creates the system runs async — so every port mentioned in the
+   * current session was dropped on the floor whenever the sweep lost the race,
+   * and the ship's leg had nothing to resolve against.
+   */
+  private notePort(ev: JournalEvent): void {
+    const PORT_EVENTS = ['Location', 'SupercruiseExit', 'ApproachSettlement', 'Docked'];
+    if (!PORT_EVENTS.includes(ev.event)) return;
+    const address =
+      ev.SystemAddress != null ? String(ev.SystemAddress) : this.currentAddress;
+    if (!address) return;
+    // Created only at the moment a port is actually recorded — a plain
+    // Location with no station in it must not cost a slot in the LRU cap.
+    const merge = (id: number, patch: Partial<OrreryPort> & { name: string }): void => {
+      const sys = this.system(address, str(ev.StarSystem) ?? this.currentSystem);
+      // Fleet carriers are not infrastructure — they jump. Pinning one beside
+      // the world it happened to be parked at would draw it there for ever,
+      // and this table is persisted.
+      if ((patch.type ?? sys.ports.get(id)?.type) === 'FleetCarrier') return;
+      const prev = sys.ports.get(id);
+      sys.ports.set(id, { ...prev, ...patch, id });
+      this.dirty = true;
+    };
+
+    switch (ev.event) {
+      case 'Location':
+      case 'SupercruiseExit': {
+        const id = num(ev.BodyID);
+        const type = str(ev.BodyType);
+        const name = str(ev.StationName) ?? str(ev.Body);
+        if (id === undefined || !name) break;
+        if (type === 'Station') {
+          merge(id, {
+            name,
+            type: str(ev.StationType),
+            distanceLs: num(ev.DistFromStarLS),
+          });
+        } else if (ev.Docked === true && (type === 'Planet' || type === 'PlanetaryRing')) {
+          // Docked on a surface: the body under it is stated, not guessed.
+          const station = str(ev.StationName);
+          if (station) {
+            merge(id + PORT_ID_OFFSET, {
+              name: station,
+              type: str(ev.StationType),
+              distanceLs: num(ev.DistFromStarLS),
+              parentId: id,
+              parentKnown: true,
+            });
+          }
+        }
+        break;
+      }
+      case 'ApproachSettlement': {
+        const bodyId = num(ev.BodyID);
+        const name = str(ev.Name);
+        if (bodyId === undefined || !name) break;
+        // Settlements share their world's BodyID, so they are keyed off it —
+        // several can sit on one body, and the offset keeps them apart.
+        merge(bodyId + PORT_ID_OFFSET, {
+          name,
+          type: 'Settlement',
+          parentId: bodyId,
+          parentKnown: true,
+          latitude: num(ev.Latitude),
+          longitude: num(ev.Longitude),
+        });
+        break;
+      }
+      case 'Docked': {
+        // No BodyID here at all. Match on the name we may already hold, so a
+        // station learned from a drop gains its distance on docking.
+        const name = str(ev.StationName);
+        const ls = num(ev.DistFromStarLS);
+        if (!name) break;
+        for (const p of this.systems.get(address)?.ports.values() ?? []) {
+          if (p.name === name) {
+            merge(p.id, { name, type: str(ev.StationType) ?? p.type, distanceLs: ls ?? p.distanceLs });
+            return;
+          }
+        }
+        break;
+      }
       default:
         break;
     }
@@ -606,7 +856,7 @@ export class OrreryTracker {
   private system(address: string, name: string): OrrerySystem {
     let sys = this.systems.get(address);
     if (!sys) {
-      sys = { address, name, bodies: new Map(), lastScanMs: 0 };
+      sys = { address, name, bodies: new Map(), ports: new Map(), lastScanMs: 0 };
       this.systems.set(address, sys);
       // Oldest out. Insertion order is Map order, and the current system is
       // re-inserted on arrival, so the one dropped is the least recently seen.
@@ -638,13 +888,22 @@ export class OrreryTracker {
         name: s.name,
         lastScanMs: s.lastScanMs,
         bodies: [...s.bodies.values()],
+        ports: [...s.ports.values()],
       })),
     };
   }
 
   static fromJSON(raw: unknown): OrreryTracker {
     const t = new OrreryTracker();
-    const data = raw as { systems?: Array<{ address?: string; name?: string; lastScanMs?: number; bodies?: OrreryBody[] }> };
+    const data = raw as {
+      systems?: Array<{
+        address?: string;
+        name?: string;
+        lastScanMs?: number;
+        bodies?: OrreryBody[];
+        ports?: OrreryPort[];
+      }>;
+    };
     for (const s of data?.systems ?? []) {
       if (!s?.address) continue;
       t.systems.set(s.address, {
@@ -652,6 +911,7 @@ export class OrreryTracker {
         name: s.name ?? '',
         lastScanMs: s.lastScanMs ?? 0,
         bodies: new Map((s.bodies ?? []).map((b) => [b.id, b])),
+        ports: new Map((s.ports ?? []).map((p) => [p.id, p])),
       });
     }
     return t;
@@ -816,6 +1076,84 @@ export function systemExtent(placed: readonly PlacedBody[]): number {
   let max = 0;
   for (const p of placed) max = Math.max(max, Math.hypot(p.x, p.y));
   return max || 1;
+}
+
+// ---------------------------------------------------------------------------
+// Where the ship is
+// ---------------------------------------------------------------------------
+
+/**
+ * A supercruise leg in progress: left `fromId` at `departedMs`, aiming at
+ * `toId`. The destination is read live, because retargeting mid-flight is
+ * normal and the leg should follow it.
+ */
+export interface ShipLeg {
+  fromId: number;
+  toId: number;
+  departedMs: number;
+}
+
+/**
+ * How far along a leg the ship might be — a BAND, not a point.
+ *
+ * Elite reports no in-system position. Nothing in Status.json or the journal
+ * says where the ship is between two bodies, so any single dot on that line is
+ * invented. Measured against this commander's own history, distance barely
+ * predicts duration at all:
+ *
+ *     0.2 ls ->   8 s
+ *     0.8 ls -> 134 s, 154 s
+ *   4696   ls -> 137 s, 162 s, 304 s
+ *
+ * The same 4,697 ls run took 137 s and 304 s on different days, and a 0.8 ls
+ * hop took as long as either — because the trip is spool-up, alignment and
+ * deceleration far more than it is distance, and because a pilot stops to
+ * scan things. A best-fit curve over those legs carries a mean relative error
+ * of 112%, which is worse than no estimate at all.
+ *
+ * So the bounds are flat and wide rather than a fitted curve pretending to
+ * precision, and what gets drawn is the interval they imply: the ship is
+ * somewhere between `lo` and `hi` of the way there. Early in a leg that is a
+ * useful, moving answer; late in one it widens to "nearly there, or arriving",
+ * which is exactly what is actually known.
+ */
+export interface LegProgress {
+  lo: number;
+  hi: number;
+  /** Midpoint, for the marker. Never mistake this for a position. */
+  mid: number;
+  elapsedS: number;
+}
+
+/**
+ * Fastest and slowest plausible legs, in seconds, taken from the measurements
+ * above rather than guessed.
+ *
+ * The three cruise legs came in at 137, 162 and 304 s, so the bounds sit a
+ * little outside that: 110 allows for a pilot flying it better than this
+ * commander ever did, 330 for one who stopped to look at something. Bounds any
+ * tighter would be a claim the evidence does not support; any wider and the
+ * band covers the whole route from the first second, which tells nobody
+ * anything.
+ */
+const LEG_FAST_S = 110;
+const LEG_SLOW_S = 330;
+/**
+ * Under a light-second is a manoeuvre, not a cruise. Measured at 8 s for
+ * 0.2 ls and 134/154 s for 0.8 ls — the spread is enormous at this range
+ * because it is all spool-up and stopping.
+ */
+const HOP_FAST_S = 8;
+const HOP_SLOW_S = 170;
+
+export function legProgress(leg: ShipLeg, nowMs: number, separationLs: number): LegProgress {
+  const elapsedS = Math.max(0, (nowMs - leg.departedMs) / 1000);
+  const short = separationLs < 1;
+  const fast = short ? HOP_FAST_S : LEG_FAST_S;
+  const slow = short ? HOP_SLOW_S : LEG_SLOW_S;
+  const hi = Math.min(1, elapsedS / fast);
+  const lo = Math.min(hi, elapsedS / slow);
+  return { lo, hi, mid: (lo + hi) / 2, elapsedS };
 }
 
 /** Anything with a position and a size, for the de-overlap pass. */

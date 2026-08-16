@@ -443,17 +443,34 @@ fn journal_system_scans(
         Some(d) if !d.trim().is_empty() => expand_dir(d),
         _ => default_dir(),
     };
-    let cap = limit.unwrap_or(3000).clamp(1, 30_000);
+    let cap = limit.unwrap_or(4000).clamp(1, 30_000);
     let needle = format!("\"SystemAddress\":{addr}");
     let mut out = Vec::new();
     // Oldest first, so a later re-scan of the same body wins on replay order.
+    //
+    // Scans carry the orbits; the rest carry the DOCKS. A station is only ever
+    // described by the events of visiting it — SupercruiseExit names its
+    // BodyID, Docked adds the distance, ApproachSettlement pins a settlement
+    // to its world — so without these lines the map knows a station only after
+    // the commander goes there again, and a supercruise leg whose destination
+    // is an unvisited station resolves to nothing. Location and SupercruiseExit
+    // are kept only when they actually mention a station, since a bare
+    // position fix teaches the map nothing.
     for f in list_journals(&dir) {
         let Ok(text) = fs::read_to_string(&f) else { continue };
         for line in text.lines() {
             if !line.contains(&needle) {
                 continue;
             }
-            if line.contains("\"event\":\"Scan\"") || line.contains("\"event\":\"ScanBaryCentre\"") {
+            let keep = line.contains("\"event\":\"Scan\"")
+                || line.contains("\"event\":\"ScanBaryCentre\"")
+                || line.contains("\"event\":\"Docked\"")
+                || line.contains("\"event\":\"ApproachSettlement\"")
+                || ((line.contains("\"event\":\"Location\"")
+                    || line.contains("\"event\":\"SupercruiseExit\""))
+                    && (line.contains("\"StationName\":")
+                        || line.contains("\"BodyType\":\"Station\"")));
+            if keep {
                 out.push(line.to_string());
                 if out.len() >= cap {
                     return out;

@@ -155,9 +155,40 @@ and nothing drifts because nothing integrates.
   nothing claims to be a photograph of that particular world.
 - **Landable worlds keep their green**, now as a rim rather than a fill, so painting bodies by
   class did not cost the one fact on the map you can act on.
+- **Follow keeps the camera on your ship.** A toggle glues the centre of the map to the marker —
+  parked chevron or in-flight band — so a zoomed-in view tracks the whole leg instead of watching
+  the one thing you care about slide out of frame. Grabbing the map disengages it, because a drag
+  is the statement that you want to look somewhere else; double-click (frame the system) lets go
+  too.
 - **Scroll to zoom, drag to pan**, double-click to reframe. Zoom is anchored on the pointer, and
   bodies grow sub-linearly with it (`^0.55`) — visible enough to have a surface, never so large
   that two planets fill the panel.
+- **The ship is drawn parked, not just in flight.** Docked or dropped somewhere, a filled cyan
+  chevron marks the exact dock — filled because an arrival is a fact the journal stated, where the
+  in-flight marker is hollow because it is an estimate. Flying toward somewhere the map cannot
+  place yet (a station never visited), the card says so instead of going silent. The history
+  sweep also collects every dock ever visited — `Docked`, `ApproachSettlement`, station
+  `Location`/`SupercruiseExit` lines — so stations from old sessions are on the map at boot,
+  and it folds them through a state-free path so replaying last year's arrivals cannot teleport
+  the live ship.
+- **Docks are on the map too.** Stations, outposts, settlements and construction depots, as small
+  amber marks beside the body they belong to. They are not bodies and never receive a `Scan`, so
+  they have no orbit to place them by — a surface port states its world outright
+  (`ApproachSettlement` gives the `BodyID` and even a latitude), while an orbital one is matched to
+  the body it orbits by distance from the arrival star, which both measure: Anders City reports
+  970.04 ls and its world 970.0. Anything that cannot be matched within a few light-seconds is left
+  undrawn rather than parked beside the wrong planet, and **fleet carriers are excluded outright**
+  — they jump, and this table is persisted.
+- **Your ship, as honestly as it can be drawn.** Elite reports no in-system position — Status.json
+  carries flags, fuel, cargo and the nav target, and nothing else — so a moving dot would be the
+  only invented number on the map. Instead the leg you are flying is drawn from where you dropped
+  to supercruise toward whatever you have targeted (read live, so retargeting follows), and your
+  progress along it is shown as **a band, not a point**: somewhere between the fastest and slowest
+  legs actually recorded in your own journals. Measured across those journals, distance barely
+  predicts duration at all — 0.2 ls took 8 s, 0.8 ls took 134 s, and the same 4,697 ls run took
+  137 s, 162 s and 304 s on different days, giving a best-fit curve a mean error of 112%. So the
+  band is wide because the truth is wide, it slides as you fly, and it is replaced by fact the
+  moment you arrive.
 - **Tap a body for its card.** Distances, orbital period, eccentricity, surface temperature,
   atmosphere, volcanism, tidal lock — and **gravity in G**, amber past 2 and red past 3, because
   that is the number that writes off ships rather than trivia. Landable bodies list their

@@ -72,6 +72,30 @@ NOTES
     shouting rather than the percentage: iron at 21% stays grey when you hold
     300 of it, while tellurium at 1% with none held is the line that tells you
     to land. Bodies nobody has walked on are flagged "first footfall".
+    Docks are marked too — stations, outposts, settlements and construction
+    depots, beside the body they belong to. They are not bodies and never get
+    scanned, so a surface port uses the world the journal names and an orbital
+    one is matched by distance from the arrival star (both report it, and they
+    agree to a fraction of a light-second). Unmatched docks are left undrawn
+    rather than parked beside the wrong planet; fleet carriers are skipped
+    entirely, since they jump and this table is saved.
+    The ship is also drawn PARKED — docked or dropped at a station, a filled
+    cyan chevron marks the exact dock, with "You are at ..." under the map.
+    Flying toward a station you have never visited, the card says the
+    destination is not mapped yet instead of showing nothing. The history
+    sweep now collects every dock you ever visited too, so stations from old
+    sessions appear at boot, with their names labelled once you zoom in.
+    A FOLLOW toggle keeps the camera centred on your ship — parked or mid-leg
+    — so a zoomed view tracks the travel instead of letting the marker slide
+    out of frame. Dragging the map or double-clicking lets go.
+    Your ship shows on the map as the LEG you are flying — from where you
+    dropped to supercruise toward whatever you have targeted — with progress
+    drawn as a band rather than a dot. Elite reports no in-system position at
+    all (the status file has flags, fuel, cargo and the nav target, nothing
+    else), so a precise marker would be invented. The band's width comes from
+    real measurement: across this commander's journals the same 4,697 ls run
+    took 137, 162 and 304 seconds on different days, and a 0.8 ls hop took as
+    long as either. It slides as you fly and is replaced by fact on arrival.
     Also in 1.0.4: the local wire no longer reprints itself. Two stories with
     different headlines could carry the same four faction percentages and both
     got printed, because the duplicate check compared words and what repeats

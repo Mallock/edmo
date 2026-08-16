@@ -101,7 +101,7 @@ import {
 } from '../engine/news.ts';
 import { buildShipPanel, type ShipPanel } from '../engine/shippanel.ts';
 import { ExploreTracker, classifyBody, type ExploreLead } from '../engine/explore.ts';
-import { OrreryTracker } from '../engine/orrery.ts';
+import { OrreryTracker, resolveBodyId, resolvePorts } from '../engine/orrery.ts';
 import type { OrreryView } from './Orrery.tsx';
 import {
   DeathClock,
@@ -1729,14 +1729,19 @@ export class AppCore {
     try {
       const lines = await journalSystemScans(address, this.settings.journal.directory);
       if (!lines.length) return;
-      const before = this.orrery.get(address)?.bodies.size ?? 0;
+      const sysBefore = this.orrery.get(address);
+      const before = (sysBefore?.bodies.size ?? 0) + (sysBefore?.ports.size ?? 0);
       for (const line of lines) {
         const ev = parseJournalLine(line);
         // Replay order does not matter: elements are constants, so an older
-        // scan of a body describes the same orbit as a newer one.
-        if (ev) this.orrery.apply(ev);
+        // scan of a body describes the same orbit as a newer one. But this
+        // MUST be the historic fold — these lines include old arrivals and
+        // departures, and feeding them through apply() would teleport the
+        // live navigation state into last week, nulling the leg being flown.
+        if (ev) this.orrery.applyHistoric(ev);
       }
-      const after = this.orrery.get(address)?.bodies.size ?? 0;
+      const sysAfter = this.orrery.get(address);
+      const after = (sysAfter?.bodies.size ?? 0) + (sysAfter?.ports.size ?? 0);
       if (after > before) {
         this.persistOrrery();
         this.emit();
@@ -1779,11 +1784,48 @@ export class AppCore {
         if (!(m.name in matCounts)) matCounts[m.name] = this.materials.count(m.name);
       }
     }
+    // The leg the ship is flying, with its destination read live rather than
+    // frozen at departure — retargeting mid-flight is normal, and the drawn
+    // leg should follow the nav target the commander actually has selected.
+    resolvePorts(sys);
+    const destRaw = this.statusTracker.current?.destination?.body;
+    const destRawId = destRaw != null && /^\d+$/.test(destRaw) ? Number(destRaw) : null;
+    // BOTH ends need resolving, not just the target. A leg's origin comes from
+    // the last SupercruiseExit or Docked, and those report the STATION —
+    // so undocking and flying somewhere, the commonest trip there is, produced
+    // an origin no body table could place.
+    const leg = this.orrery.leg;
+    const fromId = resolveBodyId(sys, leg?.fromId);
+    const destId = resolveBodyId(sys, destRawId);
+    const destName =
+      destRawId != null
+        ? (sys.ports.get(destRawId)?.name ?? this.statusTracker.current?.destination?.name)
+        : undefined;
+    const ship =
+      leg && fromId != null && destId != null && destId !== fromId
+        ? { ...leg, fromId, toId: destId, destName }
+        : null;
+    // In supercruise toward somewhere the map cannot place — a station never
+    // visited, a body never scanned. The line cannot be drawn, but silence
+    // reads as a broken feature; say where the ship is going and why there is
+    // no marker.
+    const shipUnresolved =
+      !ship && leg != null && destRawId != null
+        ? (destName ?? 'an unmapped destination')
+        : null;
+    // "You are here" has the same station problem the leg had: docked at
+    // Anders City, currentBodyId is the STATION's id, which no body table
+    // holds. Resolve it to the world; keep the port id so the exact dock can
+    // be ringed too.
+    const hereRaw = this.orrery.currentBodyId;
     return {
       system: sys,
-      hereBodyId: this.orrery.currentBodyId,
+      hereBodyId: resolveBodyId(sys, hereRaw),
+      herePortId: hereRaw != null && sys.ports.has(hereRaw) ? hereRaw : null,
       bodyCount: placeable,
       matCounts,
+      ship,
+      shipUnresolved,
     };
   }
 
@@ -6452,6 +6494,10 @@ ${missionContext(mission, state)}`);
       // And the grid, because the orrery's body card reads it: a surface
       // material means little without "how many of these do I already carry".
       this.materials.apply(ev);
+      // A pasted Status line is how the nav target arrives without the shell,
+      // and the orrery draws the leg to whatever is targeted. Alerts are
+      // dropped: an import is not a live event and must not announce itself.
+      if (ev.event === 'Status') this.statusTracker.apply(ev);
     }
     this.persistOrrery();
     const n = this.sm.activeMissions().length;

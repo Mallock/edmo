@@ -15,6 +15,7 @@ import {
   OrreryTracker,
   bodyRadiusPx,
   compressLs,
+  legProgress,
   lightSource,
   materialGrade,
   orbitAt,
@@ -26,6 +27,8 @@ import {
   placeSystem,
   readElements,
   readMaterials,
+  resolveBodyId,
+  resolvePorts,
   separateDiscs,
   surfaceOf,
   shortLabel,
@@ -439,6 +442,258 @@ test('separation carries the payload through, so bodies keep their identity', ()
     { x: 6, y: 5, r: 4, id: 'b' },
   ], 2);
   assert.deepEqual(out.map((d) => d.id).sort(), ['a', 'b']);
+});
+
+// --------------------------------------------------------------------- ports
+
+/** Two real worlds from HIP 71120, with the distances their stations quote. */
+const portSystem = (): OrreryTracker => {
+  const t = new OrreryTracker();
+  t.apply(ev({ timestamp: '2026-08-16T00:00:00Z', event: 'Location', StarSystem: 'HIP 71120', SystemAddress: 83986911994 }));
+  for (const [id, name, ls] of [[21, 'HIP 71120 2 b', 970.0], [43, 'HIP 71120 4 c', 2403.6]] as const) {
+    t.apply(ev({
+      timestamp: '2026-08-16T00:00:01Z', event: 'Scan', BodyName: name, BodyID: id,
+      Parents: [{ Star: 0 }], StarSystem: 'HIP 71120', SystemAddress: 83986911994,
+      PlanetClass: 'Icy body', Radius: 2e6, DistanceFromArrivalLS: ls,
+      SemiMajorAxis: 1e12, Eccentricity: 0, OrbitalPeriod: 1e7, MeanAnomaly: id,
+    }));
+  }
+  return t;
+};
+
+test('an orbital station is matched to its body by distance from the star', () => {
+  const t = portSystem();
+  // Real: Anders City, BodyID 85, an Outpost at 970.04 ls.
+  t.apply(ev({
+    timestamp: '2026-08-16T00:01:00Z', event: 'Location', StarSystem: 'HIP 71120',
+    SystemAddress: 83986911994, Docked: true, BodyID: 85, BodyType: 'Station',
+    Body: 'Anders City', StationName: 'Anders City', StationType: 'Outpost',
+    DistFromStarLS: 970.037866,
+  }));
+  const sys = t.current()!;
+  resolvePorts(sys);
+  const port = sys.ports.get(85)!;
+  assert.equal(port.name, 'Anders City');
+  assert.equal(port.parentId, 21, 'both measure from the arrival star, so they agree');
+  assert.equal(port.parentKnown, undefined, 'and it is flagged as inferred, not stated');
+});
+
+test('a surface settlement takes the body the journal names, not a guess', () => {
+  const t = portSystem();
+  t.apply(ev({
+    timestamp: '2026-08-16T00:02:00Z', event: 'ApproachSettlement',
+    Name: 'Bawa Hospitality Site', MarketID: 1, StarSystem: 'HIP 71120',
+    SystemAddress: 83986911994, BodyID: 43, BodyName: 'HIP 71120 4 c',
+    Latitude: 41.2, Longitude: -130.5,
+  }));
+  const sys = t.current()!;
+  resolvePorts(sys);
+  const port = [...sys.ports.values()].find((p) => p.name === 'Bawa Hospitality Site')!;
+  assert.equal(port.parentId, 43);
+  assert.equal(port.parentKnown, true, 'stated outright, so distance never overrides it');
+  assert.equal(port.latitude, 41.2);
+});
+
+test('a station too far from anything scanned is left unplaced, not guessed', () => {
+  const t = portSystem();
+  t.apply(ev({
+    timestamp: '2026-08-16T00:03:00Z', event: 'Location', StarSystem: 'HIP 71120',
+    SystemAddress: 83986911994, BodyID: 99, BodyType: 'Station', Body: 'Nowhere Dock',
+    StationName: 'Nowhere Dock', StationType: 'Coriolis', DistFromStarLS: 40000,
+  }));
+  const sys = t.current()!;
+  resolvePorts(sys);
+  assert.equal(sys.ports.get(99)?.parentId, undefined, 'better absent than beside the wrong world');
+});
+
+test('fleet carriers are never pinned to a body, because they jump', () => {
+  const t = portSystem();
+  t.apply(ev({
+    timestamp: '2026-08-16T00:04:00Z', event: 'Location', StarSystem: 'HIP 71120',
+    SystemAddress: 83986911994, BodyID: 77, BodyType: 'Station', Body: 'V6W-TTJ',
+    StationName: 'V6W-TTJ', StationType: 'FleetCarrier', DistFromStarLS: 970,
+  }));
+  assert.equal(t.current()!.ports.has(77), false, 'this table is persisted; a carrier would go stale');
+});
+
+test('docking fills in the distance for a station first seen on a drop', () => {
+  const t = portSystem();
+  t.apply(ev({
+    timestamp: '2026-08-16T00:05:00Z', event: 'SupercruiseExit', StarSystem: 'HIP 71120',
+    SystemAddress: 83986911994, BodyID: 85, BodyType: 'Station', Body: 'Anders City',
+  }));
+  assert.equal(t.current()!.ports.get(85)?.distanceLs, undefined, 'a drop gives no distance');
+  // Docked carries the distance but no BodyID at all, so it merges by name.
+  t.apply(ev({
+    timestamp: '2026-08-16T00:06:00Z', event: 'Docked', StationName: 'Anders City',
+    StationType: 'Outpost', StarSystem: 'HIP 71120', SystemAddress: 83986911994,
+    DistFromStarLS: 970.037866,
+  }));
+  const sys = t.current()!;
+  assert.equal(sys.ports.get(85)?.distanceLs, 970.037866);
+  resolvePorts(sys);
+  assert.equal(sys.ports.get(85)?.parentId, 21, 'and only then can it be placed');
+});
+
+test('ports survive a reload, since they cost a docking to learn', () => {
+  const t = portSystem();
+  t.apply(ev({
+    timestamp: '2026-08-16T00:07:00Z', event: 'Location', StarSystem: 'HIP 71120',
+    SystemAddress: 83986911994, BodyID: 85, BodyType: 'Station', Body: 'Anders City',
+    StationName: 'Anders City', StationType: 'Outpost', DistFromStarLS: 970.04,
+  }));
+  const back = OrreryTracker.fromJSON(JSON.parse(JSON.stringify(t.toJSON())));
+  assert.equal(back.get('83986911994')?.ports.get(85)?.name, 'Anders City');
+});
+
+// ------------------------------------------------------------- historic fold
+
+test('the historic fold learns docks and bodies but never moves the ship', () => {
+  const t = portSystem();
+  // A live leg is under way.
+  t.apply(ev({ timestamp: '2026-08-16T10:00:00Z', event: 'Location', StarSystem: 'HIP 71120', SystemAddress: 83986911994, BodyID: 21 }));
+  t.apply(ev({ timestamp: '2026-08-16T10:01:00Z', event: 'SupercruiseEntry', StarSystem: 'HIP 71120', SystemAddress: 83986911994 }));
+  assert.equal(t.leg?.fromId, 21);
+
+  // The sweep now replays LAST YEAR's arrivals. Through apply() this would
+  // null the live leg and teleport currentBodyId into the past.
+  t.applyHistoric(ev({
+    timestamp: '2025-06-24T14:00:00Z', event: 'SupercruiseExit', StarSystem: 'HIP 71120',
+    SystemAddress: 83986911994, BodyID: 85, BodyType: 'Station', Body: 'Anders City',
+  }));
+  t.applyHistoric(ev({
+    timestamp: '2025-06-24T14:01:00Z', event: 'Docked', StationName: 'Anders City',
+    StationType: 'Outpost', StarSystem: 'HIP 71120', SystemAddress: 83986911994,
+    DistFromStarLS: 970.037866,
+  }));
+
+  assert.equal(t.leg?.fromId, 21, 'the live leg survives the history');
+  assert.equal(t.currentBodyId, null, 'and the ship was not teleported to 2025');
+  const sys = t.current()!;
+  assert.equal(sys.ports.get(85)?.name, 'Anders City', 'while the dock was still learned');
+  resolvePorts(sys);
+  assert.equal(sys.ports.get(85)?.parentId, 21);
+});
+
+test('a dock seen before any scan still lands: the system is created for it', () => {
+  // The boot race, distilled: the live journal replays a station arrival
+  // before the async history sweep has created the system from scans.
+  const t = new OrreryTracker();
+  t.apply(ev({
+    timestamp: '2026-08-16T09:40:00Z', event: 'SupercruiseExit', StarSystem: 'HIP 71120',
+    SystemAddress: 83986911994, BodyID: 91, BodyType: 'Station', Body: 'Heisenberg Depot',
+  }));
+  const sys = t.get('83986911994');
+  assert.ok(sys, 'the system exists although nothing was ever scanned');
+  assert.equal(sys.ports.get(91)?.name, 'Heisenberg Depot');
+  // The scans arrive later (the sweep resolves) and the port is still there.
+  t.applyHistoric(ev({
+    timestamp: '2025-06-24T13:53:12Z', event: 'Scan', BodyName: 'HIP 71120 2 b', BodyID: 21,
+    Parents: [{ Star: 0 }], StarSystem: 'HIP 71120', SystemAddress: 83986911994,
+    PlanetClass: 'Icy body', Radius: 2e6, DistanceFromArrivalLS: 970.0,
+    SemiMajorAxis: 1e12, Eccentricity: 0, OrbitalPeriod: 1e7, MeanAnomaly: 3,
+  }));
+  assert.equal(t.get('83986911994')!.ports.get(91)?.name, 'Heisenberg Depot');
+  assert.equal(t.get('83986911994')!.bodies.get(21)?.scanned, true);
+});
+
+test('a plain Location with no station in it does not create a system entry', () => {
+  const t = new OrreryTracker();
+  t.apply(ev({ timestamp: '2026-08-16T09:00:00Z', event: 'Location', StarSystem: 'Passthrough', SystemAddress: 42 }));
+  assert.equal(t.get('42'), null, 'an empty entry would cost a slot in the LRU cap');
+});
+
+// -------------------------------------------------------------- ship in flight
+
+test('entering supercruise opens a leg from wherever the ship last was', () => {
+  const t = new OrreryTracker();
+  t.apply(ev({ timestamp: '2026-08-16T01:00:00Z', event: 'Location', StarSystem: 'S', SystemAddress: 5, BodyID: 3 }));
+  assert.equal(t.currentBodyId, 3);
+  t.apply(ev({ timestamp: '2026-08-16T01:01:00Z', event: 'SupercruiseEntry', StarSystem: 'S', SystemAddress: 5 }));
+  assert.equal(t.leg?.fromId, 3, 'SupercruiseEntry names no body — it comes from the tracker');
+  assert.equal(t.currentBodyId, null, 'and the ship is no longer AT anything');
+});
+
+test('arrival ends the leg, because that is the moment position is certain', () => {
+  const t = new OrreryTracker();
+  t.apply(ev({ timestamp: '2026-08-16T01:00:00Z', event: 'Location', StarSystem: 'S', SystemAddress: 5, BodyID: 3 }));
+  t.apply(ev({ timestamp: '2026-08-16T01:01:00Z', event: 'SupercruiseEntry', StarSystem: 'S', SystemAddress: 5 }));
+  t.apply(ev({ timestamp: '2026-08-16T01:04:00Z', event: 'SupercruiseExit', StarSystem: 'S', SystemAddress: 5, BodyID: 9 }));
+  assert.equal(t.leg, null, 'no estimate may outlive the fact that replaces it');
+  assert.equal(t.currentBodyId, 9);
+});
+
+test('a jump clears any leg — the old system is not where we are', () => {
+  const t = new OrreryTracker();
+  t.apply(ev({ timestamp: '2026-08-16T01:00:00Z', event: 'Location', StarSystem: 'S', SystemAddress: 5, BodyID: 3 }));
+  t.apply(ev({ timestamp: '2026-08-16T01:01:00Z', event: 'SupercruiseEntry', StarSystem: 'S', SystemAddress: 5 }));
+  t.apply(ev({ timestamp: '2026-08-16T01:02:00Z', event: 'FSDJump', StarSystem: 'T', SystemAddress: 6 }));
+  assert.equal(t.leg, null);
+});
+
+test('undocking and flying out resolves BOTH ends through the dock table', () => {
+  // The exact live sequence: drop at a station, dock, undock, supercruise out.
+  // Every id the journal offers here is a STATION id, not a body.
+  const t = portSystem();
+  t.apply(ev({
+    timestamp: '2026-08-16T09:40:00Z', event: 'SupercruiseExit', StarSystem: 'HIP 71120',
+    SystemAddress: 83986911994, BodyID: 85, BodyType: 'Station', Body: 'Anders City',
+  }));
+  t.apply(ev({
+    timestamp: '2026-08-16T09:41:00Z', event: 'Docked', StationName: 'Anders City',
+    StationType: 'Outpost', StarSystem: 'HIP 71120', SystemAddress: 83986911994,
+    DistFromStarLS: 970.037866,
+  }));
+  t.apply(ev({ timestamp: '2026-08-16T09:50:00Z', event: 'Undocked', StationName: 'Anders City' }));
+  t.apply(ev({ timestamp: '2026-08-16T09:51:00Z', event: 'SupercruiseEntry', StarSystem: 'HIP 71120', SystemAddress: 83986911994 }));
+
+  const sys = t.current()!;
+  resolvePorts(sys);
+  assert.equal(t.leg?.fromId, 85, 'the origin really is a station id');
+  assert.equal(sys.bodies.has(85), false, 'and no body table will ever contain it');
+  // Which is exactly why it has to be resolved rather than looked up.
+  assert.equal(resolveBodyId(sys, t.leg!.fromId), 21, 'origin resolves to the world it orbits');
+  // A surface depot targets the planet directly and needs no resolving.
+  assert.equal(resolveBodyId(sys, 43), 43);
+  assert.equal(resolveBodyId(sys, 9999), null, 'and an unknown id stays unknown');
+});
+
+test('progress is an interval that opens, slides and closes', () => {
+  const leg = { fromId: 1, toId: 2, departedMs: 0 };
+  const early = legProgress(leg, 20_000, 400);
+  assert.ok(early.lo < early.hi, 'it is a band, never a point');
+  assert.ok(early.hi < 1, 'and it does not claim arrival 20 seconds in');
+
+  const later = legProgress(leg, 120_000, 400);
+  assert.ok(later.lo > early.lo && later.hi > early.hi, 'it advances with the clock');
+  assert.ok(later.mid > early.mid);
+
+  // Past the fastest plausible leg the upper bound pins at "there", and the
+  // band closes from behind rather than overshooting.
+  const late = legProgress(leg, 600_000, 400);
+  assert.equal(late.hi, 1);
+  assert.equal(late.lo, 1);
+  assert.ok(late.lo <= late.hi);
+});
+
+test('a short hop resolves faster than a cruise, because the data says so', () => {
+  const leg = { fromId: 1, toId: 2, departedMs: 0 };
+  // 0.8 ls took about as long as 4,697 ls in the real journals, so the split is
+  // by manoeuvre-versus-cruise, not by a distance curve.
+  const hop = legProgress(leg, 30_000, 0.5);
+  const cruise = legProgress(leg, 30_000, 4000);
+  assert.ok(hop.hi >= cruise.hi, 'a sub-light-second hop is further along at the same elapsed time');
+});
+
+test('progress never runs backwards or leaves the route', () => {
+  const leg = { fromId: 1, toId: 2, departedMs: 1000 };
+  let prev = -1;
+  for (let s = 0; s <= 900; s += 15) {
+    const p = legProgress(leg, 1000 + s * 1000, 400);
+    assert.ok(p.lo >= 0 && p.hi <= 1, `bounds stay on the line at ${s}s`);
+    assert.ok(p.mid >= prev - 1e-9, 'and the marker never slides back');
+    prev = p.mid;
+  }
 });
 
 // ----------------------------------------------------------------- landables

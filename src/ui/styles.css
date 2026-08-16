@@ -2093,6 +2093,11 @@ body {
   border-color: var(--dim);
 }
 
+.orr-chip:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
 .orr-chip.active {
   color: var(--cyan);
   border-color: var(--cyan);
@@ -2166,6 +2171,19 @@ body {
 }
 .orr-detail-grid .grav-hi {
   color: var(--red);
+}
+
+/* The one estimated thing on the map says so in words, not just in style. */
+.orr-flight-note {
+  margin-top: 5px;
+  font-size: var(--fs-micro);
+  color: var(--cyan);
+  line-height: 1.5;
+}
+
+.orr-flight-note b {
+  color: var(--text);
+  font-weight: 500;
 }
 
 .orr-mats {

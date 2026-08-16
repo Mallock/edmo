@@ -453,6 +453,27 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
         and the grain appears as you zoom in far enough to have a surface worth looking at.
         Landable worlds keep their green rim, because that is the one thing on the map you can
         act on.</p>
+        <p><b>Every dock you have visited is marked</b> — stations, outposts, settlements and
+        construction depots, beside the world they belong to. Docks are not bodies and never get
+        scanned, so a surface port is placed on the world the journal names outright, and an orbital
+        one is matched to what it orbits by distance from the arrival star, which both report:
+        Anders City says 970.04&nbsp;ls, its world says 970.0. What cannot be matched is left
+        undrawn rather than parked beside the wrong planet.</p>
+        <p><b>Your ship is on the map too — as honestly as it can be.</b> Elite reports no in-system
+        position: the status file carries flags, fuel, cargo and your nav target, and nothing else.
+        So instead of inventing a dot, the tab draws <b>the leg you are flying</b> — from where you
+        dropped to supercruise toward whatever you have targeted — and shows your progress along it
+        as <b>a band rather than a point</b>. The width is not decoration: measured across this
+        commander's own journals the same 4,697&nbsp;ls run took <b>137, 162 and 304 seconds</b> on
+        different days, and a 0.8&nbsp;ls hop took as long as either, because a supercruise trip is
+        spool-up and deceleration far more than it is distance. The band slides as you fly, and the
+        moment you drop in it is replaced by fact. <b>Parked, you are drawn too</b> — docked or
+        dropped at a station, a filled chevron marks the exact dock, filled because an arrival is
+        a fact the journal stated where the in-flight marker is an estimate and says so. Flying
+        toward a station you have never visited, the card tells you the destination is not mapped
+        yet rather than showing nothing. And a <b>follow toggle</b> keeps the camera centred on
+        your ship, parked or mid-leg, so a zoomed-in view tracks the whole trip instead of letting
+        the one marker you care about slide out of frame — grab the map and it lets go.</p>
         <p><b>Tap a body and it opens its card.</b> Distance from arrival and from its parent, orbital
         period, eccentricity, surface temperature, atmosphere, volcanism, whether it is tidally
         locked — and <b>gravity in G</b>, which turns amber past 2 and red past 3, because that is
@@ -564,9 +585,9 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
     <div class="gallery">
       <figure class="shot">
         <a href="img/hud-orrery.png" target="_blank" rel="noopener">
-          <img src="img/hud-orrery.png" alt="The orrery tab showing HIP 71120 from above: 36 scanned bodies and 12 belt bands filling the panel, each drawn as a shaded sphere lit from the star at the centre and carrying its designation. The icy world 4 b is selected, its orbit picked out in amber, and below the map its card reads 2,405 light-seconds from arrival, 0.06 G, 90 Kelvin, followed by its surface materials — Selenium at 4.4 per cent and Tellurium at 1.0 per cent highlighted as rare, each annotated with how many the commander already carries" loading="lazy">
+          <img src="img/hud-orrery.png" alt="The orrery tab mid-flight in HIP 71120: 36 shaded bodies with their docks marked as amber squares, the follow toggle active, and a note reading 'In supercruise to Benyovszky Gateway, 80 seconds out, somewhere in the 24 to 72 per cent of the way — estimated, the game does not report position'. The icy world 4 b is selected, its orbit picked out in amber, its card reading 2,405 light-seconds from arrival, 0.06 G, 90 Kelvin, and its surface materials richest first — Selenium and Tellurium highlighted as rare, each annotated with how many the commander already carries" loading="lazy">
         </a>
-        <figcaption><b>Orrery</b> — 36 bodies, and what is on the one you tapped</figcaption>
+        <figcaption><b>Orrery</b> — the system, its docks, and your ship mid-leg</figcaption>
       </figure>
       <figure class="shot">
         <a href="img/hud-architect.png" target="_blank" rel="noopener">
