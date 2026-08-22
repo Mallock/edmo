@@ -7,9 +7,9 @@ WHAT THIS IS
   index.html                              the page
   img/                                    screenshots + icons
   fonts/                                  the two webfonts, self-hosted
-  ED-Mission-Operator-1.0.4-setup.exe       the Windows installer (~131 MB)
-  ED-Mission-Operator-1.0.4-amd64.deb       Linux beta, Ubuntu/Debian (~147 MB)
-  ED-Mission-Operator-1.0.4-x86_64.AppImage Linux beta, any distro (~231 MB)
+  ED-Mission-Operator-1.1.0-setup.exe       the Windows installer (~132 MB)
+  ED-Mission-Operator-1.1.0-amd64.deb       Linux beta, Ubuntu/Debian (~147 MB)
+  ED-Mission-Operator-1.1.0-x86_64.AppImage Linux beta, any distro (~231 MB)
 
 HOW TO PUT IT ON YOUR WEB HOTEL
   1. Open your web hotel's File Manager (or connect with FTP, e.g. FileZilla).
@@ -19,10 +19,68 @@ HOW TO PUT IT ON YOUR WEB HOTEL
   4. Visit your domain in a browser. Done.
 
 NOTES
-  * The installer is ~131 MB. Browser-based file managers sometimes limit
+  * The installer is ~132 MB. Browser-based file managers sometimes limit
     uploads (often to 100 MB) — if the .exe upload fails, use FTP instead,
     or upload it to a file service and change the download link in
-    index.html (search for "ED-Mission-Operator-1.0.4-setup.exe").
+    index.html (search for "ED-Mission-Operator-1.1.0-setup.exe").
+  * 1.1.0 adds COMMS TRAFFIC and THE RADIO.
+
+    COMMS TRAFFIC is other people on other channels — traffic control working a
+    queue, hauliers on the open channel, a fleet carrier broadcasting at
+    everyone, your own crew on the intercom. Mostly they do not care that you
+    exist, which is what makes the ones who do land. A transmission is a SCENE,
+    not a line: a call and a response, because two voices imply two people who
+    exist whether or not you are listening.
+
+    Everything it states is TRUE. Every scene is built from a brief — the exact
+    names and figures it may use, each tagged with where it came from. A
+    haulier grumbling that they have "taken another 380 off Bertrandite at
+    Hurston Ring" is quoting your own market memory: a price you actually saw,
+    at a station you actually docked at. Anything the AI writes is checked back
+    against that brief BEFORE it is spoken, and a scene that reached for a
+    faction, a station or a number nobody licensed is thrown away whole. So the
+    chatter doubles as intelligence, and silence is always the safe failure.
+    Old prices are spoken as old ("last I looked, three days back"), and
+    anything past a week is not mentioned at all.
+
+    Range is real. Station traffic is gated on the actual distance to the port,
+    taken from the orrery, and fades in as you close — so a distant station
+    sounds distant, and a port the app cannot place stays silent rather than
+    being invented. Deep space is not a distance threshold; it is what is left
+    when nobody is in reach.
+
+    Voices come back. A callsign heard in a system is remembered, keeps the
+    same voice, and turns up again next time you are there. Ships you ACTUALLY
+    hear on the game's comms can be enrolled into that cast, so the fiction has
+    a spine of things that genuinely happened. Threads run across sessions:
+    something set up gets complicated, and eventually turns.
+
+    It knows when to shut up. Chatter thins as pressure rises — the opposite of
+    what the operator does — and in a firefight or a hull emergency every
+    ambient channel goes silent. The sudden absence of noise you had stopped
+    noticing is the cheapest tension in the app and costs nothing to generate.
+    The operator keeps talking through all of it; that contrast is the point.
+
+    The Comms tab lists every channel, its signal strength, and when one is
+    shut, WHY. Every transmission is logged with its speakers, so the whole
+    feature works with the sound off, and anything carrying reported
+    intelligence is marked with its sources one tap away. The template file is
+    plain text and yours to extend — declare your own ship names and lines and
+    they join the rotation. OFF BY DEFAULT: enable it in Settings.
+
+    THE RADIO applies to every spoken word, not just the traffic — the
+    operator, the wire and the saga too. A bandpass into the telephone band, a
+    little soft-clip saturation, a noise bed that opens and closes with the
+    transmission, the odd crackle, a squelch gap before speech and a roger beep
+    after it. Distance degrades it. Underneath there are two buses: the
+    operator is on priority, ambient traffic ducks about 14 dB underneath it
+    and DROPS rather than queues when it backs up, so a dock worker's joke can
+    never come between you and a hull-breach callout. Piper voices only —
+    Windows' own speech engine gives no access to its output, so with system
+    voices the radio character is skipped.
+
+    There is no new screenshot for the Comms tab yet; the gallery is unchanged.
+
   * 1.0.4 adds the ORRERY tab: the system map, at the size of a HUD. Every
     Scan the game writes carries the body's whole orbit — semi-major axis,
     eccentricity, inclination, periapsis, ascending node, mean anomaly and
@@ -32,10 +90,11 @@ NOTES
     drifts, because every frame solves the same equations at a different time.
     Stars, planets, barycentres, and belt clusters drawn as the bands they
     are; the body you are on is ringed; tap anything for its distance, its
-    orbital period and its eccentricity. Distances are compressed per level —
-    the only way a moon stays visible around a planet 400 ls from its star —
-    and the card always says which mode it is in, with a switch to true
-    distances. It draws only what you have scanned: no third-party database,
+    orbital period and its eccentricity. Planet distances are TO SCALE — a
+    1,900 ls leg draws at half a 4,000 ls cluster, the proportion you fly —
+    and only moons are spread, which is the only way one 1 ls out stays
+    visible. The map opens following your ship, a little zoomed in. The card
+    always says which mode it is in, with a switch to exact distances. It draws only what you have scanned: no third-party database,
     no bodies guessed into position. There is a new screenshot for it in
     img/hud-orrery.png, first in the gallery.
     It also counts every scan you have EVER taken, not just this session. The
@@ -85,9 +144,17 @@ NOTES
     destination is not mapped yet instead of showing nothing. The history
     sweep now collects every dock you ever visited too, so stations from old
     sessions appear at boot, with their names labelled once you zoom in.
-    A FOLLOW toggle keeps the camera centred on your ship — parked or mid-leg
-    — so a zoomed view tracks the travel instead of letting the marker slide
-    out of frame. Dragging the map or double-clicking lets go.
+    The HUD now switches tabs with the game (toggleable in Settings): opening
+    a market while a colonisation build is on the books shows the architect's
+    shopping list, undocking brings back the system map — no clicking the HUD
+    mid-flight.
+    A RECENTER chip snaps the camera to your ship — parked or mid-leg — and
+    keeps following it; while following, zoom anchors on the ship so you can
+    wheel in and out without losing it. In supercruise the zoom is DYNAMIC:
+    wide at departure, tightening as you close on the destination, easing
+    back out when the target leaves the map. Touch the wheel and it is
+    yours; a new leg re-arms it. Dragging the map or double-clicking
+    lets go, and the chip flips back to RECENTER, one tap from resuming.
     Your ship shows on the map as the LEG you are flying — from where you
     dropped to supercruise toward whatever you have targeted — with progress
     drawn as a band rather than a dot. Elite reports no in-system position at
@@ -176,7 +243,7 @@ NOTES
     ranges and payout estimates; and four opt-in community lookups the operator
     calls only when asked (Spansh routes, galaxy-wide markets via Ardent
     Insight, the EDAstro exploration catalogue, and the Galnet news wire).
-  * All three installers are 1.0.4.
+  * All three installers are 1.1.0.
 
     Windows:  npm run tauri build
               -> src-tauri/target/release/bundle/nsis/

@@ -114,6 +114,114 @@ construction sites, and the doors that have refused you docking.
 Off by default — it costs one model call per edition. Cadence runs from every 10 minutes to hourly,
 or Off with a **New edition** button in the tab.
 
+## Comms traffic — the channel other people are on
+
+Not the operator. Other people: traffic control, hauliers on the open channel, a fleet carrier
+broadcasting at everyone, your own crew on the intercom. Mostly they do not care that you exist,
+which is what makes the ones who do land.
+
+> **This is not the same thing as "Chatter" in Settings.** *Chatter* is the operator telling you
+> fictional stories about your contracts. *Comms traffic* is the rest of the galaxy talking among
+> itself. They can be enabled independently.
+
+**A transmission is a scene, not a line.** One to four turns with at least two speakers, because a
+call and a response imply two people who exist independently of you. Each scene also has a job —
+it establishes something, complicates it, turns it, or reacts to something that already happened.
+
+**Everything it states is true.** Every scene is built from a *brief*: the exact set of names and
+figures it is allowed to use, each tagged with where it came from. A haulier grumbling that
+Bertrandite dropped another 380 at Hurston Ring is quoting **your own market memory**. Anything
+generated is checked back against its brief before it is spoken, and a scene that reached for a
+faction, a station or a number nobody licensed is dropped whole. Ambience that doubles as
+intelligence — and silence is always the safe failure.
+
+Prices carry their age. A fresh one is stated plainly; an old one is framed as hearsay ("last I
+looked, three days back…"); one past a week builds no scene at all.
+
+**Range is real.** Station traffic gates on the actual distance to the port, taken from the orrery,
+and fades in as you close — so it sounds distant when it is distant, and a port the app cannot
+place stays silent rather than being invented. Deep space is not a distance threshold; it is what
+is left when nobody is in reach.
+
+**Voices come back.** A callsign heard in a system is remembered, keeps the same voice, and is
+preferred next time you are there. Ships you *actually* hear on the game's NPC channel can be
+enrolled into that cast, so the fiction has a spine of things that genuinely happened. Threads
+run across sessions: something set up gets complicated, and eventually pays off.
+
+**It knows when to shut up.** Chatter thins as pressure rises — the opposite of the operator, which
+leans in. In a firefight or a hull emergency every ambient channel goes silent. The sudden absence
+of noise you had stopped noticing is the cheapest tension the app has, and it costs nothing to
+generate.
+
+**How busy** is a setting of its own — sparse, normal, busy or bustling — and it is deliberately
+NOT tied to the copilot's involvement level, because "how often should my operator speak" and "how
+populated should this system sound" are different questions. The default, *busy*, works out around
+ninety transmissions an hour in a system with ports in it: roughly one every forty seconds, spread
+across whichever channels are open.
+
+**The model keeps writing.** Where a fixed grammar eventually repeats itself — however many lines
+are authored, the rotation is finite — your local LLM writes fresh scenes into the same slots the
+event triggers use, continuously, for whatever channels are live. The bundled templates are the
+floor rather than the ceiling: what you hear when the model is busy, absent, or wrote something
+that failed its brief.
+
+**It cycles rather than shuffles.** Templates are chosen least-recently-used first, not at random,
+because random picking clusters: with a finite catalogue you hear some lines three times before
+others get an airing once. Measured over an hour at the shipped density, 88% of transmissions are
+distinct lines, nothing plays more than twice, and no line comes back inside nineteen minutes. That
+ordering is persisted, so a restart does not replay the same openers. Note that "distinct" here
+counts *templates*, not strings — two renderings of one line differ by a ship name and are the same
+line to anyone listening, which is exactly the trap the first version fell into.
+
+The **Comms** tab shows every channel, its signal strength, and — when one is shut — *why*. Each
+transmission is logged with its speakers, so the whole feature works with the audio off, and
+anything carrying reported intelligence is marked and its sources inspectable.
+
+Off by default.
+
+### Making it your own — the template file
+
+The words come from a plain-text template file, and you can extend it. Declare your own token
+pools and use them anywhere:
+
+```
+@ShipNamePool
+Nostromo
+Rocinante
+Aluminum Falcon
+
+LOCAL texture
+[hauler]  Anybody actually running the <ShipNamePool>, or is that transponder borrowed?
+[hauler2] Borrowed. Do not make it a thing.
+```
+
+- `CHANNEL function` opens a scene. Channels: `STATION`, `LOCAL`, `CREW`, `DEEP`, `EMERGENCY`,
+  `CARRIER`, `CONCOURSE`. Functions: `establish`, `complicate`, `reverse`, `aftermath`, `texture`.
+- `CHANNEL function (market, faction)` restricts a template to briefs of that kind, so it can use
+  the tokens those briefs supply (`<commodity>`, `<price>`, `<faction>`, `<influence>`, `<station>`,
+  `<origin>`, `<system>`, …).
+- `[speaker] line` is one turn. Multi-turn scenes need at least two distinct speakers.
+- A template whose tokens cannot all be filled is **skipped**, never spoken half-bound — a literal
+  `<station>` will never go out over the air.
+- Your file is merged *over* the bundled one: templates are added, and a pool of the same name is
+  extended rather than replaced. A syntax error is reported in Settings and skipped; the bundled
+  templates always load.
+
+## The radio bus
+
+Every spoken word — the operator, the wire, the saga, comms traffic — runs through a radio channel:
+a bandpass into the telephone band, a little soft-clip saturation, a noise bed gated to the
+transmission, occasional crackle, a squelch gap before speech and a roger beep after it. Each
+channel has its own character, and distance degrades it.
+
+Two buses, and the split matters: the operator is on **priority**, ambient traffic is on
+**ambient**. Ambient ducks about 14 dB under the operator and *drops* rather than queues when it
+backs up, so a dock worker's joke can never delay a hull-breach callout, and a transmission that
+has gone stale is discarded instead of arriving late.
+
+Piper voices only — Windows' own speech engine gives no access to its output, so with system voices
+the profile is accepted and ignored.
+
 ## The orrery — where everything is, right now
 
 Every `Scan` since game v4.0 U14 carries the body's whole Keplerian element set — semi-major axis,
@@ -125,8 +233,13 @@ and nothing drifts because nothing integrates.
 - **Top-down, deliberately.** Three dimensions in a 420 px panel buys a camera angle to fiddle with
   and loses the thing the panel is for. Inclination is applied and then projected, so a steeply
   inclined moon draws where it really is from above.
-- **Distances are compressed per level**, which is what keeps a moon visible around a planet 400 ls
-  from its star. Order is preserved, spacing is not — and the card says which mode it is in, always.
+- **Planet distances are to scale; only moons are spread.** A leg of 1,900 ls draws at just under
+  half a cluster sitting at 4,000, because that is the proportion a commander actually flies — the
+  log compression that used to draw them at 92% of each other now applies only within a planet's
+  own satellite system, where it keeps a 1 ls moon visible. Zoom and follow are what made this
+  affordable: the inner system collapsing to a knot at 1× is one wheel-tick from legible. The
+  `exact` toggle still believes every number everywhere, and the card says which mode it is in,
+  always.
   A **true distances** toggle shows the real thing, with the inner system collapsed onto the star,
   because that is where it is.
 - **Overlaps are separated, because separation is the point.** A map answers "what is here, and
@@ -155,11 +268,20 @@ and nothing drifts because nothing integrates.
   nothing claims to be a photograph of that particular world.
 - **Landable worlds keep their green**, now as a rim rather than a fill, so painting bodies by
   class did not cost the one fact on the map you can act on.
-- **Follow keeps the camera on your ship.** A toggle glues the centre of the map to the marker —
-  parked chevron or in-flight band — so a zoomed-in view tracks the whole leg instead of watching
-  the one thing you care about slide out of frame. Grabbing the map disengages it, because a drag
-  is the statement that you want to look somewhere else; double-click (frame the system) lets go
-  too.
+- **Follow keeps the camera on your ship.** The `▲ recenter` chip snaps the camera to the marker —
+  parked chevron or in-flight band — and stays with it; while following, zoom anchors on the ship,
+  so you can wheel in and out freely without the marker leaving centre. In supercruise the zoom is
+  **dynamic**: wide at departure — the destination held near the frame's edge, so a long leg shows
+  most of the system — tightening continuously as you close, and easing back out when the target
+  leaves the map (a hyperspace destination). Touch the wheel and the camera is yours; a new leg or
+  a recenter tap re-arms it. Grabbing the map lets go,
+  because a drag is the statement that you want to look somewhere else (double-click, which frames
+  the whole system, lets go too) — and the chip flips back to `▲ recenter`, one tap from resuming.
+- **The HUD switches tabs with the game** (Settings → HUD to turn it off): opening a station
+  market while a colonisation build is on the books brings up the architect's shopping list, and
+  undocking brings back the system map — the moment a commander cannot click the HUD is the moment
+  the game is being played. Only ever moves between tabs a click could reach: no build, or a
+  system too bare to draw, switches nothing.
 - **Scroll to zoom, drag to pan**, double-click to reframe. Zoom is anchored on the pointer, and
   bodies grow sub-linearly with it (`^0.55`) — visible enough to have a surface, never so large
   that two planets fill the panel.
@@ -307,7 +429,7 @@ src/engine/          TypeScript mission intelligence (zero deps, Node 22.6+, 495
                        persistent invented cast, fabrication guard
   plotter.ts           Neutron + fleet-carrier route plotting and tritium maths
   orrery.ts            System map — Keplerian elements folded from Scans,
-                       parent-chain summation, per-level distance compression
+                       parent-chain summation, hybrid scale (planets true, moons spread)
   deathclock.ts        World of Death landing windows from any past scan
   glance.ts            Screen-glance prompts (vision) + reply parsing
   convo.ts             ConvoBuffer — short-term dialogue memory (follow-ups

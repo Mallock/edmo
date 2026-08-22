@@ -388,8 +388,15 @@ export function orbitAt(el: OrbitElements, tMs: number): Vec3 {
 // ---------------------------------------------------------------------------
 
 export interface ScaleOptions {
-  /** 'compressed' keeps a moon visible around a distant planet; 'true' does not. */
-  mode: 'compressed' | 'true';
+  /**
+   * 'hybrid' (the default) keeps planet distances TRUE and compresses only
+   * nested levels — a leg of 1,900 ls draws at half a cluster sitting at
+   * 4,000, which is the proportion a commander actually flies, while the
+   * moons around each planet stay spread enough to see. 'compressed'
+   * squashes every level (the old default, kept for tests and taste);
+   * 'true' believes every number exactly and lets moons vanish.
+   */
+  mode: 'compressed' | 'true' | 'hybrid';
   /** Compressed: floor in ls, so a hugging moon is still off its planet. */
   min: number;
   /** Compressed: ls added per decade of real distance. */
@@ -399,7 +406,11 @@ export interface ScaleOptions {
 }
 
 export const DEFAULT_SCALE: ScaleOptions = {
-  mode: 'compressed',
+  // Hybrid became affordable the day the map learned to zoom and follow: the
+  // inner system collapsing to a knot at 1x is no longer a dead end, it is
+  // one wheel-tick from legible — and in exchange every travel vector on the
+  // map has the length the journey actually has.
+  mode: 'hybrid',
   min: 0.6,
   gain: 5.2,
   scale: 0.35,
@@ -413,27 +424,40 @@ export const DEFAULT_SCALE: ScaleOptions = {
  * flatten a moon onto its planet, because by then the moon's 0.002 ls is
  * rounding error against the planet's 400 — per-level is the whole trick, and
  * ordering survives it since log is monotonic.
+ *
+ * `depth` is how many orbit-bearing levels sit ABOVE this one: 0 for a planet
+ * around its star, 1 for the moon around that planet. Hybrid mode draws depth
+ * 0 true and squashes the rest; the default of 1 keeps bare calls (and the
+ * old tests) on the squashing path.
  */
-export function compressLs(ls: number, opts: ScaleOptions): number {
+export function compressLs(ls: number, opts: ScaleOptions, depth = 1): number {
   if (opts.mode === 'true' || ls <= 0) return ls;
+  if (opts.mode === 'hybrid' && depth === 0) return ls;
   return opts.min + opts.gain * Math.log10(1 + ls / opts.scale);
 }
 
 /**
- * Body radii, log-compressed and clamped.
+ * Body radii from the scanned radius, on a power law.
  *
  * A star is ~700,000 km and a moon ~1,700; drawn to scale the moon is a
  * fraction of a pixel. Planetarium convention: exaggerate sizes, keep the
  * distances honest, and say so on screen. Stars and planets get separate
  * curves or every planet in a system with a star vanishes.
+ *
+ * Planets and moons use km^0.4 rather than the old log curve: log flattened
+ * a 350× spread (gas giant vs 200 km rock) into 1.7× on screen, so moons
+ * drew planet-sized and the family hierarchy vanished. The power law keeps
+ * a giant at ~10 px against an Earth at ~4 and a small moon under 2 — the
+ * spacing clamps in the panel are what make small discs safe now, so the
+ * base curve no longer has to lie to stay tappable.
  */
 export function bodyRadiusPx(body: OrreryBody, zoom = 1): number {
   const km = (body.radius ?? 0) / 1000;
   const base = !km
     ? 2.2 // barycentre marker
     : body.kind === 'star'
-      ? Math.max(5, Math.min(13, 3.2 * Math.log10(km)))
-      : Math.max(2.4, Math.min(7.5, 1.9 * Math.log10(km)));
+      ? Math.max(6, Math.min(18, 3.2 * Math.log10(km)))
+      : Math.max(1.8, Math.min(15, 0.14 * Math.pow(km, 0.42)));
   // Grow with zoom, but SUB-linearly. Zooming spread the bodies apart and left
   // them the same three pixels, so there was never anything to move closer to;
   // scaling them linearly instead would fill the panel with two planets. At
@@ -593,6 +617,8 @@ export class OrreryTracker {
    * hours ago.
    */
   leg: ShipLeg | null = null;
+  /** Completed legs, newest last — the estimate's only honest data source. */
+  legLog: LegSample[] = [];
   /** Set after a fold that changed persistable state. */
   dirty = false;
 
@@ -613,7 +639,10 @@ export class OrreryTracker {
       case 'Touchdown':
       case 'Docked':
         // Arrival is the one moment the position is certain. Any estimate in
-        // flight is discarded here rather than allowed to disagree with it.
+        // flight is discarded here rather than allowed to disagree with it —
+        // and MEASURED first: this commander's own entry-to-arrival times are
+        // the only honest data the next leg's estimate can have.
+        this.recordLeg(num(ev.BodyID) ?? null, Date.parse(ev.timestamp));
         this.currentBodyId = num(ev.BodyID) ?? this.currentBodyId;
         this.leg = null;
         break;
@@ -880,9 +909,55 @@ export class OrreryTracker {
     return this.systems.get(address) ?? null;
   }
 
+  /**
+   * A leg just ended: time it. Only real flights count — a duration under
+   * 5 s is a mis-fire (ApproachBody on the pad), over an hour is an AFK
+   * ship, and both would poison every future estimate on the route.
+   */
+  private recordLeg(arrivedId: number | null, atMs: number): void {
+    const leg = this.leg;
+    if (!leg || arrivedId == null || !Number.isFinite(atMs)) return;
+    const s = (atMs - leg.departedMs) / 1000;
+    if (s < 5 || s > 3600) return;
+    const sys = this.current();
+    const fromLs = sys?.bodies.get(leg.fromId)?.distanceLs;
+    const toLs = sys?.bodies.get(arrivedId)?.distanceLs;
+    if (fromLs == null || toLs == null) return;
+    this.legLog.push({ a: leg.fromId, b: arrivedId, ls: Math.abs(fromLs - toLs), s });
+    if (this.legLog.length > 300) this.legLog.shift();
+  }
+
+  /**
+   * The duration window for a leg, learned from this commander's own runs.
+   *
+   * An exact route match (either direction) is the best evidence there is —
+   * the same two docks, the same alignment, the same pilot. Failing that,
+   * legs of similar length (half to double) still beat the global band.
+   * The margins acknowledge that the pilot is not a metronome: tonight's
+   * run on a route flown once before can be a third slower.
+   */
+  legBounds(fromId: number, toId: number, sepLs: number): LegBounds | null {
+    const route = this.legLog.filter(
+      (l) => (l.a === fromId && l.b === toId) || (l.a === toId && l.b === fromId),
+    );
+    if (route.length) {
+      const times = route.map((l) => l.s);
+      return { fast: Math.min(...times) * 0.85, slow: Math.max(...times) * 1.2 };
+    }
+    if (sepLs > 0) {
+      const similar = this.legLog.filter((l) => l.ls >= sepLs * 0.5 && l.ls <= sepLs * 2);
+      if (similar.length >= 2) {
+        const times = similar.map((l) => l.s);
+        return { fast: Math.min(...times) * 0.8, slow: Math.max(...times) * 1.3 };
+      }
+    }
+    return null;
+  }
+
   toJSON(): unknown {
     return {
       v: 1,
+      legs: this.legLog,
       systems: [...this.systems.values()].map((s) => ({
         address: s.address,
         name: s.name,
@@ -896,6 +971,7 @@ export class OrreryTracker {
   static fromJSON(raw: unknown): OrreryTracker {
     const t = new OrreryTracker();
     const data = raw as {
+      legs?: LegSample[];
       systems?: Array<{
         address?: string;
         name?: string;
@@ -904,6 +980,9 @@ export class OrreryTracker {
         ports?: OrreryPort[];
       }>;
     };
+    t.legLog = (data?.legs ?? []).filter(
+      (l) => l && Number.isFinite(l.s) && Number.isFinite(l.ls),
+    );
     for (const s of data?.systems ?? []) {
       if (!s?.address) continue;
       t.systems.set(s.address, {
@@ -951,6 +1030,60 @@ function ancestry(sys: OrrerySystem, id: number): OrreryBody[] {
 }
 
 /**
+ * How far each planet's satellite family may fan out, keyed by the family's
+ * top-level orbit link.
+ *
+ * The nested log curve was tuned when the whole map spanned ~25 display-ls;
+ * with planet distances true, a system spans thousands, and a moon 7
+ * display-ls from its planet is sub-pixel at survey zoom and still swallowed
+ * by the planet's disc at full zoom — every cluster drew as a pile of
+ * touching spheres. So each family gets a BUDGET: roughly a third of the gap
+ * to its nearest sibling planet (and never past the star), capped at a tenth
+ * of the system and at 12× the bare curve so families read alike. The
+ * factor never drops below 1 — a family that truly crowds its neighbour,
+ * like two gas giants 20 ls apart, stays tight, because that is where they
+ * are. Budgets come from semi-major axes, not live positions, so they do
+ * not breathe as orbits turn.
+ */
+export function satelliteScales(sys: OrrerySystem, opts: ScaleOptions): Map<number, number> {
+  const scales = new Map<number, number>();
+  if (opts.mode !== 'hybrid') return scales;
+  // Family top link → { orbit radius of the family centre, widest nested chain }
+  const fams = new Map<number, { a: number; ext: number }>();
+  for (const body of sys.bodies.values()) {
+    if (!body.elements || body.kind === 'belt') continue;
+    const chain = ancestry(sys, body.id);
+    if (!chain.length) continue;
+    const els = chain.filter((l) => l.elements);
+    const top = els[els.length - 1];
+    const aTop = (top.elements!.semiMajorAxis || 0) / M_PER_LS;
+    if (aTop <= 0) continue;
+    let nested = 0;
+    for (const l of els) {
+      if (l.id === top.id) continue;
+      nested += compressLs((l.elements!.semiMajorAxis || 0) / M_PER_LS, opts, 1);
+    }
+    const fam = fams.get(top.id) ?? { a: aTop, ext: 0 };
+    fam.ext = Math.max(fam.ext, nested);
+    fams.set(top.id, fam);
+  }
+  const all = [...fams.values()];
+  const extent = all.reduce((m, f) => Math.max(m, f.a), 0);
+  for (const [id, fam] of fams) {
+    if (fam.ext <= 0) continue;
+    let gap = fam.a; // the star is always a neighbour a family must not reach
+    for (const other of all) {
+      if (other === fam) continue;
+      const d = Math.abs(other.a - fam.a);
+      if (d > 0) gap = Math.min(gap, d);
+    }
+    const budget = Math.min(0.35 * gap, 0.1 * extent);
+    scales.set(id, Math.min(12, Math.max(1, budget / fam.ext)));
+  }
+  return scales;
+}
+
+/**
  * Where a body sits at `tMs`, summed up its parent chain.
  *
  * Returns null for an orphan, which is a body scanned before its parent and
@@ -961,6 +1094,7 @@ export function placeBody(
   id: number,
   tMs: number,
   opts: ScaleOptions = DEFAULT_SCALE,
+  scales: Map<number, number> = satelliteScales(sys, opts),
 ): PlacedBody | null {
   const chain = ancestry(sys, id);
   if (!chain.length) return null;
@@ -970,14 +1104,23 @@ export function placeBody(
   let y = 0;
   let z = 0;
   let trueLs = 0;
+  // A link's depth is how many orbit-bearing links sit above it on the way to
+  // the root: the chain runs body → root, so the LAST link with elements is
+  // the star-distance one, at depth 0 — the level hybrid mode draws true.
+  const els = chain.filter((l) => l.elements);
+  const famScale = els.length ? (scales.get(els[els.length - 1].id) ?? 1) : 1;
+  let seenOrbits = 0;
   for (const link of chain) {
     if (!link.elements) continue; // the root, or a body still to be scanned
+    seenOrbits += 1;
+    const depth = els.length - seenOrbits;
     const p = orbitAt(link.elements, tMs);
     const ls = Math.hypot(p.x, p.y, p.z) / M_PER_LS;
     if (link.id === id) trueLs = ls;
     if (ls <= 0) continue;
-    // Compress this level's own offset, keeping its direction.
-    const k = compressLs(ls, opts) / ls;
+    // Compress this level's own offset, keeping its direction — nested
+    // levels also open out to their family's satellite budget.
+    const k = ((depth > 0 ? famScale : 1) * compressLs(ls, opts, depth)) / ls;
     x += (p.x / M_PER_LS) * k;
     y += (p.y / M_PER_LS) * k;
     z += (p.z / M_PER_LS) * k;
@@ -1000,9 +1143,10 @@ export function placeSystem(
   opts: ScaleOptions = DEFAULT_SCALE,
 ): PlacedBody[] {
   const out: PlacedBody[] = [];
+  const scales = satelliteScales(sys, opts);
   for (const body of sys.bodies.values()) {
     if (body.kind === 'belt' || !body.scanned) continue;
-    const placed = placeBody(sys, body.id, tMs, opts);
+    const placed = placeBody(sys, body.id, tMs, opts, scales);
     if (placed) out.push(placed);
   }
   // Depth order, so a moon in front of its planet draws in front of it.
@@ -1035,13 +1179,20 @@ export function placeBelts(
   opts: ScaleOptions = DEFAULT_SCALE,
 ): PlacedBelt[] {
   const out: PlacedBelt[] = [];
+  const scales = satelliteScales(sys, opts);
   for (const body of sys.bodies.values()) {
     if (body.kind !== 'belt' || body.parentId === null) continue;
-    const owner = placeBody(sys, body.parentId, tMs, opts);
+    const owner = placeBody(sys, body.parentId, tMs, opts, scales);
     if (!owner) continue;
     const ls = Math.abs((body.distanceLs ?? 0) - (owner.body.distanceLs ?? 0));
     if (ls <= 0) continue;
-    out.push({ body, cx: owner.x, cy: owner.y, r: compressLs(ls, opts) });
+    // The ring's depth follows its owner: a belt around the arrival star is a
+    // top-level orbit (drawn true in hybrid mode), one around a planet is a
+    // nested level opening to the family's satellite budget like any moon.
+    const ownerEls = ancestry(sys, body.parentId).filter((l) => l.elements);
+    const depth = ownerEls.length;
+    const famScale = depth > 0 ? (scales.get(ownerEls[ownerEls.length - 1].id) ?? 1) : 1;
+    out.push({ body, cx: owner.x, cy: owner.y, r: (depth > 0 ? famScale : 1) * compressLs(ls, opts, depth) });
   }
   return out;
 }
@@ -1063,9 +1214,10 @@ export function orbitPath(
   const body = sys.bodies.get(id);
   if (!body?.elements) return [];
   const period = body.elements.period * 1000;
+  const scales = satelliteScales(sys, opts);
   const pts: Array<{ x: number; y: number }> = [];
   for (let i = 0; i <= samples; i++) {
-    const placed = placeBody(sys, id, tMs + (period * i) / samples, opts);
+    const placed = placeBody(sys, id, tMs + (period * i) / samples, opts, scales);
     if (placed) pts.push({ x: placed.x, y: placed.y });
   }
   return pts;
@@ -1091,6 +1243,25 @@ export interface ShipLeg {
   fromId: number;
   toId: number;
   departedMs: number;
+  /** Route-learned duration bounds, when this commander has flown it before. */
+  bounds?: LegBounds;
+}
+
+/** Duration bounds for a leg, in seconds: the honest window, not a point. */
+export interface LegBounds {
+  fast: number;
+  slow: number;
+}
+
+/** A completed supercruise leg, kept to time the next one like it. */
+export interface LegSample {
+  /** Endpoint body ids, in flown order. */
+  a: number;
+  b: number;
+  /** Radial separation in ls at the time, for distance-similarity matching. */
+  ls: number;
+  /** Entry-to-arrival duration in seconds. */
+  s: number;
 }
 
 /**
@@ -1146,13 +1317,36 @@ const LEG_SLOW_S = 330;
 const HOP_FAST_S = 8;
 const HOP_SLOW_S = 170;
 
+/**
+ * Supercruise puts its time where its distance is not: the ship climbs out
+ * of the origin's gravity well slowly, sprints the middle, and then crawls
+ * the final approach under the six-second rule — the last few percent of
+ * the distance regularly cost a third of the trip. Mapping elapsed-TIME
+ * fractions straight onto the drawn leg put the marker mid-line while the
+ * game's own panel read 9 Mm to go. This curve — t^1.6 / (t^1.6 + (1-t)^4)
+ * — is the simplest with the right shape: slow off the line, saturating
+ * hard into the destination (44% of the time in ≈ 73% of the distance;
+ * 70% in ≈ 95%). Not fitted per leg, because there is nothing to fit it
+ * to — it encodes the phase structure every leg shares, and the note still
+ * says "estimated".
+ */
+export function cruiseProfile(t: number): number {
+  if (t <= 0) return 0;
+  if (t >= 1) return 1;
+  const a = Math.pow(t, 1.6);
+  const b = Math.pow(1 - t, 4);
+  return a / (a + b);
+}
+
 export function legProgress(leg: ShipLeg, nowMs: number, separationLs: number): LegProgress {
   const elapsedS = Math.max(0, (nowMs - leg.departedMs) / 1000);
   const short = separationLs < 1;
-  const fast = short ? HOP_FAST_S : LEG_FAST_S;
-  const slow = short ? HOP_SLOW_S : LEG_SLOW_S;
-  const hi = Math.min(1, elapsedS / fast);
-  const lo = Math.min(hi, elapsedS / slow);
+  // The commander's own measured runs on this route (or one like it) beat
+  // any global band — the band is the fallback for a road never driven.
+  const fast = leg.bounds?.fast ?? (short ? HOP_FAST_S : LEG_FAST_S);
+  const slow = leg.bounds?.slow ?? (short ? HOP_SLOW_S : LEG_SLOW_S);
+  const hi = cruiseProfile(Math.min(1, elapsedS / fast));
+  const lo = Math.min(hi, cruiseProfile(Math.min(1, elapsedS / Math.max(slow, fast + 1))));
   return { lo, hi, mid: (lo + hi) / 2, elapsedS };
 }
 

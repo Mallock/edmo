@@ -8,3 +8,5 @@ site/*.exe
 site/*.AppImage
 site/*.deb
 linux-dist/
+# spike output — regenerate with `node scripts/pitch-spike.mjs`
+scratch-pitch-spike/

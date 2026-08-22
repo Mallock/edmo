@@ -67,6 +67,30 @@ export interface AppSettings {
     intervalMin: number; // minimum minutes between automatic stories
     epic: boolean; // epic, purpose-driven tone for chatter + copilot commentary
   };
+  /** Radio processing chain for all spoken output (operator + news + comms). */
+  radio: {
+    /** Process speech through the radio bus. */
+    enabled: boolean;
+    /** Profile for the operator/news/saga voice bus. */
+    operatorProfile: string;
+    /** Master mute for the radio bus output. */
+    muted: boolean;
+  };
+  /** Ambient channel traffic heard in the Comms panel. */
+  comms: {
+    enabled: boolean;
+    density: 'sparse' | 'normal' | 'busy' | 'bustling';
+    volume: number;
+    mutedChannels: string[];
+    /** Legacy compatibility; source controls model/template policy now. */
+    useModel: boolean;
+    source: 'llm' | 'hybrid' | 'grammar';
+    promoteRealShips: boolean;
+    persistLog: boolean;
+    /** Let the model improvise beyond observed journal nouns and figures. */
+    allowFiction: boolean;
+    grammarFile: string | null;
+  };
   saga: {
     enabled: boolean; // auto-narrate a space-opera episode when a session ends
   };
@@ -171,6 +195,24 @@ export const DEFAULT_SETTINGS: AppSettings = {
     enabled: true,
     intervalMin: 6,
     epic: false,
+  },
+  radio: {
+    enabled: true,
+    operatorProfile: 'clean',
+    muted: false,
+  },
+  comms: {
+    enabled: false,
+    density: 'busy',
+    volume: 70,
+    mutedChannels: [],
+    useModel: true,
+    source: 'hybrid',
+    promoteRealShips: true,
+    persistLog: false,
+    // Ambient chatter is flavor text; allow light invention by default.
+    allowFiction: true,
+    grammarFile: null,
   },
   saga: {
     enabled: true,

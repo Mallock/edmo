@@ -2267,3 +2267,176 @@ body {
     border-style: dashed;
   }
 }
+
+/* ---------------------------------------------------------------- comms ---
+ *
+ * The channel strip first, then the scrollback. The strip is the part that
+ * has to read at a glance beside a running game, so it is a dense single line
+ * per channel: squelch, name, bars or the reason it is shut, and how long
+ * since anything came through.
+ */
+.comms-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+.comms-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.comms-head h2 {
+  margin: 0;
+  font-size: 1em;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.comms-act {
+  font-family: var(--mono, monospace);
+  font-size: 0.75em;
+  letter-spacing: 0.12em;
+  padding: 1px 6px;
+  border: 1px solid var(--dim);
+  border-radius: 3px;
+  color: var(--dim);
+}
+.comms-act.act-building { color: var(--amber); border-color: var(--amber); }
+.comms-act.act-crisis { color: var(--red); border-color: var(--red); }
+.comms-act.act-aftermath { color: var(--cyan); border-color: var(--cyan); }
+
+.comms-crisis {
+  margin: 0;
+  padding: 4px 6px;
+  font-size: 0.85em;
+  color: var(--red);
+  border-left: 2px solid var(--red);
+  background: rgb(255 60 60 / 6%);
+}
+
+.comms-channels {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.comms-channel {
+  display: grid;
+  grid-template-columns: 22px 5.5em 1fr auto;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.82em;
+  padding: 1px 0;
+}
+.comms-channel.closed { opacity: 0.5; }
+.comms-channel.muted .comms-channel-name { text-decoration: line-through; }
+.comms-channel-name {
+  font-family: var(--mono, monospace);
+  letter-spacing: 0.06em;
+}
+.comms-closed-why { color: var(--dim); font-style: italic; }
+.comms-channel-age { color: var(--dim); font-family: var(--mono, monospace); }
+.comms-squelch {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-size: 0.9em;
+  line-height: 1;
+}
+
+.comms-bars { display: inline-flex; gap: 2px; align-items: flex-end; }
+.comms-bars i {
+  display: block;
+  width: 3px;
+  height: 8px;
+  background: var(--dim);
+  opacity: 0.35;
+}
+.comms-bars i.on { background: var(--amber); opacity: 1; }
+
+.comms-empty,
+.comms-log {
+  overflow-y: auto;
+  min-height: 0;
+}
+.comms-empty { color: var(--dim); font-size: 0.85em; margin: 4px 0 0; }
+.comms-log { list-style: none; margin: 0; padding: 0; }
+
+.comms-entry {
+  border-top: 1px solid rgb(255 255 255 / 8%);
+  padding: 5px 0;
+}
+/* A transmission that carried reported intelligence is marked, because the
+ * difference between a price worth acting on and a grumble about paperwork is
+ * not audible. */
+.comms-entry.intel { border-left: 2px solid var(--cyan); padding-left: 6px; }
+.comms-entry-head {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  font-size: 0.72em;
+  color: var(--dim);
+  font-family: var(--mono, monospace);
+  letter-spacing: 0.08em;
+}
+.comms-entry-age { margin-left: auto; }
+.comms-intel-flag {
+  color: var(--cyan);
+  border: 1px solid var(--cyan);
+  border-radius: 3px;
+  padding: 0 4px;
+  cursor: help;
+}
+.comms-turn { display: flex; gap: 6px; font-size: 0.88em; line-height: 1.35; }
+.comms-speaker {
+  color: var(--amber);
+  white-space: nowrap;
+  flex: 0 0 auto;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.comms-speaker.returning { text-decoration: underline dotted; cursor: help; }
+.comms-line { flex: 1 1 auto; }
+.comms-facts {
+  list-style: none;
+  margin: 3px 0 0;
+  padding: 0 0 0 6px;
+  font-size: 0.72em;
+  color: var(--dim);
+}
+
+/* The comms diagnostic strip. Silence is this feature's failure mode, so the
+ * panel always says which mode it is in, how the writing is going, and what is
+ * stopping it — an empty panel with no explanation is indistinguishable from a
+ * broken one. */
+.comms-diag {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: baseline;
+  font-size: 0.7em;
+  font-family: var(--mono, monospace);
+  color: var(--dim);
+  letter-spacing: 0.06em;
+  padding: 2px 0 4px;
+  border-bottom: 1px solid rgb(255 255 255 / 8%);
+}
+.comms-diag-src {
+  color: var(--cyan);
+  border: 1px solid var(--cyan);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+.comms-diag-why { color: var(--amber); }
+.comms-diag-last {
+  margin-left: auto;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

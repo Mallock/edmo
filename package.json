@@ -1,6 +1,6 @@
 {
   "name": "ed-mission-operator",
-  "version": "1.0.4",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "description": "Elite Dangerous Mission Operator — always-on-top HUD with journal ingestion, proactive heartbeat, LM Studio AI operator, and local Piper TTS.",

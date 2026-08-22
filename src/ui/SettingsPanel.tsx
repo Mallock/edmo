@@ -13,6 +13,7 @@ import {
   specsLabel,
 } from './modelfit.ts';
 import { PIPER_VOICE_CATALOG } from './voices.ts';
+import { RADIO_PROFILE_NAMES } from '../engine/chatter/profiles.ts';
 
 /** Screen glances are GDI-based; on Linux the section shows as unavailable. */
 const IS_LINUX = typeof navigator !== 'undefined' && navigator.userAgent.includes('Linux');
@@ -388,6 +389,124 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
           <button className="btn" onClick={() => core.testVoice()}>
             Test voice
           </button>
+        </section>
+
+        <section>
+          <h3>Radio processing</h3>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={s.radio.enabled}
+              onChange={(e) => set({ ...s, radio: { ...s.radio, enabled: e.target.checked } })}
+            />
+            Process speech through radio filters
+          </label>
+          <label>
+            Operator profile
+            <select
+              value={s.radio.operatorProfile}
+              onChange={(e) =>
+                set({ ...s, radio: { ...s.radio, operatorProfile: e.target.value } })
+              }
+              disabled={!s.radio.enabled}
+            >
+              {RADIO_PROFILE_NAMES.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={s.radio.muted}
+              onChange={(e) => set({ ...s, radio: { ...s.radio, muted: e.target.checked } })}
+            />
+            Mute radio output
+          </label>
+        </section>
+
+        <section>
+          <h3>Comms traffic</h3>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={s.comms.enabled}
+              onChange={(e) => set({ ...s, comms: { ...s.comms, enabled: e.target.checked } })}
+            />
+            Ambient comms traffic
+          </label>
+          <div className="row">
+            <label>
+              How busy
+              <select
+                value={s.comms.density}
+                onChange={(e) =>
+                  set({
+                    ...s,
+                    comms: { ...s.comms, density: e.target.value as typeof s.comms.density },
+                  })
+                }
+                disabled={!s.comms.enabled}
+              >
+                <option value="sparse">Sparse</option>
+                <option value="normal">Normal</option>
+                <option value="busy">Busy</option>
+                <option value="bustling">Bustling</option>
+              </select>
+            </label>
+          </div>
+          <div className="row">
+            <label>
+              Volume
+              <input
+                type="range"
+                min={0}
+                max={100}
+                value={s.comms.volume}
+                onChange={(e) =>
+                  set({ ...s, comms: { ...s.comms, volume: Number(e.target.value) } })
+                }
+                disabled={!s.comms.enabled}
+              />
+            </label>
+            <span className="mono">{s.comms.volume}</span>
+          </div>
+          <label>
+            Written by
+            <select
+              value={s.comms.source}
+              onChange={(e) =>
+                set({ ...s, comms: { ...s.comms, source: e.target.value as typeof s.comms.source } })
+              }
+              disabled={!s.comms.enabled}
+            >
+              <option value="hybrid">AI with templates fallback</option>
+              <option value="llm">AI only</option>
+              <option value="grammar">Templates only</option>
+            </select>
+          </label>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={s.comms.allowFiction}
+              onChange={(e) =>
+                set({ ...s, comms: { ...s.comms, allowFiction: e.target.checked } })
+              }
+              disabled={!s.comms.enabled || s.comms.source === 'grammar'}
+            />
+            Allow fiction beyond journal facts
+          </label>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={s.comms.persistLog}
+              onChange={(e) => set({ ...s, comms: { ...s.comms, persistLog: e.target.checked } })}
+              disabled={!s.comms.enabled}
+            />
+            Keep the transmission log across restarts
+          </label>
         </section>
 
         <section>

@@ -615,6 +615,71 @@ async fn piper_download_voice(app: AppHandle, repo_path: String) -> Result<Strin
 
 static TTS_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// Total bytes the synthesized-speech cache may hold before old entries go.
+/// A medium Piper voice runs roughly 100 KB per spoken second, so 192 MB is
+/// on the order of half an hour of speech — far more than a session repeats,
+/// and small beside the 63 MB each voice model already costs.
+const TTS_CACHE_MAX_BYTES: u64 = 192 * 1024 * 1024;
+
+fn tts_cache_dir(app: &AppHandle) -> Option<PathBuf> {
+    app.path().app_data_dir().ok().map(|d| d.join("tts-cache"))
+}
+
+/// Cache key for one utterance. Text, voice and length scale are exactly the
+/// inputs piper is given, so identical keys guarantee identical audio.
+fn tts_cache_key(line: &str, voice: &Path, ls: f32) -> String {
+    // FNV-1a: no dependency, and collisions here cost a wrong cached line, not
+    // correctness of anything persisted.
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut eat = |bytes: &[u8]| {
+        for b in bytes {
+            h ^= *b as u64;
+            h = h.wrapping_mul(0x1000_0000_01b3);
+        }
+    };
+    eat(line.as_bytes());
+    eat(voice.file_stem().and_then(|s| s.to_str()).unwrap_or("").as_bytes());
+    eat(format!("{ls:.3}").as_bytes());
+    format!("{h:016x}.wav")
+}
+
+/// Drop least-recently-used entries until the cache fits its budget.
+///
+/// Called after a write, on the blocking pool. Best-effort throughout: a
+/// cache that cannot be swept is still a working cache, and a cache that
+/// cannot be read is still working speech.
+fn tts_cache_sweep(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    let mut files: Vec<(std::time::SystemTime, u64, PathBuf)> = entries
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let md = e.metadata().ok()?;
+            if !md.is_file() {
+                return None;
+            }
+            Some((
+                md.accessed().or_else(|_| md.modified()).ok()?,
+                md.len(),
+                e.path(),
+            ))
+        })
+        .collect();
+    let total: u64 = files.iter().map(|(_, len, _)| *len).sum();
+    if total <= TTS_CACHE_MAX_BYTES {
+        return;
+    }
+    files.sort_by_key(|(at, _, _)| *at); // oldest first
+    let mut freed = 0u64;
+    for (_, len, path) in files {
+        if total - freed <= TTS_CACHE_MAX_BYTES {
+            break;
+        }
+        if fs::remove_file(&path).is_ok() {
+            freed += len;
+        }
+    }
+}
+
 #[tauri::command]
 async fn piper_speak(
     app: AppHandle,
@@ -627,17 +692,36 @@ async fn piper_speak(
         let exe = piper_exe(&root);
         let voice = find_voice(&app, voice.as_deref()).ok_or("No .onnx voice model found")?;
         let ls = length_scale.unwrap_or(1.0).clamp(0.4, 3.0);
-        let out = std::env::temp_dir().join(format!(
-            "edmo-tts-{}-{}.wav",
-            std::process::id(),
-            TTS_SEQ.fetch_add(1, Ordering::SeqCst)
-        ));
 
         // One utterance per stdin line — collapse whitespace to a single line.
         let line: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
         if line.is_empty() {
             return Err("empty text".into());
         }
+
+        // Cache lookup. Comms chatter repeats itself by design — traffic
+        // control says the same thing every approach — so synthesizing once
+        // and keeping it is the difference between free ambience and paying
+        // for every line forever. A miss must never fail speech, so every
+        // filesystem step here is best-effort.
+        let cache = tts_cache_dir(&app);
+        let key = tts_cache_key(&line, &voice, ls);
+        if let Some(dir) = cache.as_ref() {
+            let hit = dir.join(&key);
+            if let Ok(wav) = fs::read(&hit) {
+                if !wav.is_empty() {
+                    // Touch so the LRU sweep sees this as recently used.
+                    let _ = filetime_touch(&hit);
+                    return Ok(wav);
+                }
+            }
+        }
+
+        let out = std::env::temp_dir().join(format!(
+            "edmo-tts-{}-{}.wav",
+            std::process::id(),
+            TTS_SEQ.fetch_add(1, Ordering::SeqCst)
+        ));
 
         let mut cmd = Command::new(&exe);
         cmd.arg("--model")
@@ -672,11 +756,36 @@ async fn piper_speak(
         }
         let wav = fs::read(&out).map_err(|e| format!("read wav failed: {e}"))?;
         let _ = fs::remove_file(&out);
+
+        // Store, then trim. Write-then-rename so a concurrent reader never
+        // sees a half-written wav and decides the cache is corrupt.
+        if let Some(dir) = cache.as_ref() {
+            if fs::create_dir_all(dir).is_ok() {
+                let tmp = dir.join(format!("{key}.tmp"));
+                if fs::write(&tmp, &wav).is_ok() && fs::rename(&tmp, dir.join(&key)).is_ok() {
+                    tts_cache_sweep(dir);
+                } else {
+                    let _ = fs::remove_file(&tmp);
+                }
+            }
+        }
         Ok(wav)
     })
     .await
     .map_err(|e| format!("tts task failed: {e}"))??;
     Ok(tauri::ipc::Response::new(bytes))
+}
+
+/// Mark a cache file as used right now, so the LRU sweep keeps it.
+///
+/// Windows does not update last-access times by default (NtfsDisableLastAccess
+/// Update is on out of the box), so the sweep would otherwise evict by age of
+/// creation and throw away exactly the lines that repeat most. Rewriting the
+/// modified time is the portable way to say "still wanted".
+fn filetime_touch(path: &Path) -> std::io::Result<()> {
+    let f = fs::OpenOptions::new().append(true).open(path)?;
+    f.set_len(f.metadata()?.len())?;
+    Ok(())
 }
 
 // ------------------------------------------------------------- LM Studio proxy

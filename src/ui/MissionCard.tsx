@@ -159,6 +159,17 @@ export interface OrreryTab {
   onSelect: () => void;
 }
 
+export interface CommsTab {
+  active: boolean;
+  /** Transmissions in the scrollback. */
+  count: number;
+  /** At least one channel is currently open. */
+  live: boolean;
+  /** The act is CRISIS — the channel is deliberately silent. */
+  crisis: boolean;
+  onSelect: () => void;
+}
+
 export function MissionTabs({
   missions,
   selectedId,
@@ -169,6 +180,7 @@ export function MissionTabs({
   architect,
   news,
   orrery,
+  comms,
 }: {
   missions: Mission[];
   selectedId: number | null;
@@ -179,10 +191,17 @@ export function MissionTabs({
   architect?: ArchitectTab;
   news?: NewsTab;
   orrery?: OrreryTab;
+  comms?: CommsTab;
 }) {
-  if (missions.length <= 1 && !clock && !plot && !architect && !news && !orrery) return null;
+  if (missions.length <= 1 && !clock && !plot && !architect && !news && !orrery && !comms)
+    return null;
   const otherActive =
-    clock?.active || plot?.active || architect?.active || news?.active || orrery?.active;
+    clock?.active ||
+    plot?.active ||
+    architect?.active ||
+    news?.active ||
+    orrery?.active ||
+    comms?.active;
   return (
     <div className="tabs" role="tablist" aria-label="Active missions">
       {missions.map((m, i) => (
@@ -260,6 +279,27 @@ export function MissionTabs({
           <span className="tab-dot" style={{ background: news.count ? 'var(--text)' : 'var(--dim)' }} />
           📰
           {news.count > 0 && <span className="tab-timer mono">{news.count}</span>}
+        </button>
+      )}
+      {comms && (
+        <button
+          role="tab"
+          aria-selected={comms.active}
+          className={comms.active ? 'tab active' : 'tab'}
+          style={{ borderColor: 'var(--amber)' }}
+          title="Comms — ambient radio traffic, and what of it is worth believing"
+          onClick={comms.onSelect}
+        >
+          <span
+            className="tab-dot"
+            style={{
+              // A dark dot during CRISIS: the channel going quiet is the point,
+              // and the tab should agree with the silence rather than blink.
+              background: comms.crisis ? 'var(--dim)' : comms.live ? 'var(--amber)' : 'var(--dim)',
+            }}
+          />
+          📡
+          {comms.count > 0 && <span className="tab-timer mono">{comms.count}</span>}
         </button>
       )}
       {orrery && (

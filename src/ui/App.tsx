@@ -7,6 +7,7 @@ import { DeathClockCard } from './DeathClock.tsx';
 import { PlotterCard } from './Plotter.tsx';
 import { ArchitectCard } from './Architect.tsx';
 import { NewsCard } from './News.tsx';
+import { CommsPanel } from './CommsPanel.tsx';
 import { OrreryCard } from './Orrery.tsx';
 import { fmtDur, phaseOf } from '../engine/deathclock.ts';
 import { remaining as plotRemaining } from '../engine/plotter.ts';
@@ -114,6 +115,7 @@ export function App() {
   const archOpen = snap.view === 'architect' && snap.architect != null;
   const newsOpen = snap.view === 'news' && snap.news != null;
   const orreryOpen = snap.view === 'orrery' && snap.orrery != null;
+  const commsOpen = snap.view === 'comms';
   const plotLeft = snap.plotter.route ? plotRemaining(snap.plotter.route, snap.plotter.idx) : null;
   // The carrier clock outranks the jump count on the tab: while a jump is
   // locked down or cooling, that countdown is the number being waited on.
@@ -234,8 +236,25 @@ export function App() {
                   }
                 : undefined
             }
+            comms={
+              s.comms.enabled
+                ? {
+                    active: commsOpen,
+                    count: snap.comms.log.length,
+                    live: snap.comms.channels.some((c) => c.open),
+                    crisis: snap.comms.act === 'CRISIS',
+                    onSelect: () => core.setView(commsOpen ? 'missions' : 'comms'),
+                  }
+                : undefined
+            }
           />
-          {orreryOpen && snap.orrery ? (
+          {commsOpen ? (
+            <CommsPanel
+              view={snap.comms}
+              nowMs={nowMs}
+              onToggleChannel={(id) => core.toggleCommsChannel(id)}
+            />
+          ) : orreryOpen && snap.orrery ? (
             <OrreryCard view={snap.orrery} nowMs={nowMs} />
           ) : newsOpen && snap.news ? (
             <NewsCard view={snap.news} nowMs={nowMs} onRefresh={() => void core.refreshNews(true)} />

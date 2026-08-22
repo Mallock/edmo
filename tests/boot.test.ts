@@ -83,3 +83,30 @@ test('a snapshot survives being rebuilt — the constructor is not a special cas
   assert.equal(second.plotter.kind, 'carrier');
   assert.equal(core.getSnapshot(), second, 'getSnapshot must be stable between emits');
 });
+
+// ---------------------------------------------------------------------------
+// Comms defaults (tasks 12.3 / 12.4)
+// ---------------------------------------------------------------------------
+
+test('a fresh install transmits nothing until comms is enabled', async () => {
+  const { DEFAULT_SETTINGS: DEFAULTS } = await import('../src/ui/settings.ts');
+  assert.equal(DEFAULTS.comms.enabled, false, 'ambient traffic must be opt-in');
+  assert.deepEqual(DEFAULTS.comms.mutedChannels, []);
+});
+
+test('the radio bus is on by default but changes nothing about WHETHER we speak', async () => {
+  const { DEFAULT_SETTINGS: DEFAULTS } = await import('../src/ui/settings.ts');
+  assert.equal(DEFAULTS.radio.enabled, true);
+  assert.equal(DEFAULTS.radio.muted, false);
+  // The operator's own voice stays unprocessed unless the commander picks a
+  // channel for it — enabling the bus must not silently restyle the app.
+  assert.equal(DEFAULTS.radio.operatorProfile, 'clean');
+});
+
+test('the flavor-story feature and comms traffic are separate settings', async () => {
+  const { DEFAULT_SETTINGS: DEFAULTS } = await import('../src/ui/settings.ts');
+  // Renaming `chatter` would silently reset existing users' preferences, so
+  // the two live side by side and the docs disambiguate them.
+  assert.equal(DEFAULTS.chatter.enabled, true, 'flavor stories are unchanged');
+  assert.equal(DEFAULTS.comms.enabled, false, 'comms traffic is its own thing');
+});

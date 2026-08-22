@@ -128,7 +128,22 @@ export interface SystemIntel {
    * raw material local news is made of: "Explorer on Tour holds 42.7% and is
    * expanding; HIP 71462 Council sits second on 30.6%".
    */
-  factions?: Array<{ name: string; influence: number; state?: string; allegiance?: string }>;
+  factions?: Array<{
+    name: string;
+    influence: number;
+    state?: string;
+    allegiance?: string;
+    /** Corporate, Anarchy, Democracy… — a faction's government is its agenda. */
+    government?: string;
+    /** Localised mood: Happy, Discontented, Unhappy, Despondent. */
+    happiness?: string;
+    /** The commander's standing with them, as the journal reports it. */
+    reputation?: number;
+    /** States that have not landed yet — what this place is about to become. */
+    pending?: string[];
+    /** States it is climbing out of — what it has just been through. */
+    recovering?: string[];
+  }>;
   signals: SystemSignal[];
   /** Local minor factions in an active BGS state (War, Boom, Election, …) —
    *  the states that spawn combat/BGS missions. From FSDJump/Location Factions[]. */

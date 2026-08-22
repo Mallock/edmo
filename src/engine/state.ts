@@ -510,11 +510,28 @@ export class MissionStateManager {
         if (!name) continue;
         const fstate = str(raw.FactionState);
         if (fstate && fstate !== 'None') active.push({ name, state: fstate });
+        // Every field the journal actually carries. Government and happiness
+        // are what make two factions in one system feel like different
+        // organisations rather than two numbers, and pending/recovering states
+        // are the difference between "war is coming" and "war just ended" —
+        // which is most of what anybody on a channel would be talking about.
+        const listOf = (v: unknown): string[] | undefined => {
+          if (!Array.isArray(v)) return undefined;
+          const out = v
+            .map((x) => str((x as Record<string, unknown>)?.State))
+            .filter((x): x is string => !!x && x !== 'None');
+          return out.length ? out : undefined;
+        };
         board.push({
           name,
           influence: num(raw.Influence) ?? 0,
           state: fstate && fstate !== 'None' ? fstate : undefined,
           allegiance: str(raw.Allegiance),
+          government: str(raw.Government),
+          happiness: str(raw.Happiness_Localised) ?? str(raw.Happiness),
+          reputation: num(raw.MyReputation),
+          pending: listOf(raw.PendingStates),
+          recovering: listOf(raw.RecoveringStates),
         });
       }
       this.systemIntel.factionStates = active.length ? active : undefined;

@@ -52,7 +52,10 @@ const MARGIN = 16;
 /** How far separation may drag a body from where it really is, in pixels. */
 const MAX_SHIFT = 15;
 const MIN_ZOOM = 1;
-const MAX_ZOOM = 14;
+// 34x: deep enough that a moon family 60 display-ls wide fills the panel.
+// The proportional scale made depth worth having — at the old 14x cap a
+// tight family had barely opened past its discs.
+const MAX_ZOOM = 34;
 /**
  * Pixels of travel before a press counts as a drag rather than a tap.
  *
@@ -177,8 +180,54 @@ export function OrreryCard({ view, nowMs }: { view: OrreryView; nowMs: number })
    * that leaves the frame. Follow recentres after every movement instead.
    * Grabbing the map disengages it, because a drag IS the statement "I want
    * to look somewhere else".
+   *
+   * Starts ENGAGED: the tab opens on the commander, a little zoomed in —
+   * undocking auto-switches to this map, and the first thing it should show
+   * is where you are, not a survey you then have to dive into. One drag or
+   * double-click and the survey is back.
    */
-  const [follow, setFollow] = useState(false);
+  const [follow, setFollow] = useState(true);
+  /** One zoom-in per engagement, not a lock — wheeling back out must stick. */
+  const engageZoomed = useRef(false);
+  /**
+   * The camera flies the leg with you. While following in supercruise the
+   * zoom is DYNAMIC: chosen so the destination sits a fixed distance from
+   * your centred ship — wide at departure, when the destination is far and
+   * the frame therefore holds most of the system, tightening continuously
+   * as you close. Touching the wheel pauses it (manual intent wins); a new
+   * leg re-arms it.
+   */
+  const autoZoom = useRef(true);
+  const legRef = useRef<string | null>(null);
+  /** The last clock tick the camera stepped on — one eased step per tick. */
+  const stepRef = useRef(0);
+  /**
+   * Where the ship last stood. Arriving somewhere NEW re-runs the parked
+   * engagement: without this, ApproachBody ends the leg mid-approach and
+   * the one-shot engage flag — spent at session start — left the camera
+   * frozen at whatever zoom the cruise had reached, never framing the
+   * place actually arrived at.
+   */
+  const parkedAtRef = useRef<string | null>(null);
+  /**
+   * A faster clock, but only in supercruise. The app's shared clock ticks
+   * once a second, which made the whole follow experience step to it: the
+   * marker jumped a second's worth of progress and the camera snapped the
+   * full correction after it, once per second — janky. At 10 Hz the marker's
+   * motion is sub-pixel per step and the camera's eased corrections are
+   * small, which reads as gliding. Parked, nothing moves, so the fast clock
+   * stops and the tab costs what a static picture costs.
+   */
+  const [liveMs, setLiveMs] = useState(() => Date.now());
+  const cruising = view.ship != null || view.shipUnresolved != null;
+  useEffect(() => {
+    if (!cruising) return;
+    const id = window.setInterval(() => setLiveMs(Date.now()), 100);
+    return () => window.clearInterval(id);
+  }, [cruising]);
+  useEffect(() => {
+    if (!cruising) setLiveMs(nowMs);
+  }, [cruising, nowMs]);
   /**
    * Zoom and pan as ONE piece of state.
    *
@@ -208,6 +257,14 @@ export function OrreryCard({ view, nowMs }: { view: OrreryView; nowMs: number })
   useEffect(() => {
     setCam({ zoom: 1, x: 0, y: 0 });
     setPicked(null);
+    // The camera was just reset, so the follow engagement starts over too —
+    // if follow is on, the effect below re-steps the zoom onto the ship in
+    // the NEW system. Declared before that effect on purpose: this also makes
+    // StrictMode's double-run converge on the stepped zoom instead of letting
+    // the second reset clobber it while a stale flag blocks the re-step.
+    engageZoomed.current = false;
+    autoZoom.current = true;
+    legRef.current = null;
   }, [systemKey]);
 
   /** Client coords → viewBox coords, which is where all the geometry lives. */
@@ -233,11 +290,19 @@ export function OrreryCard({ view, nowMs }: { view: OrreryView; nowMs: number })
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
-      const { x, y } = toView(e.clientX, e.clientY);
+      // A manual wheel is the commander taking the zoom back — the dynamic
+      // flight zoom stands down until a new leg (or a recenter tap) re-arms.
+      autoZoom.current = false;
+      // Following, the ship is pinned to the viewport centre — so the zoom
+      // anchors there too. Anchoring at the pointer would scale the ship away
+      // from centre only for the follow loop to yank it back, one jerk per
+      // wheel tick; anchoring where the ship already is makes zoom and follow
+      // agree instead of fight.
+      const { x, y } = follow ? { x: CX, y: CY } : toView(e.clientX, e.clientY);
       setCam((c) => {
         const next = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, c.zoom * Math.exp(-e.deltaY * 0.0015)));
         const f = next / c.zoom;
-        // Keep whatever is under the pointer under the pointer: solve for the
+        // Keep whatever is under the anchor under the anchor: solve for the
         // pan that leaves this view-space point fixed as the scale changes.
         return {
           zoom: next,
@@ -248,7 +313,7 @@ export function OrreryCard({ view, nowMs }: { view: OrreryView; nowMs: number })
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
-  }, [toView]);
+  }, [toView, follow]);
 
   const resetView = () => {
     // Double-click means "frame the whole system", which following would
@@ -289,7 +354,7 @@ export function OrreryCard({ view, nowMs }: { view: OrreryView; nowMs: number })
     warp === 1 ? nowMs : anchor.current.sim + (Date.now() - anchor.current.real) * warp;
 
   const opts: ScaleOptions = useMemo(
-    () => ({ ...DEFAULT_SCALE, mode: trueScale ? 'true' : 'compressed' }),
+    () => ({ ...DEFAULT_SCALE, mode: trueScale ? 'true' : 'hybrid' }),
     [trueScale],
   );
 
@@ -354,6 +419,48 @@ export function OrreryCard({ view, nowMs }: { view: OrreryView; nowMs: number })
       // bodies as they will actually be drawn, not as they were at 1×.
       return { p, x: px, y: py, r: bodyRadiusPx(p.body, zoom), hx: px, hy: py };
     });
+    // Discs may not swallow spacing — but the fit must not eat the SIZE
+    // RATIO the scan measured. Clamping each disc against its own gap pinned
+    // every tight family at planet:moon ≈ 1.8 no matter what the data said —
+    // a 77,000 km giant drew twice its 700 km moon. So a planet's family
+    // (itself and its satellites) now shrinks UNIFORMLY: one factor, chosen
+    // so the moon stays within 0.30 of its gap and the planet within 0.55,
+    // scales every member — the ratio survives, the spacing holds, and zoom
+    // releases the factor back toward the true power-law sizes. Floors keep
+    // a shrunken family legible (planet ≥ 4 px, moon ≥ 2) — at survey zoom
+    // the hierarchy compresses to dots, but never inverts.
+    // The star's own family spans the whole map, so one cramped inner planet
+    // must not shrink every other; star-children keep independent caps.
+    const byId = new Map(discs.map((d) => [d.p.body.id, d]));
+    const famF = new Map<number, number>();
+    const starCap = new Map<number, number>();
+    const nearestStarChild = new Map<number, number>();
+    for (const d of discs) {
+      const pid = d.p.body.parentId;
+      if (pid === null) continue;
+      const par = byId.get(pid);
+      if (!par) continue;
+      const dist = Math.hypot(d.x - par.x, d.y - par.y);
+      if (dist <= 0) continue;
+      if (par.p.body.parentId === null) {
+        starCap.set(d.p.body.id, Math.max(2, dist * 0.3));
+        nearestStarChild.set(pid, Math.min(nearestStarChild.get(pid) ?? Infinity, dist));
+      } else {
+        const f = Math.min(1, (0.3 * dist) / d.r, (0.55 * dist) / par.r);
+        famF.set(pid, Math.min(famF.get(pid) ?? 1, f));
+      }
+    }
+    for (const d of discs) {
+      const id = d.p.body.id;
+      const asParent = famF.get(id);
+      const asChild = d.p.body.parentId !== null ? famF.get(d.p.body.parentId) : undefined;
+      const f = Math.min(asParent ?? 1, asChild ?? 1);
+      if (f < 1) d.r = Math.max(asParent !== undefined ? 4 : 2, d.r * f);
+      const cap = starCap.get(id);
+      if (cap !== undefined) d.r = Math.min(d.r, Math.max(asParent !== undefined ? 4 : 2, cap));
+      const near = nearestStarChild.get(id);
+      if (near !== undefined) d.r = Math.min(d.r, Math.max(5, near * 0.55));
+    }
     return trueScale ? discs : separateDiscs(discs, 2, MAX_SHIFT * Math.min(2.5, zoom));
   }, [placed, project, trueScale, zoom]);
 
@@ -412,10 +519,10 @@ export function OrreryCard({ view, nowMs }: { view: OrreryView; nowMs: number })
       (a.p.body.distanceLs ?? 0) - (b.p.body.distanceLs ?? 0),
       0,
     );
-    const prog = legProgress(leg, nowMs, sepLs);
+    const prog = legProgress(leg, liveMs, sepLs);
     const at = (f: number) => ({ x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f });
     return { a, b, prog, lo: at(prog.lo), hi: at(prog.hi), mid: at(prog.mid), to: b.p.body };
-  }, [view.ship, drawn, nowMs, sys]);
+  }, [view.ship, drawn, liveMs, sys]);
 
   /**
    * Docks, placed beside the body they belong to.
@@ -461,6 +568,50 @@ export function OrreryCard({ view, nowMs }: { view: OrreryView; nowMs: number })
    * most of the time, and "where am I on this map" deserves an answer then
    * too. Anchored to the exact dock when at one, else to the body.
    */
+  /**
+   * The zoom that frames a body's FAMILY — its planet's satellites, or its
+   * own — which is the view a commander means by "where I am": the ringed
+   * planet, its moons, the docks. Used as the parked view, the departure
+   * view, and (via the 24x cap it usually hits in a big system) the arrival
+   * view. Extent is measured from the placed family head, so it is the
+   * satellite budget as actually drawn, not a guess.
+   */
+  const famGeom = useMemo(() => {
+    const headOf = new Map<number, number>();
+    const extent = new Map<number, number>();
+    if (!sys) return { headOf, extent };
+    const headFor = (id: number): number => {
+      let cur = sys.bodies.get(id);
+      if (!cur) return id;
+      while (cur.parentId !== null) {
+        const par = sys.bodies.get(cur.parentId);
+        if (!par) break;
+        if (par.parentId === null) return cur.id;
+        cur = par;
+      }
+      return cur.id;
+    };
+    const pos = new Map(placed.map((q) => [q.body.id, q]));
+    for (const q of placed) {
+      const h = headFor(q.body.id);
+      headOf.set(q.body.id, h);
+      const hp = pos.get(h);
+      if (!hp) continue;
+      const d = Math.hypot(q.x - hp.x, q.y - hp.y);
+      extent.set(h, Math.max(extent.get(h) ?? 0, d));
+    }
+    return { headOf, extent };
+  }, [sys, placed]);
+
+  const localZoom = (bodyId: number | null | undefined): number => {
+    if (bodyId == null) return 3;
+    const h = famGeom.headOf.get(bodyId);
+    if (h == null) return 3;
+    const e = famGeom.extent.get(h) ?? 0;
+    if (e <= 0 || !fit.k) return 12; // a lone body: just get close
+    return Math.min(24, Math.max(3, 85 / (e * fit.k)));
+  };
+
   const parked = useMemo(() => {
     if (view.ship) return null; // in flight, the band is the marker
     if (view.herePortId != null) {
@@ -485,14 +636,121 @@ export function OrreryCard({ view, nowMs }: { view: OrreryView; nowMs: number })
    * a chevron. Whatever moved it, the next frame re-centres it.
    */
   useEffect(() => {
-    if (!follow) return;
+    if (!follow) {
+      engageZoomed.current = false;
+      return;
+    }
+    // Leaving the system: in supercruise toward a target this map cannot
+    // place — a hyperspace target, an unvisited station — there is nothing
+    // to fly the camera toward, so it eases back out to the whole-system
+    // frame: the departure seen from above, instead of a stale close-up of
+    // wherever the ship just was.
+    if ((view.ship || view.shipUnresolved) && !flight && !parked) {
+      if (!autoZoom.current) return;
+      // One eased step per clock tick — the gate keeps React's own
+      // re-render cascade from rushing the animation to its target.
+      if (stepRef.current === liveMs) return;
+      stepRef.current = liveMs;
+      // Converge on a wide-but-legible 2.5x frame — easing DOWN from the
+      // approach zoom the retarget interrupted, or UP from the survey view a
+      // fresh mount starts at. Not 1x: the departure should still read as a
+      // place, not a dot field.
+      setCam((c) => {
+        const ratio = 2.5 / c.zoom;
+        if (Math.abs(ratio - 1) < 0.03 && Math.abs(c.x) < 1 && Math.abs(c.y) < 1) return c;
+        return { zoom: c.zoom * Math.pow(ratio, 0.05), x: c.x * 0.985, y: c.y * 0.985 };
+      });
+      return;
+    }
     const anchor = flight ? flight.mid : parked;
     if (!anchor) return;
+    if (flight) {
+      // A new leg re-arms the dynamic zoom a manual wheel may have paused.
+      const legKey = `${flight.a.p.body.id}>${flight.to.id}`;
+      if (legRef.current !== legKey) {
+        legRef.current = legKey;
+        autoZoom.current = true;
+      }
+      // Paced by the 10 Hz flight clock: each tick takes ONE small eased
+      // step of zoom and pan together, and the gate below keeps React's own
+      // re-render cascade from rushing it. On that clock the marker's
+      // motion is sub-pixel per tick, so the whole follow reads as gliding
+      // — the old shape snapped the full correction once a second, after
+      // the marker had jumped a second's worth of progress, and looked
+      // exactly as janky as that sounds.
+      if (stepRef.current === liveMs) return;
+      stepRef.current = liveMs;
+      if (autoZoom.current) {
+        const dp = Math.hypot(flight.b.x - anchor.x, flight.b.y - anchor.y);
+        // Departure holds the LOCAL view — the family you are pulling away
+        // from — fading over the first 30 SECONDS, wall clock. Tying the
+        // fade to estimated progress held the close-up for minutes on a
+        // long leg; half a minute is how long a departure feels like one,
+        // and then the full leg deserves the frame. The cruise law — the
+        // remaining leg held at ~120 px, so the space around it stays in
+        // frame — takes over when it is tighter; arrival is the cruise law
+        // rising into its 24x cap.
+        const departFloor =
+          flight.prog.elapsedS < 30
+            ? localZoom(flight.a.p.body.id) * (1 - flight.prog.elapsedS / 30)
+            : 0;
+        const zLaw = dp > 1e-6 ? Math.max(1, (zoom * 120) / dp) : 24;
+        const want = Math.min(24, Math.max(zLaw, departFloor, 1));
+        // The centre leads toward the landing only as far as the zoom lets
+        // the destination matter: while the departure floor holds the local
+        // view, the ship keeps the frame; in cruise the destination owns it.
+        const w = 0.6 * Math.min(1, zLaw / Math.max(zoom, 1e-6));
+        const wx = anchor.x + (flight.b.x - anchor.x) * w;
+        const wy = anchor.y + (flight.b.y - anchor.y) * w;
+        const dx = CX - wx;
+        const dy = CY - wy;
+        if (Math.abs(want / zoom - 1) < 0.01 && Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return;
+        setCam((c) => ({
+          zoom: c.zoom * Math.pow(want / c.zoom, 0.05),
+          x: c.x + dx * 0.18,
+          y: c.y + dy * 0.18,
+        }));
+        return;
+      }
+      // Manual zoom, still following: eased ship-centred pan.
+      const dx = CX - anchor.x;
+      const dy = CY - anchor.y;
+      if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return;
+      setCam((c) => ({ ...c, x: c.x + dx * 0.25, y: c.y + dy * 0.25 }));
+      return;
+    } else {
+      // A new berth — a fresh arrival, not a camera the commander parked
+      // somewhere — re-arms the engagement below.
+      if (parkedAtRef.current !== parked!.name) {
+        parkedAtRef.current = parked!.name;
+        engageZoomed.current = false;
+      }
+    }
+    if (!flight && !engageZoomed.current) {
+      // Parked: open on the LOCAL view — the family around the dock, framed
+      // like the arrival that put you there. Once per engagement — wheeling
+      // away afterwards must stick.
+      engageZoomed.current = true;
+      const want = localZoom(view.hereBodyId);
+      let stepped = false;
+      setCam((c) => {
+        if (Math.abs(want / c.zoom - 1) < 0.05) return c;
+        stepped = true;
+        return { ...c, zoom: want };
+      });
+      // The zoom changes the projection under the anchor; let the effect run
+      // again against the recomputed positions rather than panning to a
+      // point that no longer exists.
+      if (stepped) return;
+    }
     const dx = CX - anchor.x;
     const dy = CY - anchor.y;
     if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return;
     setCam((c) => ({ ...c, x: c.x + dx, y: c.y + dy }));
-  }, [follow, flight, parked]);
+    // liveMs drives the easing when nothing else changes: in the away state
+    // every other dependency is stable, and a convergence that only moves
+    // when its inputs change would take exactly one step and stall.
+  }, [follow, flight, parked, view.ship, view.shipUnresolved, liveMs]);
 
   /**
    * Name every body that has somewhere to put its name.
@@ -932,18 +1190,31 @@ export function OrreryCard({ view, nowMs }: { view: OrreryView; nowMs: number })
             </button>
           ))}
         </div>
+        {/*
+          The chip names the action, not the mode. Off, it reads "recenter"
+          because that is what the tap does — snap the camera back to the ship
+          and stay with it; a commander who has dragged away and zoomed around
+          is looking for exactly that word. On, it reads "following" so it is
+          plain what a second tap turns off.
+        */}
         <button
-          className={follow ? 'orr-chip active' : 'orr-chip'}
-          aria-pressed={follow}
+          className={follow && (flight || parked) ? 'orr-chip active' : 'orr-chip'}
+          aria-pressed={follow && !!(flight || parked)}
           disabled={!flight && !parked}
           title={
             !flight && !parked
               ? 'No ship on this map to follow'
-              : 'Keep the camera centred on your ship — dragging the map lets go'
+              : follow
+                ? 'Following your ship — zoom freely; dragging the map lets go'
+                : 'Snap the camera back to your ship and keep following it'
           }
-          onClick={() => setFollow(!follow)}
+          onClick={() => {
+            // Re-engaging is a recenter: the dynamic flight zoom re-arms too.
+            if (!follow) autoZoom.current = true;
+            setFollow(!follow);
+          }}
         >
-          ▲ follow
+          {follow && (flight || parked) ? '▲ following' : '▲ recenter'}
         </button>
         {zoom > 1.01 && (
           <button className="orr-chip" onClick={resetView} title="Back to the whole system">
@@ -955,12 +1226,12 @@ export function OrreryCard({ view, nowMs }: { view: OrreryView; nowMs: number })
           aria-pressed={trueScale}
           title={
             trueScale
-              ? 'True distances — inner bodies collapse onto the star, because that is where they are'
-              : 'Distances compressed per level so moons stay visible; order is preserved'
+              ? 'Every distance exact — a hugging moon disappears into its planet, because that is where it is'
+              : 'Planet distances to scale — a 2,000 ls leg is half a 4,000 ls one. Moons spread to stay visible.'
           }
           onClick={() => setTrueScale(!trueScale)}
         >
-          {trueScale ? 'true dist' : 'compressed'}
+          {trueScale ? 'exact' : 'to scale'}
         </button>
       </div>
 
@@ -968,8 +1239,8 @@ export function OrreryCard({ view, nowMs }: { view: OrreryView; nowMs: number })
           worse than one that does not draw. */}
       <div className="orr-note">
         {trueScale
-          ? 'True distances · body sizes exaggerated · nothing nudged'
-          : 'Compressed & separated · order preserved, spacing is not'}
+          ? 'Every distance exact · body sizes exaggerated · nothing nudged'
+          : 'Planet distances to scale · moons spread to be seen · order kept'}
         {warp !== 1 && ' · warped'}
       </div>
 

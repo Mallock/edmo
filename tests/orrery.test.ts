@@ -16,6 +16,7 @@ import {
   bodyRadiusPx,
   compressLs,
   legProgress,
+  cruiseProfile,
   lightSource,
   materialGrade,
   orbitAt,
@@ -24,6 +25,7 @@ import {
   placeBelts,
   placeLabels,
   placeBody,
+  satelliteScales,
   placeSystem,
   readElements,
   readMaterials,
@@ -371,7 +373,7 @@ test('true-distance mode does not touch the number', () => {
   assert.equal(compressLs(2000, opts), 2000);
 });
 
-test('compression is per level, so a moon never collapses onto its planet', () => {
+test('hybrid: the planet sits at its true distance, the moon stays visibly off it', () => {
   const t = new OrreryTracker();
   t.apply(DEEP_MOON);
   const sys = t.get('999')!;
@@ -384,13 +386,182 @@ test('compression is per level, so a moon never collapses onto its planet', () =
   });
   const planet = placeBody(sys, 5, 0)!;
   const moon = placeBody(sys, 13, 0)!;
+  // The top level is TRUE: 400 ls draws at 400, because the length of a
+  // travel vector is the one thing the commander checks against the game.
+  assert.ok(Math.abs(Math.hypot(planet.x, planet.y) - 400) < 1e-6, 'planet distance is exact');
+  // The nested level is stretched out to the family's satellite budget —
+  // an unchallenged planet at 400 ls may fan its moons to 10% of the
+  // system, which is what makes them visible at a zoom a human would use...
   const gap = Math.hypot(moon.x - planet.x, moon.y - planet.y);
   assert.ok(gap > 0.4, `a moon 1 light-second out is still visibly off its planet (${gap})`);
-  // 400 ls and 1 ls end up within one order of magnitude of each other on
-  // screen, which is the only reason both are visible at once...
-  assert.ok(Math.hypot(planet.x, planet.y) / gap < 10, 'planet and moon share a screen');
+  // Slack of 1: the budget is set from the semi-major axis, while the placed
+  // position breathes with the orbit's real (slightly eccentric) radius.
+  assert.ok(gap <= 41, `...but never meaningfully past the budget: a tenth of the system (${gap})`);
   // ...while the number the detail line quotes is the real separation.
   assert.ok(Math.abs(moon.trueLs - 1) < 0.01, `true separation stays honest (${moon.trueLs})`);
+});
+
+test('a crowded family stays tight — the budget respects the neighbour', () => {
+  const t = new OrreryTracker();
+  t.apply(DEEP_MOON);
+  const sys = t.get('999')!;
+  sys.bodies.set(5, {
+    ...sys.bodies.get(5)!,
+    scanned: true,
+    kind: 'planet',
+    elements: circular({ semiMajorAxis: 400 * M_PER_LS, period: 3e7 }),
+  });
+  // A second planet 20 ls away — two gas giants sharing a lane. The moons of
+  // 5 must not be flung across the gap: the budget is 0.35 × 20 = 7 ls, so
+  // the family barely opens (the bare curve puts the moon at 3.65) instead
+  // of fanning to the tenth-of-the-system a lone planet would get.
+  sys.bodies.set(6, {
+    ...sys.bodies.get(5)!,
+    id: 6,
+    name: 'Testsys 6',
+    elements: circular({ semiMajorAxis: 420 * M_PER_LS, period: 3.2e7 }),
+  });
+  const scales = satelliteScales(sys, DEFAULT_SCALE);
+  assert.ok(scales.get(5)! < 2, `crowded family opens only to its lane (×${scales.get(5)})`);
+  const planet = placeBody(sys, 5, 0)!;
+  const moon = placeBody(sys, 13, 0)!;
+  const gap = Math.hypot(moon.x - planet.x, moon.y - planet.y);
+  assert.ok(gap < 8, `moons stay inside the lane (${gap})`);
+});
+
+test('disc sizes keep the hierarchy the scan measured', () => {
+  const b = (radius: number) =>
+    ({ radius, kind: 'planet' }) as unknown as Parameters<typeof bodyRadiusPx>[0];
+  const giant = bodyRadiusPx(b(70_000_000)); // 70,000 km gas giant
+  const earth = bodyRadiusPx(b(6_371_000));
+  const rock = bodyRadiusPx(b(200_000)); // 200 km moonlet
+  // The old log curve drew these 7.5 / 7.2 / 4.4 — a 350× real spread shown
+  // as 1.7×. The power law keeps planets planets and moons attendants.
+  assert.ok(giant / earth > 2.2, `a gas giant dwarfs an Earth (${giant} vs ${earth})`);
+  assert.ok(earth / rock > 2, `an Earth dwarfs a moonlet (${earth} vs ${rock})`);
+  assert.ok(giant <= 15 && rock >= 1.8, 'both ends stay inside the drawable clamps');
+});
+
+test('completed legs are timed, and the next run on the route uses them', () => {
+  const t = new OrreryTracker();
+  const scan = (id: number, name: string, dist: number) =>
+    t.apply(
+      ev({
+        timestamp: '2026-08-17T17:00:00Z',
+        event: 'Scan',
+        BodyName: name,
+        BodyID: id,
+        Parents: id === 0 ? undefined : [{ Star: 0 }],
+        StarSystem: 'T',
+        SystemAddress: 7,
+        DistanceFromArrivalLS: dist,
+        PlanetClass: id === 0 ? undefined : 'Icy body',
+        StarType: id === 0 ? 'K' : undefined,
+        Radius: 1e8,
+      }),
+    );
+  scan(0, 'T', 0);
+  scan(25, 'T 2 e', 978);
+  scan(43, 'T 4 c', 2409);
+  const fly = (from: number, to: number, entryIso: string, exitIso: string) => {
+    t.apply(ev({ timestamp: entryIso, event: 'Location', StarSystem: 'T', SystemAddress: 7, BodyID: from, Body: 'x', BodyType: 'Planet' }));
+    t.apply(ev({ timestamp: entryIso, event: 'SupercruiseEntry', StarSystem: 'T', SystemAddress: 7 }));
+    t.apply(ev({ timestamp: exitIso, event: 'SupercruiseExit', StarSystem: 'T', SystemAddress: 7, BodyID: to, Body: 'y' }));
+  };
+  // Tonight's real numbers: the Niinimäki <-> Baltazar shuttle, 154 s and 227 s.
+  fly(25, 43, '2026-08-17T17:59:56Z', '2026-08-17T18:02:30Z');
+  fly(43, 25, '2026-08-17T18:07:20Z', '2026-08-17T18:11:07Z');
+  assert.equal(t.legLog.length, 2);
+  assert.ok(Math.abs(t.legLog[0].ls - 1431) < 1, 'separation measured from the scans');
+
+  // The route window, either direction: [min x0.85, max x1.2].
+  const b = t.legBounds(25, 43, 1431)!;
+  assert.ok(Math.abs(b.fast - 154 * 0.85) < 1, `fast from the best run (${b.fast})`);
+  assert.ok(Math.abs(b.slow - 227 * 1.2) < 1, `slow from the worst (${b.slow})`);
+  assert.deepEqual(t.legBounds(43, 25, 1431), b, 'a route is the same road both ways');
+
+  // A DIFFERENT route of similar length borrows the times, needing two runs.
+  const sim = t.legBounds(1, 2, 1200)!;
+  assert.ok(sim.fast < b.fast && sim.slow > b.slow, 'similarity bounds are looser than route bounds');
+  // A wildly different length matches nothing and falls back to the globals.
+  assert.equal(t.legBounds(1, 2, 50_000), null);
+
+  // The learning survives the persistence round trip.
+  const back = OrreryTracker.fromJSON(t.toJSON());
+  assert.equal(back.legLog.length, 2);
+  assert.ok(back.legBounds(25, 43, 1431), 'bounds still available after reload');
+
+  // And legProgress prefers the learned window over the global band.
+  const leg = { fromId: 25, toId: 43, departedMs: 0, bounds: b };
+  const p = legProgress(leg, 140_000, 1431);
+  const pGlobal = legProgress({ fromId: 25, toId: 43, departedMs: 0 }, 140_000, 1431);
+  assert.ok(p.hi > pGlobal.hi - 1e-9, 'learned fast bound is at least as far along');
+  assert.ok(p.lo > pGlobal.lo, 'learned slow bound pulls the floor up');
+});
+
+test('the cruise profile is end-loaded like a real approach', () => {
+  // Monotonic from 0 to 1...
+  assert.equal(cruiseProfile(0), 0);
+  assert.equal(cruiseProfile(1), 1);
+  for (let t = 0.05; t < 1; t += 0.05) {
+    assert.ok(cruiseProfile(t) > cruiseProfile(t - 0.05), `monotonic at ${t}`);
+  }
+  // ...slow off the line (climbing out of the origin's gravity well)...
+  assert.ok(cruiseProfile(0.1) < 0.06, 'departure crawls');
+  // ...and saturating hard into the destination: by 44% of the TIME the
+  // ship has covered ~73% of the DISTANCE, by 70% ~95% — which is why a
+  // commander reading "9 Mm to go" on the game's panel must not see the
+  // marker sitting mid-leg.
+  assert.ok(Math.abs(cruiseProfile(0.44) - 0.73) < 0.03, `44% time (${cruiseProfile(0.44)})`);
+  assert.ok(cruiseProfile(0.7) > 0.93, `70% time (${cruiseProfile(0.7)})`);
+});
+
+test('the family factor is capped at 12 so families read alike', () => {
+  const t = new OrreryTracker();
+  t.apply(DEEP_MOON);
+  const sys = t.get('999')!;
+  // A lone planet enormously far out: the gap-based budget would allow a
+  // huge fan; the cap keeps moon rings comparable across families.
+  sys.bodies.set(5, {
+    ...sys.bodies.get(5)!,
+    scanned: true,
+    kind: 'planet',
+    elements: circular({ semiMajorAxis: 100_000 * M_PER_LS, period: 3e9 }),
+  });
+  const scales = satelliteScales(sys, DEFAULT_SCALE);
+  assert.equal(scales.get(5), 12);
+});
+
+test('hybrid: planet distances are proportional — 1,900 ls IS just under half of 4,000', () => {
+  const t = new OrreryTracker();
+  t.apply(DEEP_MOON);
+  const sys = t.get('999')!;
+  sys.bodies.set(5, {
+    ...sys.bodies.get(5)!,
+    scanned: true,
+    kind: 'planet',
+    elements: circular({ semiMajorAxis: 1900 * M_PER_LS, period: 3e7 }),
+  });
+  sys.bodies.set(6, {
+    ...sys.bodies.get(5)!,
+    id: 6,
+    name: 'Testsys 6',
+    elements: circular({ semiMajorAxis: 4000 * M_PER_LS, period: 9e7 }),
+  });
+  const near = placeBody(sys, 5, 0)!;
+  const far = placeBody(sys, 6, 0)!;
+  const ratio = Math.hypot(near.x, near.y) / Math.hypot(far.x, far.y);
+  // This is the whole point of the mode: under the old log compression these
+  // two drew at 20.0 vs 21.7 display-ls — a 0.92 ratio for a 0.475 reality.
+  assert.ok(Math.abs(ratio - 1900 / 4000) < 1e-9, `screen ratio matches flown ratio (${ratio})`);
+});
+
+test('the legacy compressed mode still squashes every level', () => {
+  const opts = { ...DEFAULT_SCALE, mode: 'compressed' as const };
+  const d = compressLs(400, opts, 0);
+  assert.ok(Math.abs(d - (0.6 + 5.2 * Math.log10(1 + 400 / 0.35))) < 1e-9);
+  // And hybrid at nested depth is exactly the compressed curve.
+  assert.equal(compressLs(400, DEFAULT_SCALE, 1), d);
 });
 
 // ---------------------------------------------------------------- separation

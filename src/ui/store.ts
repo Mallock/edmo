@@ -162,6 +162,18 @@ import {
   buildReflectionChat,
   type MemoryEvent,
 } from '../engine/memory.ts';
+import { ChatterEngine, type ChatterSource, type Transmission } from '../engine/chatter/engine.ts';
+import { parseGrammar, mergeGrammar } from '../engine/chatter/grammar.ts';
+import { BUNDLED_GRAMMAR } from '../engine/chatter/bundled-grammar.ts';
+import {
+  factionBrief,
+  constructionBrief,
+  geographyBrief,
+  systemBrief,
+} from '../engine/chatter/briefs.ts';
+import type { Brief, FactSource } from '../engine/chatter/brief.ts';
+import type { ChannelState } from '../engine/chatter/channels.ts';
+import type { Act, ChannelId } from '../engine/chatter/types.ts';
 import {
   GLANCE_FORMAT,
   SCENE_FORMAT,
@@ -411,6 +423,29 @@ export interface ArchitectView {
   holdUsed: number | null;
 }
 
+export interface CommsView {
+  act: Act;
+  channels: ChannelState[];
+  mutedChannels: ChannelId[];
+  lastPerChannel: Partial<Record<ChannelId, number>>;
+  diag: {
+    source: AppSettings['comms']['source'];
+    ready: number;
+    pending: number;
+    generated: number;
+    rejected: number;
+    quiet: string;
+    lastGenAt: number;
+    lastGenOutcome: string;
+  };
+  log: Array<{
+    at: number;
+    channel: ChannelId;
+    turns: Array<{ speaker: string; text: string; returning: boolean }>;
+    facts: Array<{ value: string; source: string }>;
+  }>;
+}
+
 export interface AppSnapshot {
   missions: Mission[];
   selectedId: number | null;
@@ -444,11 +479,13 @@ export interface AppSnapshot {
   architect: ArchitectView | null;
   /** The local wire, or null when the feature is switched off. */
   news: NewsView | null;
+  /** Ambient world traffic heard on nearby channels. */
+  comms: CommsView;
   /** The system map, or null until something in this system has been scanned. */
   orrery: OrreryView | null;
   /** Which panel fills the card area: missions (default), clock, plotter,
-   *  the system architect's shopping list, the local news wire, or the orrery. */
-  view: 'missions' | 'deathclock' | 'plotter' | 'architect' | 'news' | 'orrery';
+   *  the system architect's shopping list, the local news wire, comms, or the orrery. */
+  view: 'missions' | 'deathclock' | 'plotter' | 'architect' | 'news' | 'comms' | 'orrery';
   shipPanel: ShipPanel;
   routeBusy: boolean;
   routeIdx: number;
@@ -538,6 +575,17 @@ function friendlyTool(name?: string): string {
     survey_system: 'checking the exploration catalogue',
   };
   return labels[name ?? ''] ?? (name || 'a tool');
+}
+
+/**
+ * Temporary safety rail while the old prewrite path is rebuilt.
+ *
+ * `llm` mode used to rely on ahead-of-time scene writing. With that path
+ * missing, strict llm-only would be total silence. Keep the channel alive by
+ * transparently using hybrid fallback for now.
+ */
+function effectiveCommsSource(source: AppSettings['comms']['source']): ChatterSource {
+  return source === 'llm' ? 'hybrid' : source;
 }
 
 export class AppCore {
@@ -825,7 +873,7 @@ export class AppCore {
   private newsBusy = false;
   private newsError: string | null = null;
   /** Which panel fills the card area; the clock and plotter are offered as tabs. */
-  private view: 'missions' | 'deathclock' | 'plotter' | 'architect' | 'news' | 'orrery' = 'missions';
+  private view: 'missions' | 'deathclock' | 'plotter' | 'architect' | 'news' | 'comms' | 'orrery' = 'missions';
 
   // ------------------------------------------------------------- the plotter
   /**
@@ -951,6 +999,41 @@ export class AppCore {
   private recentTopics: BeatTopic[] = [];
   private commsSeen = new Map<string, number>();
 
+  // ------------------------------------------------------------- ambient comms
+  private comms = (() => {
+    const bundled = parseGrammar(BUNDLED_GRAMMAR, 'bundled');
+    const grammar = mergeGrammar(bundled, null);
+    const e = new ChatterEngine({ grammar, source: effectiveCommsSource(this.settings.comms.source) });
+    try {
+      e.load(JSON.parse(localStorage.getItem('edmo.comms.v1') ?? 'null'));
+    } catch {
+      /* start with an empty cast/guard book */
+    }
+    return e;
+  })();
+  private commsChannels: ChannelState[] = [];
+  private commsLastPerChannel: Partial<Record<ChannelId, number>> = {};
+  private commsLog: CommsView['log'] = (() => {
+    if (!this.settings.comms.persistLog) return [];
+    try {
+      const raw = localStorage.getItem('edmo.commslog.v1');
+      return raw ? (JSON.parse(raw) as CommsView['log']) : [];
+    } catch {
+      return [];
+    }
+  })();
+  private commsDiag: CommsView['diag'] = {
+    source: this.settings.comms.source,
+    ready: 0,
+    pending: 0,
+    generated: 0,
+    rejected: 0,
+    quiet: 'not-due',
+    lastGenAt: 0,
+    lastGenOutcome: 'waiting',
+  };
+  private commsDirty = false;
+
   /** Unused fresh comms, marked consumed on take — each line rides once. */
   private freshComms(): string[] {
     const cutoff = Date.now() - 45 * 60_000;
@@ -1044,6 +1127,7 @@ export class AppCore {
 
   constructor() {
     this.hb = new Heartbeat({ expiryWarnMin: this.settings.journal.expiryWarningMin });
+    this.speaker.setMuted(this.settings.radio.muted);
     // Browser fallback bank; in Tauri the memory.json file (loaded in init,
     // BEFORE the journal watch starts) replaces it.
     try {
@@ -1120,6 +1204,7 @@ export class AppCore {
       plotter: this.plotterView(),
       architect: this.architectView(),
       news: this.settings.news.enabled ? this.newsView() : null,
+      comms: this.commsView(),
       view: this.view,
       shipPanel: this.shipPanel(),
       routeBusy: this.routeBusy,
@@ -1503,6 +1588,10 @@ export class AppCore {
     this.copilotSeenBodies.clear();
     this.deathAnnouncer = new DeathClockAnnouncer(); // clock itself persists
     this.view = 'missions';
+    this.commsChannels = [];
+    this.commsLastPerChannel = {};
+    this.commsDiag.quiet = 'not-due';
+    if (!this.settings.comms.persistLog) this.commsLog = [];
     this.deathClockSweepDone = false; // directory may have changed — sweep again
     this.deathClockFssHinted = false;
     this.prospectTarget = null;
@@ -1673,10 +1762,12 @@ export class AppCore {
       this.speakMemoryEvents();
       // Events may create stall conditions the heartbeat should see promptly.
       this.heartbeatNudges();
+      this.maybeComms();
     } else if (this.bioTracker.dirty) {
       this.recomputeBio(false);
     }
     if (this.memory.dirty) this.persistMemory();
+    this.persistComms();
     this.persistTrackers();
     this.emit();
   }
@@ -3269,6 +3360,198 @@ export class AppCore {
     };
   }
 
+  private commsView(): CommsView {
+    return {
+      act: this.comms.acts.current,
+      channels: this.commsChannels,
+      mutedChannels: this.settings.comms.mutedChannels as ChannelId[],
+      lastPerChannel: this.commsLastPerChannel,
+      diag: {
+        ...this.commsDiag,
+        source: this.settings.comms.source,
+        ready: this.comms.readyCount(),
+        pending: this.comms.readyCount(),
+      },
+      log: this.commsLog,
+    };
+  }
+
+  private commsSourceLabel(source: FactSource): string {
+    switch (source.kind) {
+      case 'market':
+        return source.station;
+      case 'faction':
+      case 'geography':
+        return source.system;
+      case 'construction':
+        return source.site;
+      case 'event':
+        return 'journal event';
+      case 'cast':
+        return 'cast memory';
+      default:
+        return source.kind;
+    }
+  }
+
+  private commsFacts(brief: Brief): Array<{ value: string; source: string }> {
+    const out: Array<{ value: string; source: string }> = [];
+    for (const n of brief.nouns) out.push({ value: n.value, source: this.commsSourceLabel(n.source) });
+    for (const f of brief.figures)
+      out.push({ value: f.value, source: this.commsSourceLabel(f.source) });
+    return out.slice(0, 8);
+  }
+
+  private commsBriefs(nowMs: number): Brief[] {
+    const system = this.sm.location.system;
+    const intel = this.sm.getState().system;
+    const sys = this.orrery.current();
+    const pick = (n: number): number => Math.floor(Math.random() * Math.max(1, n));
+    const out: Brief[] = [];
+
+    const sysBrief = systemBrief(system, intel, sys, null, {
+      docked: this.sm.docked,
+      stationName: this.sm.location.station ?? null,
+    });
+    if (sysBrief) out.push(sysBrief);
+
+    const geo = geographyBrief(sys, system, null, pick);
+    if (geo) out.push(geo);
+
+    const faction = factionBrief(intel, system, pick);
+    if (faction) out.push(faction);
+
+    const build = constructionBrief(this.construction.depot);
+    if (build) out.push(build);
+
+    return out;
+  }
+
+  private commsContext() {
+    const st = this.statusTracker.current;
+    const sys = this.orrery.current();
+    if (sys) resolvePorts(sys);
+    const ports = [...(sys?.ports.values() ?? [])].filter((p) => !!p.name);
+
+    let sepLs: number | null = null;
+    if (this.sm.docked) {
+      sepLs = 0;
+    } else if (ports.length) {
+      const known = ports
+        .map((p) => p.distanceLs)
+        .filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
+      sepLs = known.length ? Math.max(50, Math.min(...known)) : 12_000;
+    }
+
+    const target = st?.destination?.name?.trim().toLowerCase();
+    if (target && ports.length) {
+      const hit = ports.find((p) => p.name.trim().toLowerCase() === target && p.distanceLs != null);
+      if (hit?.distanceLs != null) sepLs = Math.max(0, Math.round(hit.distanceLs));
+    }
+
+    return {
+      onFoot: !!st?.onFoot,
+      resolvedPorts: ports.length,
+      portSeparationLs: sepLs,
+      carrierPresent: !!this.sm.location.station && /carrier/i.test(this.sm.location.station),
+      population: this.sm.getState().system.population ?? null,
+      hasCrew: !st?.onFoot,
+      mutedChannels: new Set(this.settings.comms.mutedChannels as ChannelId[]),
+      emergencyBriefReady: false,
+    };
+  }
+
+  private speakComms(t: Transmission): void {
+    const now = Date.now();
+    const turns: Array<{ speaker: string; text: string; returning: boolean }> = [];
+
+    for (let i = 0; i < t.scene.turns.length; i++) {
+      const turn = t.scene.turns[i];
+      const cast = t.cast[i] ?? t.cast[0];
+      const speaker = cast?.name ?? turn.speakerRef;
+      turns.push({ speaker, text: turn.text, returning: cast?.returning ?? false });
+      this.speaker.speak(`${speaker}. ${turn.text}`, cast?.persona?.voice || null, {
+        bus: 'AMBIENT',
+        channel: t.channel,
+        profile: t.profile,
+        timbre: cast?.persona?.timbre,
+        degrade: t.degrade,
+        ttlMs: t.ttlMs,
+      });
+    }
+
+    this.commsLog = [
+      {
+        at: now,
+        channel: t.channel,
+        turns,
+        facts: this.commsFacts(t.scene.brief),
+      },
+      ...this.commsLog,
+    ].slice(0, 40);
+
+    this.commsLastPerChannel[t.channel] = now;
+    if (t.scene.arcId) {
+      this.comms.noteArcBeat(
+        this.sm.location.system,
+        t.scene.arcId,
+        t.scene.func,
+        t.scene.brief.summary,
+        new Date(now).toISOString(),
+      );
+    }
+    this.commsDiag.generated += 1;
+    this.commsDiag.lastGenAt = now;
+    this.commsDiag.lastGenOutcome = `wrote a ${t.channel} scene`;
+    this.commsDirty = true;
+  }
+
+  private maybeComms(): void {
+    if (!this.settings.comms.enabled) return;
+    if (Date.now() - this.lastGameActivity >= GAME_LIVE_WINDOW_MS) return;
+
+    const now = Date.now();
+    this.comms.setSource(effectiveCommsSource(this.settings.comms.source));
+    if (this.settings.comms.source === 'llm') {
+      this.commsDiag.lastGenOutcome = 'llm-only prewrite is unavailable; using template fallback';
+    }
+    const r = this.comms.tick({
+      nowMs: now,
+      pressure: this.copilotPressure(),
+      inCrisis: !!this.statusTracker.current?.inDanger,
+      crisisResolvedAt: null,
+      density: this.settings.comms.density,
+      system: this.sm.location.system,
+      briefs: this.commsBriefs(now),
+      context: this.commsContext(),
+      installedVoices: this.piperVoiceList,
+    });
+
+    this.commsChannels = r.channels;
+    this.commsDiag.quiet = r.transmission ? '' : (r.quietBecause ?? 'not-due');
+    this.commsDiag.ready = this.comms.readyCount();
+    this.commsDiag.pending = this.comms.readyCount();
+    if (r.transmission) this.speakComms(r.transmission);
+
+    this.comms.maintain(now);
+    this.commsDirty = true;
+  }
+
+  private persistComms(): void {
+    if (!this.commsDirty) return;
+    this.commsDirty = false;
+    try {
+      localStorage.setItem('edmo.comms.v1', JSON.stringify(this.comms.toJSON()));
+      if (this.settings.comms.persistLog) {
+        localStorage.setItem('edmo.commslog.v1', JSON.stringify(this.commsLog));
+      } else {
+        localStorage.removeItem('edmo.commslog.v1');
+      }
+    } catch {
+      /* comms still runs for this session */
+    }
+  }
+
   // ------------------------------------------------------- the system architect
   /**
    * The market at the station under the ship, when there is one.
@@ -3938,6 +4221,7 @@ export class AppCore {
     ) {
       void this.refreshNews(false);
     }
+    this.maybeComms();
     this.maybeChatter();
     this.maybeReflect();
     this.maybeGlance();
@@ -3945,6 +4229,7 @@ export class AppCore {
     this.maybeCopilotIdle();
     this.speakMemoryEvents();
     if (this.memory.dirty) this.persistMemory();
+    this.persistComms();
     // Watchdog: any entry still "streaming" that no active request owns is an
     // orphan — finalize it so the cursor never blinks forever.
     for (const e of this.feed) {
@@ -6371,7 +6656,7 @@ ${missionContext(mission, state)}`);
     this.emit();
   }
 
-  setView(v: 'missions' | 'deathclock' | 'plotter' | 'architect' | 'news' | 'orrery'): void {
+  setView(v: 'missions' | 'deathclock' | 'plotter' | 'architect' | 'news' | 'comms' | 'orrery'): void {
     this.view = v;
     // Opening the list is the moment the commander wants to know where to buy
     // — but only ask the network if nothing usable was fetched recently.
@@ -6379,6 +6664,20 @@ ${missionContext(mission, state)}`);
     // Opening the paper is a request for today's edition, if one is due.
     if (v === 'news') void this.refreshNews(false);
     this.emit();
+  }
+
+  toggleCommsChannel(id: ChannelId): void {
+    const nowMuted = new Set(this.settings.comms.mutedChannels as ChannelId[]);
+    if (nowMuted.has(id)) {
+      nowMuted.delete(id);
+    } else {
+      nowMuted.add(id);
+      this.speaker.muteChannel(id);
+    }
+    this.updateSettings({
+      ...this.settings,
+      comms: { ...this.settings.comms, mutedChannels: [...nowMuted] },
+    });
   }
 
   /** Manual death-clock calibration from the tab ("this is happening now"). */
@@ -6456,6 +6755,32 @@ ${missionContext(mission, state)}`);
     const prev = this.settings;
     this.settings = next;
     saveSettings(next);
+    if (prev.radio.muted !== next.radio.muted) {
+      this.speaker.setMuted(next.radio.muted);
+    }
+    if (prev.comms.source !== next.comms.source) {
+      this.comms.setSource(effectiveCommsSource(next.comms.source));
+      this.commsDiag.source = next.comms.source;
+      if (next.comms.source === 'llm') {
+        this.commsDiag.lastGenOutcome = 'llm-only prewrite is unavailable; using template fallback';
+      }
+      this.commsDirty = true;
+    }
+    const prevMuted = new Set(prev.comms.mutedChannels as ChannelId[]);
+    for (const id of next.comms.mutedChannels as ChannelId[]) {
+      if (!prevMuted.has(id)) this.speaker.muteChannel(id);
+    }
+    if (prev.comms.persistLog !== next.comms.persistLog) {
+      if (!next.comms.persistLog) {
+        this.commsLog = [];
+        try {
+          localStorage.removeItem('edmo.commslog.v1');
+        } catch {
+          /* ignore storage failures */
+        }
+      }
+      this.commsDirty = true;
+    }
     if (prev.chatter.epic !== next.chatter.epic) {
       this.copilot?.setSystem(
         buildCopilotSystem(this.sm.commanderName || undefined, {
@@ -6476,6 +6801,7 @@ ${missionContext(mission, state)}`);
       this.hb = new Heartbeat({ expiryWarnMin: next.journal.expiryWarningMin });
     }
     if (prev.lm.endpoint !== next.lm.endpoint) void this.pollLm();
+    if (!next.comms.enabled && this.view === 'comms') this.view = 'missions';
     this.emit();
   }
 
