@@ -7,9 +7,9 @@ WHAT THIS IS
   index.html                              the page
   img/                                    screenshots + icons
   fonts/                                  the two webfonts, self-hosted
-  ED-Mission-Operator-1.1.0-setup.exe       the Windows installer (~132 MB)
-  ED-Mission-Operator-1.1.0-amd64.deb       Linux beta, Ubuntu/Debian (~147 MB)
-  ED-Mission-Operator-1.1.0-x86_64.AppImage Linux beta, any distro (~231 MB)
+  ED-Mission-Operator-1.2.0-setup.exe       the Windows installer (~132 MB)
+  ED-Mission-Operator-1.2.0-amd64.deb       Linux beta, Ubuntu/Debian (~147 MB)
+  ED-Mission-Operator-1.2.0-x86_64.AppImage Linux beta, any distro (~231 MB)
 
 HOW TO PUT IT ON YOUR WEB HOTEL
   1. Open your web hotel's File Manager (or connect with FTP, e.g. FileZilla).
@@ -22,8 +22,38 @@ NOTES
   * The installer is ~132 MB. Browser-based file managers sometimes limit
     uploads (often to 100 MB) — if the .exe upload fails, use FTP instead,
     or upload it to a file service and change the download link in
-    index.html (search for "ED-Mission-Operator-1.1.0-setup.exe").
-  * 1.1.0 adds COMMS TRAFFIC and THE RADIO.
+    index.html (search for "ED-Mission-Operator-1.2.0-setup.exe").
+  * 1.2.0 fixes COMMS and changes what it promises.
+
+    THE FIX: on the bundled engine comms produced nothing at all. The writer
+    capped each request at 220 tokens, which is generous for two lines of radio
+    and far short of what a reasoning model spends THINKING before it writes —
+    so every request was cut off mid-thought, came back with an empty answer,
+    and was scored as unparseable. Measured on a live install: 49 attempts, 49
+    drops, 0 transmissions. Reasoning is now switched off for this path (the
+    operator still reasons, where it earns its keep) and the ceiling raised for
+    the models that cannot switch it off. Same scene, same prompt: 4.1 s and 449
+    tokens before, 0.34 s and 15 after, and it actually reaches the air.
+
+    THE CHANGE: comms is no longer fact-checked, and this reverses what 1.1.0
+    said below. The fence that kept every scene inside a list of licensed names
+    was discarding roughly nine scenes in ten to catch inventions that were
+    never doing any harm — nothing downstream reads comms and it never addresses
+    you. Instead the AI is handed a real briefing on the system (the faction
+    board with influence figures, the stations, the signals the FSS found, how
+    far out the nearest port is, whether you are docked) and allowed to invent
+    freely on top of it. Grounding by material rather than by rule. THE
+    OPERATOR, THE WIRE AND THE COPILOT ARE STILL FACT-CHECKED — those speak to
+    you and you act on them. Treat the traffic as atmosphere, not intelligence.
+    The per-transmission source chips are gone with the fence; the Comms tab now
+    reports how many scenes reached the air, how many dropped, and why.
+
+    Also in 1.2.0: the tab-switching described under 1.0.4 ("the HUD now
+    switches tabs with the game") was written up but never actually implemented.
+    It works now, and has a toggle in Settings -> HUD.
+
+  * 1.1.0 added COMMS TRAFFIC and THE RADIO. NOTE: the fact-checking described
+    in this entry was removed in 1.2.0 — see above.
 
     COMMS TRAFFIC is other people on other channels — traffic control working a
     queue, hauliers on the open channel, a fleet carrier broadcasting at
@@ -243,7 +273,7 @@ NOTES
     ranges and payout estimates; and four opt-in community lookups the operator
     calls only when asked (Spansh routes, galaxy-wide markets via Ardent
     Insight, the EDAstro exploration catalogue, and the Galnet news wire).
-  * All three installers are 1.1.0.
+  * All three installers are 1.2.0.
 
     Windows:  npm run tauri build
               -> src-tauri/target/release/bundle/nsis/

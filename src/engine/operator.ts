@@ -349,6 +349,18 @@ export function systemPromptFor(category: MissionCategory, cmdr?: string): ChatM
 }
 
 /**
+ * Is this station signal a fleet carrier?
+ *
+ * Carriers are ubiquitous in hub systems like Colonia and must not drown out
+ * real stations in anything shown to a model — a dozen XXX-XXX registrations
+ * crowd out the two names that actually mean something. Every caller counts
+ * them instead of listing them.
+ */
+export function isFleetCarrier(x: { name: string; type?: string }): boolean {
+  return /FleetCarrier/i.test(x.type ?? '') || /\b[A-Z0-9]{3}-[A-Z0-9]{3}$/.test(x.name);
+}
+
+/**
  * What the journal has revealed about the current system this session —
  * security/faction plus concrete places to go (RES, Nav Beacon, stations).
  * Null when nothing useful is known (e.g. no FSS scan yet).
@@ -368,13 +380,9 @@ export function describeSystemIntel(state: OperatorState): string | null {
     );
   }
 
-  // Fleet carriers (ubiquitous in hub systems like Colonia) must not drown
-  // out real stations; their names end in a XXX-XXX registration.
-  const isCarrier = (x: { name: string; type?: string }): boolean =>
-    /FleetCarrier/i.test(x.type ?? '') || /\b[A-Z0-9]{3}-[A-Z0-9]{3}$/.test(x.name);
   const stationSignals = s.signals.filter((x) => x.isStation);
-  const stations = stationSignals.filter((x) => !isCarrier(x)).map((x) => x.name);
-  const carriers = stationSignals.filter(isCarrier).length;
+  const stations = stationSignals.filter((x) => !isFleetCarrier(x)).map((x) => x.name);
+  const carriers = stationSignals.filter(isFleetCarrier).length;
   const sites = s.signals.filter((x) => !x.isStation).map((x) => x.name);
   if (sites.length) lines.push(`Signals detected here: ${sites.slice(0, 8).join(' · ')}`);
   if (stations.length || carriers) {

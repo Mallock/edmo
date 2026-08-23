@@ -28,7 +28,6 @@
  */
 import { textureBrief, type Brief } from './brief.ts';
 import {
-  TransmitBudget,
   dueToTransmit,
   evaluateAll,
   selectChannel,
@@ -84,7 +83,7 @@ export interface TickInput {
   /** Facts available to talk about right now. */
   briefs: readonly Brief[];
   /** Channel gating context, minus the parts this class owns. */
-  context: Omit<ChannelContext, 'nowMs' | 'act' | 'density' | 'pressure' | 'budget' | 'lastTransmitAt'>;
+  context: Omit<ChannelContext, 'nowMs' | 'act' | 'density' | 'pressure' | 'lastTransmitAt'>;
   /** Piper voices actually installed. */
   installedVoices: readonly string[];
 }
@@ -127,7 +126,6 @@ export class ChatterEngine {
   readonly guard = new RepetitionGuard();
   readonly cast = new CastBook();
   readonly slots = new SceneSlots();
-  readonly budget = new TransmitBudget();
 
   private grammar: Grammar;
   private rand: () => number;
@@ -185,7 +183,6 @@ export class ChatterEngine {
       act,
       density: input.density,
       pressure: input.pressure,
-      budget: this.budget,
       lastTransmitAt: this.lastPerChannel,
     };
     const channels = evaluateAll(ctx);
@@ -271,7 +268,6 @@ export class ChatterEngine {
 
     const cast = this.castScene(scene, input);
     this.guard.remember(scene);
-    this.budget.record(input.nowMs);
     this.lastAnyAt = input.nowMs;
     this.lastPerChannel[picked.id] = input.nowMs;
 

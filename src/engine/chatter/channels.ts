@@ -130,62 +130,6 @@ export function chatterGapMs(density: ChatterDensity, pressure: number): number 
   return Math.round(chatterBaseGapMs(density) * (0.8 + 1.4 * p));
 }
 
-/** Transmissions per hour that no combination of channels may exceed. */
-export function hourlyCeiling(density: ChatterDensity): number {
-  switch (density) {
-    case 'sparse':
-      return 16;
-    case 'normal':
-      return 45;
-    case 'busy':
-      return 90;
-    case 'bustling':
-      return 150;
-    default:
-      return 45;
-  }
-}
-
-/**
- * A rolling one-hour transmission budget.
- *
- * Separate from the per-channel intervals on purpose. Seven channels each
- * respecting a polite 90-second minimum can still produce a transmission every
- * thirteen seconds between them, which is a market, not a star system.
- */
-export class TransmitBudget {
-  private stamps: number[] = [];
-  private readonly windowMs: number;
-
-  constructor(windowMs = 3_600_000) {
-    this.windowMs = windowMs;
-  }
-
-  private trim(nowMs: number): void {
-    const cutoff = nowMs - this.windowMs;
-    while (this.stamps.length && this.stamps[0] <= cutoff) this.stamps.shift();
-  }
-
-  /** How many have gone out inside the window. */
-  countIn(nowMs: number): number {
-    this.trim(nowMs);
-    return this.stamps.length;
-  }
-
-  hasRoom(nowMs: number, ceiling: number): boolean {
-    return this.countIn(nowMs) < ceiling;
-  }
-
-  record(nowMs: number): void {
-    this.trim(nowMs);
-    this.stamps.push(nowMs);
-  }
-
-  reset(): void {
-    this.stamps = [];
-  }
-}
-
 // ---------------------------------------------------------------------------
 // The channel table
 // ---------------------------------------------------------------------------
@@ -282,7 +226,6 @@ export interface ChannelContext {
   /** Last transmission per channel (ms epoch). */
   lastTransmitAt: Partial<Record<ChannelId, number>>;
   mutedChannels: ReadonlySet<ChannelId>;
-  budget: TransmitBudget;
   /** True when a verified brief exists for an emergency right now. */
   emergencyBriefReady: boolean;
 }
@@ -304,8 +247,6 @@ export function evaluateChannel(id: ChannelId, ctx: ChannelContext): ChannelStat
 
   if (ctx.mutedChannels.has(id)) return shut('muted');
   if (!def.acts.includes(ctx.act)) return shut('act-suppressed');
-  if (!ctx.budget.hasRoom(ctx.nowMs, hourlyCeiling(ctx.density)))
-    return shut('hourly-ceiling');
 
   const last = ctx.lastTransmitAt[id];
   if (last !== undefined && ctx.nowMs - last < def.minIntervalMs) return shut('too-soon');

@@ -16,14 +16,18 @@
  * parked in a slot. If it is not ready when its moment comes, the grammar tier
  * covers and the late one is thrown away — never spoken out of time.
  *
- * TRUTH. Every generated scene goes through the same verifier as everything
- * else, before synthesis, and a scene that reached for anything outside its
- * brief is dropped whole. The prompt is written to make that rare, but the
- * prompt is not the guarantee — the verifier is.
+ * INVENTION. This tier is allowed to make things up, always, on every channel
+ * and in every act. It used to be fenced: a verifier compared every scene to a
+ * list of licensed nouns and figures and dropped the whole thing over a hauler
+ * nobody had named. That cost about nine scenes in ten and bought nothing —
+ * nothing downstream reads comms, and the commander is never addressed by it.
+ * Grounding now comes from volume of real material instead: a scene handed this
+ * system's faction board, signal list and station names writes about this system
+ * because that is what is in front of it.
  */
 import type { ChatMessage } from '../lmstudio.ts';
-import { GROUNDING_RULES } from '../lore.ts';
-import { verifyAgainstBrief, type Brief } from './brief.ts';
+import { UNIVERSE_REGISTER } from '../lore.ts';
+import type { Brief } from './brief.ts';
 import { framingFor, hedgeToken } from './briefs.ts';
 import { MAX_TURNS, validateScene, type Scene, type SceneTurn } from './scenes.ts';
 import { estimateTokens } from '../copilot.ts';
@@ -78,33 +82,46 @@ export interface SceneRequest {
   situation?: string;
   /** Who each speaker IS — name and character, so they stay themselves. */
   cast?: Array<{ ref: string; name: string; character: string; returning: boolean }>;
-  /** Everything true about this system, as plain lines the model may use. */
-  systemFacts?: string;
-  /** Allow plausible invented specifics beyond the observed fact list. */
-  allowFiction?: boolean;
+  /**
+   * What is actually in this system, as a plain briefing.
+   *
+   * Background, never a whitelist. The scene is grounded by having enough real
+   * material in front of it that writing about somewhere else would take more
+   * effort than writing about here — not by a rule forbidding invention.
+   */
+  dossier?: string;
 }
 
 /**
  * The prompt.
  *
- * The fact fence is stated twice — once as rules and once as an explicit list
- * immediately before the instruction to write — because a small model reads
- * the last thing best, and this is the same lesson the news wire already
- * learned the hard way.
+ * Written to ask for one thing — prose in a voice — and to ask for nothing else.
+ *
+ * The version this replaces did the opposite. It stated a whitelist of permitted
+ * names twice, forbade everything outside it, and demanded a `[speakerRef]` tag
+ * on every line so the reply could be parsed. Both were attempts to control the
+ * model with instructions, and both failed in the same direction: the fence
+ * discarded roughly nine scenes in ten for naming a hauler nobody had licensed,
+ * and the tag protocol drifted out of the model's own rolling transcript until
+ * every reply parsed to nothing.
+ *
+ * So structure moved into code — the caller already knows who is on the channel
+ * and in what order, so it assigns the speakers itself — and grounding moved
+ * into data. A model handed a real faction board, a real signal list and real
+ * station names writes about this system because that is what is in front of it,
+ * not because it was told it must.
  */
 export function buildSceneChat(req: SceneRequest, history: ChatMessage[] = []): ChatMessage[] {
   const { brief } = req;
-  const strictFacts = !req.allowFiction;
-  const nouns = brief.nouns.map((n) => n.value);
-  const figures = brief.figures.map((f) => f.value);
   const hedge = hedgeToken(brief);
 
   const roster = req.speakers
-    .map((ref) => {
+    .map((ref, i) => {
       const who = req.cast?.find((c) => c.ref === ref);
-      if (!who) return `- ${ref}: ${req.speakerNames[ref] ?? ref}`;
-      const seen = who.returning ? ' — the commander has heard them before' : '';
-      return `- ${ref}: ${who.name}, who ${who.character}${seen}`;
+      const name = who?.name ?? req.speakerNames[ref] ?? ref;
+      const character = who ? `, who ${who.character}` : '';
+      const seen = who?.returning ? ' — the commander has heard them before' : '';
+      return `${i + 1}. ${name}${character}${seen}`;
     })
     .join('\n');
 
@@ -114,6 +131,8 @@ export function buildSceneChat(req: SceneRequest, history: ChatMessage[] = []): 
         `Frame it as something the speaker last heard — for example "${hedge}".`
       : '';
 
+  const n = req.speakers.length;
+
   return [
     {
       role: 'system',
@@ -121,34 +140,28 @@ export function buildSceneChat(req: SceneRequest, history: ChatMessage[] = []): 
         'You write short overheard radio exchanges in the Elite Dangerous universe. The player ' +
         'is not being addressed — they are a third party listening in on a channel. ' +
         `This channel is ${CHANNEL_STYLE[req.channel]} ` +
-        `${GROUNDING_RULES} ` +
-        'Write natural dialogue FIRST. The fact list is a fence, not a shopping list: it is what ' +
-        'you are ALLOWED to name if a name comes up, not a set of words to fit into sentences. ' +
-        'Most good lines name nothing at all. Never read a fact aloud as though it were a label — ' +
-        'nobody says "the 2401 ls out is fine" or "another Resource Extraction Site [Hazardous]". ' +
-        'If you cannot use a name naturally, do not use it. ' +
-        (strictFacts
-          ? 'The one hard rule: you may not name a faction, station, system, commodity, person or '
-              + 'quantity that is not in the fact list. Write around it or leave it out. '
-          : 'Prefer names and figures from the fact list when they fit naturally; if none fit, '
-              + 'you may invent plausible local specifics. ') +
+        `${UNIVERSE_REGISTER} ` +
+        'Write natural dialogue FIRST. You have a briefing on this system below: it is the world ' +
+        'these people live in, not a script and not a list of words to fit into sentences. Invent ' +
+        'freely on top of it — a ship, a hauler, a cargo, a price, a rumour, whoever they are ' +
+        'waiting on. Nobody is fact-checking a radio channel. What you may not do is sound like ' +
+        'you are reading a label: nobody says "the 2401 ls out is fine" or "another Resource ' +
+        'Extraction Site [Hazardous]". Most good lines name nothing at all. ' +
         'Never address the player, never mention their ship, and never have anyone comment on ' +
         'how vast or beautiful space is. ' +
-        'Write people who belong to THIS system specifically — a hazardous extraction site, a ' +
-        'contested faction board or a security rating changes what these people worry about and ' +
-        'what they complain about. A scene that would work anywhere is a scene that has failed. ' +
+        'Write people who belong to THIS system specifically. A hazardous extraction site, a ' +
+        'contested faction board, a low security rating, a station that is 900 ls out — each one ' +
+        'changes what these people worry about, complain about and take for granted. A scene that ' +
+        'would work in any system is a scene that has failed. ' +
         'Speakers keep their own character across the whole session; write them consistently. ' +
-        'BREVITY IS THE STYLE. Every turn is UNDER TWELVE WORDS. This is radio, not prose: ' +
-        'people say the minimum and stop. "Understood. Just point the way." is a good turn. ' +
+        'BREVITY IS THE STYLE. Every line is UNDER TWELVE WORDS. This is radio, not prose: ' +
+        'people say the minimum and stop. "Understood. Just point the way." is a good line. ' +
         '"The primary feeder route seems clear enough to attempt a lower approach, if that is ' +
         'permissible" is four times too long and nobody talks like that on a working channel. ' +
         'No hedging, no "I believe", no "if that is permissible". ' +
-        `Output ${req.speakers.length} turn(s) and ` +
-        'nothing else — no preamble, no narration, no markdown. ' +
-        'Format each turn as: [speakerRef] the line — for example:\n' +
-        '[control] Hold at the marker, we have an outbound on your vector.\n' +
-        '[hauler] Holding. Again.\n' +
-        'Notice that the example names nothing and is still worth overhearing. ' +
+        `Write exactly ${n} line${n === 1 ? '' : 's'}, one per line, and nothing else — no ` +
+        'preamble, no narration, no speaker names, no labels, no markdown, no quotation marks. ' +
+        'Just the spoken words, one line each. ' +
         'Everything you have already written this session is above. Do not reuse a joke, an image, ' +
         'a complaint or a sentence shape you have used before — write something you have not ' +
         'written yet.',
@@ -157,138 +170,106 @@ export function buildSceneChat(req: SceneRequest, history: ChatMessage[] = []): 
     {
       role: 'user',
       content:
-        (req.systemFacts
-          ? `WHERE THIS IS HAPPENING — background, not a script:\n${req.systemFacts}\n\n`
+        (req.dossier
+          ? `WHERE THIS IS HAPPENING — the world these people live in:\n${req.dossier}\n\n`
           : `Background: ${brief.summary}\n\n`) +
-        (strictFacts
-          ? `THE FENCE — you may not name anything outside this, and you need not use any of it:\n`
-          : `FACTS YOU CAN USE if useful (optional):\n`) +
-        `  names: ${nouns.length ? nouns.join(', ') : '(none — name nothing)'}\n` +
-        `  numbers: ${figures.length ? figures.join(', ') : '(none — state no numbers)'}\n\n` +
-        `SPEAKERS, in order:\n${roster}\n\n` +
+        `WHO IS SPEAKING, in order — your lines will be given to them in this order:\n${roster}\n\n` +
         `THIS SCENE MUST: ${FUNCTION_BRIEF[req.func]}\n` +
         (req.situation ? `WHAT IS HAPPENING: ${req.situation}\n` : '') +
         staleness +
-        (strictFacts
-          ? `\nWrite the ${req.speakers.length} turn(s) now. Name nothing outside the FACTS list.`
-          : `\nWrite the ${req.speakers.length} turn(s) now. Prefer grounded facts, but invention is allowed.`),
+        `\nWrite the ${n} line${n === 1 ? '' : 's'} now. Invent whatever the scene needs.`,
     },
   ];
 }
 
 /**
+ * Strip whatever ornament the model put in front of a line.
+ *
+ * The prompt asks for bare spoken words, and most of the time that is what
+ * comes back. But a model that has written radio dialogue before has seen
+ * screenplay format, and it will sometimes volunteer `[control]` or
+ * `Yusuf Fiore:` or a list bullet out of sheer habit. None of that is trusted —
+ * the speaker is decided by position — so it is simply removed.
+ *
+ * Only ONE leading label is stripped, and only when it is short. A line like
+ * "Control: hold" loses its prefix; "Told you: it never works" does not, because
+ * the guard on length and word count keeps a mid-sentence colon from eating half
+ * the line.
+ */
+function stripOrnament(raw: string): string {
+  let s = raw.trim();
+  // List bullets and dashes, then a bracketed tag of any flavour.
+  s = s.replace(/^[-*•>]+\s*/, '');
+  // A tag can be followed by its own colon — "[control]: Hold" — and leaving it
+  // behind puts a stray colon on the air.
+  s = s.replace(/^[[{(][^\]})\n]{0,40}[\]})]\s*:?\s*/, '');
+  // A bare "Name:" or "ref:" prefix — at most four words before the colon, so
+  // dialogue containing a colon survives intact.
+  s = s.replace(/^([\p{L}][\p{L}\d ._'-]{0,30}?):\s+(?=\S)/u, (m, label: string) =>
+    label.trim().split(/\s+/).length <= 4 ? '' : m,
+  );
+  s = s.replace(/^[-–—]\s*/, '').trim();
+  // Wrapping quotes, only when they wrap the WHOLE line.
+  s = s.replace(/^"([^"]*)"$/, '$1').replace(/^'([^']*)'$/, '$1');
+  return s.trim();
+}
+
+/**
  * Parse the model's reply into turns.
  *
- * Tolerant of the usual small-model noise — a preamble line, markdown bullets,
- * curly brackets instead of square — because rejecting a good scene over a
- * stray asterisk wastes a call. Anything it cannot map to a known speaker is
- * dropped rather than guessed at.
+ * One line in, one turn out, and the speaker comes from the line's POSITION in
+ * the roster the caller already chose. That is the whole design, and it is worth
+ * saying why, because the version this replaces was cleverer and much worse.
+ *
+ * That one asked the model to tag every line `[speakerRef]`, and grew a
+ * five-way alias table — ref, namespace tail, display name, first name, three
+ * bracket flavours — because a small model hits an obscure syntax unreliably.
+ * Anything it could not map was discarded. Worse, the accepted output was
+ * recorded into the rolling transcript with the tags stripped off, so the
+ * model's own visible history taught it that the house style was untagged
+ * prose. It obliged, every reply parsed to zero turns, and because rejected
+ * scenes are never recorded no tagged example could ever get back in. The
+ * failure was absorbing, it persisted to disk, and it survived restarts.
+ *
+ * Positional assignment cannot drift, because there is nothing to drift out of.
+ * `COMMS_SPEAKER_REFS` is call-then-response on every channel and the prompt
+ * hands the model the roster in that order, so line 1 is the caller and line 2
+ * is the reply — which is what these scenes almost always are. The cost is that
+ * one voice can no longer take two consecutive turns. The gain is that a
+ * non-empty reply always produces a playable scene.
  */
-export function parseSceneReply(
-  reply: string,
-  speakers: readonly string[],
-  speakerNames: Readonly<Record<string, string>> = {},
-): SceneTurn[] {
-  const turns: SceneTurn[] = [];
-  const esc = (x: string): string => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+export function parseSceneReply(reply: string, speakers: readonly string[]): SceneTurn[] {
+  if (!speakers.length) return [];
 
-  /**
-   * Every label the model might plausibly use for a speaker.
-   *
-   * Observed live: asked for `crew:ops` it answered `[ops]`, and asked for
-   * `crew:engineering` — displayed as "Halloran" — it answered `[Halloran]`.
-   * Both are entirely reasonable readings of the roster it was handed, and
-   * both used to be discarded as unknown speakers.
-   */
-  const byLower = new Map<string, string>();
-  for (const ref of speakers) {
-    byLower.set(ref.toLowerCase(), ref);
-    // The tail of a namespaced ref: crew:ops -> ops.
-    const tail = ref.split(':').pop();
-    if (tail && tail !== ref) byLower.set(tail.toLowerCase(), ref);
-    // The display name, and its first word: "Priya Achebe" -> "Priya".
-    const name = speakerNames[ref];
-    if (name) {
-      byLower.set(name.toLowerCase(), ref);
-      const first = name.split(/\s+/)[0];
-      if (first && first.length > 2) byLower.set(first.toLowerCase(), ref);
-    }
-  }
-  // Longest first, so `crew:ops` wins over `ops` when both could match.
-  const alts = [...byLower.keys()]
-    .sort((a, b) => b.length - a.length)
-    .map(esc)
-    .join('|');
-  if (!alts) return turns;
+  const lines = reply
+    .replace(/\r\n?/g, '\n')
+    // Emphasis markers carry no meaning here and only confuse the strippers.
+    .replace(/\*\*|__/g, '')
+    .split('\n')
+    .map(stripOrnament)
+    .filter(Boolean);
 
-  const push = (rawRef: string, rawText: string): void => {
-    const ref = byLower.get(rawRef.trim().toLowerCase());
-    if (!ref) return;
-    const text = rawText
-      .trim()
-      // A segment runs up to the NEXT label, so it can end with the bullet or
-      // dash that was introducing that label's line. Clean both ends before
-      // the quote strip, or the trailing quote is no longer at the end.
-      .replace(/^[:\-–—]\s*/, '')
-      .replace(/[\s\-*•]+$/, '')
-      .trim()
-      .replace(/^["']|["']$/g, '')
-      .trim();
-    if (!text) return;
-    turns.push({ speakerRef: ref, text });
-  };
-
-  const clean = reply.replace(/\*\*/g, '');
-
-  // Pass 1: split the WHOLE reply on bracketed labels, wherever they fall.
-  //
-  // Splitting by line was wrong: a model will happily put an entire exchange on
-  // one line — "[crew:ops] Signal is stable. [crew:engineering] Barely." — and
-  // a line-based parser swallows the second label into the first turn's text.
-  // The verifier then flags the stray capital as an unlicensed name and drops
-  // a scene that was perfectly good.
-  const bracketed = new RegExp(`[\\[{(]\\s*(${alts})\\s*[\\]})]`, 'gi');
-  const marks = [...clean.matchAll(bracketed)];
-  if (marks.length) {
-    marks.forEach((m, i) => {
-      const from = m.index! + m[0].length;
-      const to = i + 1 < marks.length ? marks[i + 1].index! : clean.length;
-      push(m[1], clean.slice(from, to));
-    });
-    return turns.slice(0, MAX_TURNS);
-  }
-
-  // Pass 2: no brackets anywhere. Models drop them often, so accept a bare
-  // label at the start of a line — but only a line, because a bare ref mid
-  // sentence is far more likely to be a word than a speaker change.
-  for (const raw of clean.split(/\r?\n/)) {
-    const line = raw.trim().replace(/^[-*•]\s*/, '');
-    if (!line) continue;
-    const bare = new RegExp(`^(${alts})\\s*:?\\s+(.+)$`, 'i');
-    const m = bare.exec(line);
-    if (m) push(m[1], m[2]);
-    if (turns.length >= MAX_TURNS) break;
-  }
-  return turns.slice(0, MAX_TURNS);
+  return lines.slice(0, MAX_TURNS).map((text, i) => ({
+    speakerRef: speakers[i % speakers.length],
+    text,
+  }));
 }
 
 export type SceneRejection =
   | { ok: false; why: 'no-turns' }
-  | { ok: false; why: 'invalid'; detail: string }
-  | { ok: false; why: 'unverified'; offending: string[] };
+  | { ok: false; why: 'invalid'; detail: string };
 
 export type SceneOutcome = { ok: true; scene: Scene } | SceneRejection;
-
-export interface SceneAcceptOptions {
-  /** Disable the brief verifier when fiction is intentionally allowed. */
-  verifyAgainstBrief?: boolean;
-}
 
 /**
  * Turn a model reply into a transmittable scene, or explain why not.
  *
- * Verification runs here by default, before the caller synthesizes anything,
- * so accidental fabrications are dropped before they reach the air.
+ * There is no fact check here and there is not meant to be one. Overheard radio
+ * is the one voice in this app that is allowed to make things up: nothing
+ * downstream reads it, the commander is never addressed by it, and the fence
+ * that used to police it cost roughly nine scenes in ten to catch fabrications
+ * that were never doing any harm. What survives is structural — an empty turn or
+ * an unbound token is a bug, not a fiction.
  */
 export function acceptSceneReply(
   reply: string,
@@ -296,9 +277,8 @@ export function acceptSceneReply(
   id: string,
   ttlMs: number,
   arcId?: string,
-  options: SceneAcceptOptions = {},
 ): SceneOutcome {
-  const turns = parseSceneReply(reply, req.speakers, req.speakerNames);
+  const turns = parseSceneReply(reply, req.speakers);
   if (!turns.length) return { ok: false, why: 'no-turns' };
 
   const scene: Scene = {
@@ -314,12 +294,6 @@ export function acceptSceneReply(
 
   const structural = validateScene(scene);
   if (structural) return { ok: false, why: 'invalid', detail: structural };
-
-  if (options.verifyAgainstBrief !== false) {
-    const text = turns.map((t) => t.text).join(' ');
-    const verdict = verifyAgainstBrief(text, req.brief);
-    if (!verdict.ok) return { ok: false, why: 'unverified', offending: verdict.offending };
-  }
 
   return { ok: true, scene };
 }

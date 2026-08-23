@@ -13,14 +13,12 @@ import {
   MIN_AUDIBLE_STRENGTH,
   STATION_FULL_LS,
   STATION_RANGE_LS,
-  TransmitBudget,
   chatterBaseGapMs,
   chatterGapMs,
   degradeFor,
   dueToTransmit,
   evaluateAll,
   evaluateChannel,
-  hourlyCeiling,
   selectChannel,
   signalStrength,
   type ChannelContext,
@@ -44,7 +42,6 @@ function ctx(over: Partial<ChannelContext> = {}): ChannelContext {
     hasCrew: true,
     lastTransmitAt: {},
     mutedChannels: new Set<ChannelId>(),
-    budget: new TransmitBudget(),
     emergencyBriefReady: false,
     ...over,
   };
@@ -269,48 +266,6 @@ test('dueToTransmit waits out the gap', () => {
 });
 
 // ---------------------------------------------------------------------------
-// The hourly ceiling
-// ---------------------------------------------------------------------------
-
-test('the hourly ceiling holds regardless of how many channels are open', () => {
-  const budget = new TransmitBudget();
-  const ceiling = hourlyCeiling('normal');
-  for (let i = 0; i < ceiling; i++) budget.record(NOW + i);
-
-  // BUILDING so that every channel — emergency included — clears the act gate
-  // and the ceiling is genuinely the thing being tested.
-  const c = ctx({
-    budget,
-    nowMs: NOW + ceiling,
-    act: 'BUILDING',
-    emergencyBriefReady: true,
-    onFoot: true,
-    carrierPresent: true,
-  });
-  for (const id of CHANNEL_IDS) {
-    const s = evaluateChannel(id, c);
-    assert.equal(s.open, false, `${id} should be capped`);
-    assert.equal(s.open === false && s.reason, 'hourly-ceiling');
-  }
-  assert.equal(selectChannel(c, () => 0.5), null);
-});
-
-test('the ceiling window rolls', () => {
-  const budget = new TransmitBudget();
-  const ceiling = hourlyCeiling('normal');
-  for (let i = 0; i < ceiling; i++) budget.record(NOW + i);
-  assert.equal(budget.hasRoom(NOW + ceiling, ceiling), false);
-
-  // An hour and a bit later, the old stamps have aged out.
-  assert.equal(budget.hasRoom(NOW + 3_600_001 + ceiling, ceiling), true);
-});
-
-test('a chattier setting gets a bigger budget', () => {
-  assert.ok(hourlyCeiling('bustling') > hourlyCeiling('normal'));
-  assert.ok(hourlyCeiling('normal') > hourlyCeiling('sparse'));
-});
-
-// ---------------------------------------------------------------------------
 // Selection
 // ---------------------------------------------------------------------------
 
@@ -381,17 +336,12 @@ test('density is its own knob, and busier settings really are busier', () => {
   assert.ok(chatterBaseGapMs('bustling') < chatterBaseGapMs('busy'));
   assert.ok(chatterBaseGapMs('busy') < chatterBaseGapMs('normal'));
   assert.ok(chatterBaseGapMs('normal') < chatterBaseGapMs('sparse'));
-
-  assert.ok(hourlyCeiling('bustling') > hourlyCeiling('busy'));
-  assert.ok(hourlyCeiling('busy') > hourlyCeiling('normal'));
-  assert.ok(hourlyCeiling('normal') > hourlyCeiling('sparse'));
 });
 
 test('the default density can actually fill a system with traffic', () => {
   // A populated system should sound populated: at least one transmission a
   // minute is reachable at 'busy', which is the shipped default.
   assert.ok(chatterGapMs('busy', 0) <= 30_000, 'busy should allow ~2/minute when calm');
-  assert.ok(hourlyCeiling('busy') >= 60, 'and the ceiling must not undo it');
 });
 
 test('pressure thins the channel without killing it', () => {
@@ -405,14 +355,12 @@ test('pressure thins the channel without killing it', () => {
 });
 
 test('every channel can still get a word in at the default density', () => {
-  // A per-channel minimum longer than the hourly budget allows would make a
-  // channel unreachable in practice however open it is.
-  const perHour = 3_600_000 / hourlyCeiling('busy');
+  // A per-channel minimum longer than an hour would make that channel
+  // unreachable in practice however open it is.
   for (const id of CHANNEL_IDS) {
     assert.ok(
       CHANNELS[id].minIntervalMs < 3_600_000,
       `${id} min interval exceeds an hour`,
     );
   }
-  assert.ok(perHour > 0);
 });

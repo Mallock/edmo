@@ -96,6 +96,21 @@ export function sceneText(scene: Scene): string {
 }
 
 /**
+ * The scene as the model was asked to write it — one line per turn.
+ *
+ * Separate from `sceneText` on purpose, and the distinction is load-bearing.
+ * `sceneText` flattens to a single string for comparison and display, which is
+ * right for those jobs and catastrophic for the rolling transcript: replaying an
+ * accepted scene back to the model in a shape it was never asked to produce
+ * teaches it the wrong output format, and the drift is one-way because rejected
+ * scenes are never recorded. This is the shape the prompt asks for, so recording
+ * it reinforces the format instead of eroding it.
+ */
+export function sceneTranscript(scene: Scene): string {
+  return scene.turns.map((t) => t.text).join('\n');
+}
+
+/**
  * Which dramatic functions an act will accept.
  *
  * CRISIS accepts nothing: it is defined by removal (design D10). AFTERMATH is

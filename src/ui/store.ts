@@ -171,9 +171,19 @@ import {
   geographyBrief,
   systemBrief,
 } from '../engine/chatter/briefs.ts';
-import type { Brief, FactSource } from '../engine/chatter/brief.ts';
+import { textureBrief, type Brief, type FactSource } from '../engine/chatter/brief.ts';
+import { chooseFunction, nextBeatFor, pickBrief } from '../engine/chatter/director.ts';
 import type { ChannelState } from '../engine/chatter/channels.ts';
-import type { Act, ChannelId } from '../engine/chatter/types.ts';
+import { sceneTranscript } from '../engine/chatter/scenes.ts';
+import { buildDossier } from '../engine/chatter/dossier.ts';
+import {
+  SITUATIONS,
+  ChatterConversation,
+  acceptSceneReply,
+  buildSceneChat,
+  type SceneRequest,
+} from '../engine/chatter/llm.ts';
+import type { Act, ChannelId, DramaticFunction } from '../engine/chatter/types.ts';
 import {
   GLANCE_FORMAT,
   SCENE_FORMAT,
@@ -432,8 +442,23 @@ export interface CommsView {
     source: AppSettings['comms']['source'];
     ready: number;
     pending: number;
-    generated: number;
+    /**
+     * Transmissions put on the air — every tier, not just the writer.
+     *
+     * Named for what it counts. It used to be labelled "generated" in the
+     * panel next to the drop total, which invited reading the pair as an
+     * accept rate; they are not the same denominator and never were.
+     */
+    spoken: number;
     rejected: number;
+    /**
+     * Drops broken out by reason: `no-turns`, `invalid`, `late`, `error`.
+     *
+     * A single total cannot tell a writer that is timing out from one whose
+     * replies will not parse, and those want opposite fixes. Not having this
+     * split is what let a 90% drop rate sit undiagnosed.
+     */
+    dropReasons: Record<string, number>;
     quiet: string;
     lastGenAt: number;
     lastGenOutcome: string;
@@ -442,7 +467,6 @@ export interface CommsView {
     at: number;
     channel: ChannelId;
     turns: Array<{ speaker: string; text: string; returning: boolean }>;
-    facts: Array<{ value: string; source: string }>;
   }>;
 }
 
@@ -578,15 +602,25 @@ function friendlyTool(name?: string): string {
 }
 
 /**
- * Temporary safety rail while the old prewrite path is rebuilt.
+ * Respect the source setting exactly as selected in Settings.
  *
- * `llm` mode used to rely on ahead-of-time scene writing. With that path
- * missing, strict llm-only would be total silence. Keep the channel alive by
- * transparently using hybrid fallback for now.
+ * 'AI only' must never silently route through templates: that makes the
+ * panel claim one thing while the radio does another, and repeated template
+ * lines become unavoidable in a mode that explicitly asked to avoid them.
  */
 function effectiveCommsSource(source: AppSettings['comms']['source']): ChatterSource {
-  return source === 'llm' ? 'hybrid' : source;
+  return source;
 }
+
+const COMMS_SPEAKER_REFS: Readonly<Record<ChannelId, readonly string[]>> = {
+  STATION: ['control', 'ship'],
+  LOCAL: ['hauler', 'hauler2'],
+  CREW: ['crew:ops', 'crew:engineering'],
+  DEEP: ['relay', 'hauler'],
+  EMERGENCY: ['distress', 'rescue'],
+  CARRIER: ['carrier', 'hauler'],
+  CONCOURSE: ['pa', 'traveller'],
+};
 
 export class AppCore {
   private sm = new MissionStateManager();
@@ -1011,6 +1045,27 @@ export class AppCore {
     }
     return e;
   })();
+  /**
+   * The writer's rolling transcript.
+   *
+   * v2, and the bump is the migration. v1 holds assistant turns recorded from
+   * `sceneText` — the whole scene flattened onto one line with the speaker tags
+   * stripped — written under a prompt that demanded `[speakerRef]` labels. Any
+   * installation carrying one is sitting in a trap: the model reads its own
+   * history, concludes the house style has no labels, writes none, and every
+   * reply parses to nothing. Rejected scenes are never recorded, so no labelled
+   * example can get back in and the state never recovers. Starting clean is the
+   * only fix, and the new format cannot re-enter it.
+   */
+  private commsConversation = (() => {
+    const convo = new ChatterConversation();
+    try {
+      convo.load(JSON.parse(localStorage.getItem('edmo.comms.convo.v2') ?? '[]'));
+    } catch {
+      /* start with an empty transcript */
+    }
+    return convo;
+  })();
   private commsChannels: ChannelState[] = [];
   private commsLastPerChannel: Partial<Record<ChannelId, number>> = {};
   private commsLog: CommsView['log'] = (() => {
@@ -1026,13 +1081,21 @@ export class AppCore {
     source: this.settings.comms.source,
     ready: 0,
     pending: 0,
-    generated: 0,
+    spoken: 0,
     rejected: 0,
+    dropReasons: {},
     quiet: 'not-due',
     lastGenAt: 0,
     lastGenOutcome: 'waiting',
   };
   private commsDirty = false;
+  private commsWriteInFlight = false;
+
+  /** Count a dropped generation against both the total and its reason. */
+  private noteCommsDrop(reason: string): void {
+    this.commsDiag.rejected += 1;
+    this.commsDiag.dropReasons[reason] = (this.commsDiag.dropReasons[reason] ?? 0) + 1;
+  }
 
   /** Unused fresh comms, marked consumed on take — each line rides once. */
   private freshComms(): string[] {
@@ -1591,6 +1654,7 @@ export class AppCore {
     this.commsChannels = [];
     this.commsLastPerChannel = {};
     this.commsDiag.quiet = 'not-due';
+    this.commsWriteInFlight = false;
     if (!this.settings.comms.persistLog) this.commsLog = [];
     this.deathClockSweepDone = false; // directory may have changed — sweep again
     this.deathClockFssHinted = false;
@@ -1752,6 +1816,7 @@ export class AppCore {
         if (ev.event === 'Shutdown' && this.settings.saga.enabled) {
           setTimeout(() => this.tellSaga(), 3000);
         }
+        this.maybeAutoView(ev);
       }
     }
     if (live) {
@@ -1770,6 +1835,38 @@ export class AppCore {
     this.persistComms();
     this.persistTrackers();
     this.emit();
+  }
+
+  /**
+   * Let the game move the panel.
+   *
+   * Two switches, both earned by watching the same thing happen over and over:
+   * a commander docks at a build site, opens the commodities board, and then
+   * reaches for the mouse to find out what the site still wants — and a
+   * commander undocks and reaches for the mouse again to get the map back. The
+   * game already said both of those things out loud in the journal.
+   *
+   * Guarded by whether the target tab RENDERS, not by whether the event fired.
+   * `architectView()` is null without a depot and `orreryView()` is null for a
+   * system with fewer than two placeable bodies, and those are exactly the
+   * conditions the tab strip itself uses — so this can never switch to a panel
+   * that would come up blank. Switching away from a tab the commander is
+   * already on is skipped too, because a Market event fires every time a board
+   * is opened and re-entering the architect tab re-runs its price scan.
+   *
+   * Only ever called for LIVE events after bootstrap. A replay of last night's
+   * session must not end boot staring at whatever panel last night's final
+   * event implied.
+   */
+  private maybeAutoView(ev: JournalEvent): void {
+    if (!this.settings.hud.autoView) return;
+    if (ev.event === 'Market') {
+      if (this.view !== 'architect' && this.architectView()) this.setView('architect');
+      return;
+    }
+    if (ev.event === 'Undocked') {
+      if (this.view !== 'orrery' && this.orreryView()) this.setView('orrery');
+    }
   }
 
   /** Persist the material + exploration ledgers to localStorage when changed. */
@@ -3361,6 +3458,8 @@ export class AppCore {
   }
 
   private commsView(): CommsView {
+    const ready = this.comms.readyCount();
+    const pending = this.commsPendingCount();
     return {
       act: this.comms.acts.current,
       channels: this.commsChannels,
@@ -3369,37 +3468,11 @@ export class AppCore {
       diag: {
         ...this.commsDiag,
         source: this.settings.comms.source,
-        ready: this.comms.readyCount(),
-        pending: this.comms.readyCount(),
+        ready,
+        pending,
       },
       log: this.commsLog,
     };
-  }
-
-  private commsSourceLabel(source: FactSource): string {
-    switch (source.kind) {
-      case 'market':
-        return source.station;
-      case 'faction':
-      case 'geography':
-        return source.system;
-      case 'construction':
-        return source.site;
-      case 'event':
-        return 'journal event';
-      case 'cast':
-        return 'cast memory';
-      default:
-        return source.kind;
-    }
-  }
-
-  private commsFacts(brief: Brief): Array<{ value: string; source: string }> {
-    const out: Array<{ value: string; source: string }> = [];
-    for (const n of brief.nouns) out.push({ value: n.value, source: this.commsSourceLabel(n.source) });
-    for (const f of brief.figures)
-      out.push({ value: f.value, source: this.commsSourceLabel(f.source) });
-    return out.slice(0, 8);
   }
 
   private commsBriefs(nowMs: number): Brief[] {
@@ -3461,6 +3534,278 @@ export class AppCore {
     };
   }
 
+  private commsPendingCount(): number {
+    return Math.max(this.comms.readyCount(), this.comms.sceneSlots.size);
+  }
+
+  private commsSlotTtlMs(channel: ChannelId): number {
+    switch (channel) {
+      case 'STATION':
+        return 45_000;
+      case 'EMERGENCY':
+        return 20_000;
+      case 'LOCAL':
+        return 90_000;
+      default:
+        return 150_000;
+    }
+  }
+
+  private commsRoleDisplay(ref: string): string {
+    if (ref === 'control') return this.sm.location.station ?? `${this.sm.location.system} Control`;
+    if (ref === 'ship') return 'Inbound Traffic';
+    if (ref === 'hauler') return 'Yusuf Fiore';
+    if (ref === 'hauler2') return 'Dmitri Petrov';
+    if (ref === 'carrier') return this.sm.location.station ?? 'Carrier Operations';
+    if (ref === 'pa') return this.sm.location.station ?? 'Concourse PA';
+    if (ref === 'crew:ops') return 'Ops';
+    if (ref === 'crew:engineering') return 'Engineering';
+    if (ref === 'distress') return 'Distress Caller';
+    if (ref === 'rescue') return 'Rescue Control';
+    if (ref === 'relay') return 'Deep Relay';
+    if (ref === 'traveller') return 'Station Traveller';
+    const fallback = ref.split(':').pop() ?? ref;
+    return fallback.replace(/^./, (m) => m.toUpperCase());
+  }
+
+  private commsSpeakerSpec(channel: ChannelId): {
+    speakers: string[];
+    speakerNames: Record<string, string>;
+  } {
+    const refs = [...(COMMS_SPEAKER_REFS[channel] ?? ['speaker', 'speaker2'])];
+    const seen = new Set<string>();
+    const names: Record<string, string> = {};
+    const known = this.comms.cast
+      .forSystem(this.sm.location.system)
+      .filter((m) => m.channel === channel);
+
+    for (const ref of refs) {
+      const remembered =
+        known.find((m) => m.role === ref && !seen.has(m.name)) ??
+        known.find((m) => !seen.has(m.name));
+      const name = remembered?.name ?? this.commsRoleDisplay(ref);
+      names[ref] = name;
+      seen.add(name);
+    }
+    return { speakers: refs, speakerNames: names };
+  }
+
+  private pickCommsSituation(channel: ChannelId): string | undefined {
+    const pool = SITUATIONS[channel];
+    if (!pool?.length) return undefined;
+    const ranked = [...pool].sort((a, b) => {
+      const ak = `situation:${channel}:${a}`;
+      const bk = `situation:${channel}:${b}`;
+      return this.comms.guard.templateAge(ak) - this.comms.guard.templateAge(bk);
+    });
+    const cold = ranked.slice(0, Math.min(3, ranked.length));
+    const chosen = cold[Math.floor(Math.random() * cold.length) % cold.length];
+    this.comms.guard.noteUse(`situation:${channel}:${chosen}`);
+    return chosen;
+  }
+
+  /** Live state, shaped for the comms writer's briefing. See dossier.ts. */
+  private commsDossier(briefs: readonly Brief[]): string {
+    const st = this.statusTracker.current;
+    return buildDossier({
+      system: this.sm.location.system,
+      intel: this.sm.getState().system,
+      docked: this.sm.docked,
+      stationName: this.sm.location.station ?? null,
+      onFoot: !!st?.onFoot,
+      supercruise: !!st?.supercruise,
+      portSeparationLs: this.commsContext().portSeparationLs,
+      extra: briefs.map((b) => b.summary),
+    });
+  }
+
+  private commsWriteFunction(
+    act: Act,
+    channel: ChannelId,
+  ): { func: DramaticFunction; arcId?: string } | null {
+    const due = this.comms.payoffDue(act).find((p) => p.channel === channel);
+    if (due) {
+      const arc = this.comms.cast.openArcs().find(({ arc: a }) => a.id === due.arcId)?.arc;
+      const func = arc
+        ? nextBeatFor(arc.beats.map((b) => b.func))
+        : act === 'AFTERMATH'
+          ? 'aftermath'
+          : 'reverse';
+      return { func, arcId: due.arcId };
+    }
+
+    const openArcs = this.comms.cast
+      .openArcs()
+      .filter(({ member }) => member.channel === channel)
+      .map(({ arc }) => ({ id: arc.id, beats: arc.beats }));
+    const picked = chooseFunction(act, openArcs, Math.random);
+    return picked ? { func: picked.func, arcId: picked.arcId } : null;
+  }
+
+  private commsWriteBrief(briefs: readonly Brief[], channel: ChannelId, arcId?: string): Brief {
+    if (arcId) {
+      const arc = this.comms.cast.openArcs().find(({ arc: a }) => a.id === arcId)?.arc;
+      const matched = arc ? briefs.find((b) => b.subjectKey === arc.subjectKey) : null;
+      if (matched) return matched;
+    }
+    return pickBrief(briefs, channel, this.comms.guard) ?? textureBrief(`t:${channel}:${Math.floor(Date.now() / 60_000)}`);
+  }
+
+  private maybeWriteComms(nowMs: number, act: Act, channels: ChannelState[], briefs: readonly Brief[]): void {
+    if (this.settings.comms.source === 'grammar') return;
+    if (this.commsWriteInFlight) return;
+    if (!this.lmOk || !this.activeModel()) return;
+    if (this.engineBusy()) return;
+
+    const open = channels.filter((c): c is Extract<ChannelState, { open: true }> => c.open);
+    if (!open.length) return;
+
+    const slots = this.comms.sceneSlots;
+    const withRoom = open.filter((c) => !slots.full(`channel:${c.id}`));
+    if (!withRoom.length) return;
+
+    const due = this.comms.payoffDue(act).find((p) => withRoom.some((c) => c.id === p.channel));
+    const target = due
+      ? withRoom.find((c) => c.id === due.channel)!
+      : [...withRoom].sort(
+          (a, b) => slots.count(`channel:${a.id}`) - slots.count(`channel:${b.id}`),
+        )[0];
+
+    const choice = this.commsWriteFunction(act, target.id);
+    if (!choice) return;
+
+    const key = `channel:${target.id}`;
+    const ttlMs = this.commsSlotTtlMs(target.id);
+    const before = slots.count(key);
+    slots.reserve(key, nowMs + ttlMs);
+    if (slots.count(key) <= before) return;
+
+    const brief = this.commsWriteBrief(briefs, target.id, choice.arcId);
+    const { speakers, speakerNames } = this.commsSpeakerSpec(target.id);
+    const situation = this.pickCommsSituation(target.id);
+
+    this.commsWriteInFlight = true;
+    this.commsDiag.lastGenOutcome = `writing ${target.id.toLowerCase()} sceneâ€¦`;
+    this.commsDiag.ready = this.comms.readyCount();
+    this.commsDiag.pending = this.commsPendingCount();
+    this.commsDirty = true;
+    this.emit();
+
+    void this.runCommsWrite({
+      key,
+      channel: target.id,
+      func: choice.func,
+      arcId: choice.arcId,
+      act,
+      brief,
+      speakers,
+      speakerNames,
+      situation,
+      ttlMs,
+      dossier: this.commsDossier(briefs),
+    });
+  }
+
+  private async runCommsWrite(plan: {
+    key: string;
+    channel: ChannelId;
+    func: DramaticFunction;
+    arcId?: string;
+    act: Act;
+    brief: Brief;
+    speakers: string[];
+    speakerNames: Record<string, string>;
+    situation?: string;
+    ttlMs: number;
+    dossier: string;
+  }): Promise<void> {
+    try {
+      const model = this.activeModel();
+      if (!this.lmOk || !model) {
+        this.comms.sceneSlots.fulfil(plan.key, null, Date.now());
+        this.commsDiag.lastGenOutcome = 'writer idle â€” no active model';
+        return;
+      }
+
+      const req: SceneRequest = {
+        channel: plan.channel,
+        func: plan.func,
+        act: plan.act,
+        brief: plan.brief,
+        speakers: plan.speakers,
+        speakerNames: plan.speakerNames,
+        situation: plan.situation,
+        dossier: plan.dossier,
+      };
+
+      const raw = await llmQuick({
+        ...this.lmTarget(),
+        model,
+        messages: buildSceneChat(req, this.commsConversation.history()) as unknown as ChatMessageWire[],
+        // A ceiling, not a spend: a scene is two lines and stops at ~20 tokens.
+        //
+        // It sat at 220, which is generous for the answer and nowhere near
+        // enough for a model that reasons first. gemma-4-e2b spends 390-480
+        // tokens thinking, so every single request hit the cap mid-thought,
+        // llama.cpp returned the reasoning in `reasoning_content` and an EMPTY
+        // `content`, and the writer scored it `no-turns` — 49 drops, 0 scenes,
+        // and nothing in the parser could have saved it because there was
+        // nothing to parse. Thinking is now off for this path (see below), but
+        // the headroom stays: GLM's reasoning cannot be switched off at all
+        // without crashing its driver, and it would starve here identically.
+        maxTokens: 700,
+        temperature: Math.max(0.4, Math.min(1.2, this.settings.lm.temperature)),
+        timeoutSecs: 25,
+        // 'comms', not 'chatter'. Two different jobs: an operator beat reasons
+        // over an arc and a mood and is better for it, a radio exchange is
+        // twelve words and measured 12x faster without it, at equal quality.
+        noThinking: suppressThinkingFor(profileFor(model), 'comms'),
+        strict: true,
+      });
+
+      const accepted = acceptSceneReply(
+        raw,
+        req,
+        `comms:${plan.channel}:${Date.now()}`,
+        plan.ttlMs,
+        plan.arcId,
+      );
+
+      if (!accepted.ok) {
+        const why = accepted.why === 'invalid' ? accepted.detail : accepted.why;
+        this.noteCommsDrop(accepted.why);
+        this.commsDiag.lastGenOutcome = `dropped ${plan.channel.toLowerCase()} (${String(why).slice(0, 60)})`;
+        this.comms.sceneSlots.fulfil(plan.key, null, Date.now());
+        return;
+      }
+
+      const kept = this.comms.sceneSlots.fulfil(plan.key, accepted.scene, Date.now());
+      if (!kept) {
+        this.noteCommsDrop('late');
+        this.commsDiag.lastGenOutcome = `dropped ${plan.channel.toLowerCase()} (late)`;
+        return;
+      }
+
+      this.commsConversation.record(plan.channel, plan.situation, sceneTranscript(accepted.scene));
+      this.commsDiag.lastGenAt = Date.now();
+      this.commsDiag.lastGenOutcome = `wrote a ${plan.channel.toLowerCase()} scene`;
+    } catch (e) {
+      this.noteCommsDrop('error');
+      const msg = String(e).replace(/\s+/g, ' ').trim().slice(0, 90);
+      this.commsDiag.lastGenOutcome = msg
+        ? `writer error â€” ${msg}`
+        : 'writer error';
+      this.comms.sceneSlots.fulfil(plan.key, null, Date.now());
+    } finally {
+      this.commsWriteInFlight = false;
+      this.commsDiag.ready = this.comms.readyCount();
+      this.commsDiag.pending = this.commsPendingCount();
+      this.commsDirty = true;
+      this.persistComms();
+      this.emit();
+    }
+  }
+
   private speakComms(t: Transmission): void {
     const now = Date.now();
     const turns: Array<{ speaker: string; text: string; returning: boolean }> = [];
@@ -3470,7 +3815,7 @@ export class AppCore {
       const cast = t.cast[i] ?? t.cast[0];
       const speaker = cast?.name ?? turn.speakerRef;
       turns.push({ speaker, text: turn.text, returning: cast?.returning ?? false });
-      this.speaker.speak(`${speaker}. ${turn.text}`, cast?.persona?.voice || null, {
+      this.speaker.speak(turn.text, cast?.persona?.voice || null, {
         bus: 'AMBIENT',
         channel: t.channel,
         profile: t.profile,
@@ -3485,7 +3830,6 @@ export class AppCore {
         at: now,
         channel: t.channel,
         turns,
-        facts: this.commsFacts(t.scene.brief),
       },
       ...this.commsLog,
     ].slice(0, 40);
@@ -3500,9 +3844,7 @@ export class AppCore {
         new Date(now).toISOString(),
       );
     }
-    this.commsDiag.generated += 1;
-    this.commsDiag.lastGenAt = now;
-    this.commsDiag.lastGenOutcome = `wrote a ${t.channel} scene`;
+    this.commsDiag.spoken += 1;
     this.commsDirty = true;
   }
 
@@ -3512,9 +3854,7 @@ export class AppCore {
 
     const now = Date.now();
     this.comms.setSource(effectiveCommsSource(this.settings.comms.source));
-    if (this.settings.comms.source === 'llm') {
-      this.commsDiag.lastGenOutcome = 'llm-only prewrite is unavailable; using template fallback';
-    }
+    const briefs = this.commsBriefs(now);
     const r = this.comms.tick({
       nowMs: now,
       pressure: this.copilotPressure(),
@@ -3522,7 +3862,7 @@ export class AppCore {
       crisisResolvedAt: null,
       density: this.settings.comms.density,
       system: this.sm.location.system,
-      briefs: this.commsBriefs(now),
+      briefs,
       context: this.commsContext(),
       installedVoices: this.piperVoiceList,
     });
@@ -3530,8 +3870,10 @@ export class AppCore {
     this.commsChannels = r.channels;
     this.commsDiag.quiet = r.transmission ? '' : (r.quietBecause ?? 'not-due');
     this.commsDiag.ready = this.comms.readyCount();
-    this.commsDiag.pending = this.comms.readyCount();
+    this.commsDiag.pending = this.commsPendingCount();
     if (r.transmission) this.speakComms(r.transmission);
+
+    this.maybeWriteComms(now, r.act, r.channels, briefs);
 
     this.comms.maintain(now);
     this.commsDirty = true;
@@ -3542,6 +3884,8 @@ export class AppCore {
     this.commsDirty = false;
     try {
       localStorage.setItem('edmo.comms.v1', JSON.stringify(this.comms.toJSON()));
+      localStorage.setItem('edmo.comms.convo.v2', JSON.stringify(this.commsConversation.toJSON()));
+      localStorage.removeItem('edmo.comms.convo.v1');
       if (this.settings.comms.persistLog) {
         localStorage.setItem('edmo.commslog.v1', JSON.stringify(this.commsLog));
       } else {
@@ -6761,9 +7105,6 @@ ${missionContext(mission, state)}`);
     if (prev.comms.source !== next.comms.source) {
       this.comms.setSource(effectiveCommsSource(next.comms.source));
       this.commsDiag.source = next.comms.source;
-      if (next.comms.source === 'llm') {
-        this.commsDiag.lastGenOutcome = 'llm-only prewrite is unavailable; using template fallback';
-      }
       this.commsDirty = true;
     }
     const prevMuted = new Set(prev.comms.mutedChannels as ChannelId[]);

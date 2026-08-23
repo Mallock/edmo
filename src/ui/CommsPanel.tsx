@@ -25,6 +25,17 @@ const ago = (atMs: number, nowMs: number): string => {
   return mins < 60 ? `${mins}m` : `${Math.floor(mins / 60)}h`;
 };
 
+/**
+ * The reason accounting for the most drops, as a short parenthetical.
+ *
+ * A bare drop total is not actionable: a writer that cannot reach the model and
+ * one whose replies will not parse look identical, and they want opposite fixes.
+ */
+const dominantDrop = (reasons: Record<string, number>): string => {
+  const top = Object.entries(reasons).sort((a, b) => b[1] - a[1])[0];
+  return top ? ` (mostly ${top[0]})` : '';
+};
+
 const quietLabel = (raw: string): string => {
   switch (raw) {
     case 'not-due':
@@ -99,28 +110,15 @@ function Entry({
   entry: CommsView['log'][number];
   nowMs: number;
 }) {
-  // One line per distinct fact. The same source repeated eleven times buries
-  // the transmission it is supposed to be annotating.
-  const seen = new Set<string>();
-  const facts = entry.facts.filter((f) => {
-    const k = `${f.value}|${f.source}`;
-    if (seen.has(k)) return false;
-    seen.add(k);
-    return true;
-  });
-  const intel = facts.length > 0;
+  // No fact chips. They annotated each transmission with the fence it was
+  // written against, and with the fence gone they had nothing to show but the
+  // brief's own subject repeated back — "HIP 71120 — HIP 71120". Comms is
+  // overheard radio now: it is allowed to invent, so there is nothing here to
+  // vouch for and no honest way to mark some lines as sourced.
   return (
-    <li className={`comms-entry${intel ? ' intel' : ''}`}>
+    <li className="comms-entry">
       <div className="comms-entry-head">
         <span className="comms-entry-channel">{entry.channel}</span>
-        {intel && (
-          <span
-            className="comms-intel-flag"
-            title={facts.map((f) => `${f.value} — ${f.source}`).join('\n')}
-          >
-            reported
-          </span>
-        )}
         <span className="comms-entry-age">{ago(entry.at, nowMs)}</span>
       </div>
       {entry.turns.map((turn, i) => (
@@ -135,15 +133,6 @@ function Entry({
           <span className="comms-line">{turn.text}</span>
         </div>
       ))}
-      {intel && (
-        <ul className="comms-facts">
-          {facts.slice(0, 4).map((f, i) => (
-            <li key={i}>
-              <b>{f.value}</b> — {f.source}
-            </li>
-          ))}
-        </ul>
-      )}
     </li>
   );
 }
@@ -189,8 +178,8 @@ export function CommsPanel({
         <span>{view.diag.ready} ready now</span>
         <span>{Math.max(0, view.diag.pending - view.diag.ready)} writing</span>
         <span>
-          {view.diag.generated} generated total
-          {view.diag.rejected > 0 && ` · ${view.diag.rejected} dropped`}
+          {view.diag.spoken} on the air
+          {view.diag.rejected > 0 && ` · ${view.diag.rejected} dropped${dominantDrop(view.diag.dropReasons)}`}
         </span>
         {view.diag.quiet && <span className="comms-diag-why">{quietLabel(view.diag.quiet)}</span>}
         {view.diag.lastGenAt > 0 && (

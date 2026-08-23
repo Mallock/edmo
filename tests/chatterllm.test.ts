@@ -1,9 +1,14 @@
 /**
- * The LLM tier: prompt, parse, verify, and the pre-render slots.
+ * The LLM tier: prompt, parse, and the pre-render slots.
  *
- * The assertion that carries the most weight is that verification happens
- * BEFORE anything is handed back as transmittable — a fabricated figure must
- * never reach the point where somebody synthesizes it.
+ * The assertion that carries the most weight is that a non-empty reply always
+ * yields a playable scene. The tier this replaces asked the model for a
+ * `[speakerRef]` tag on every line and discarded anything it could not map, and
+ * that contract failed in a way no single test would have caught: accepted
+ * output was replayed into the model's own transcript with the tags stripped,
+ * the model learned the house style had no tags, and every subsequent reply
+ * parsed to nothing. So the tests here pin BOTH halves — that the parser needs
+ * no tags, and that what gets recorded is the shape the prompt asks for.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -17,7 +22,7 @@ import {
   type SceneRequest,
 } from '../src/engine/chatter/llm.ts';
 import { FRESH_MAX_MS, textureBrief, type Brief } from '../src/engine/chatter/brief.ts';
-import type { Scene } from '../src/engine/chatter/scenes.ts';
+import { sceneTranscript, type Scene } from '../src/engine/chatter/scenes.ts';
 
 const NOW = 1_700_000_000_000;
 
@@ -48,37 +53,72 @@ const req = (over: Partial<SceneRequest> = {}): SceneRequest => ({
 // The prompt
 // ---------------------------------------------------------------------------
 
-test('the prompt states the fact fence explicitly', () => {
-  const chat = buildSceneChat(req());
-  const user = chat[1].content;
-  assert.match(user, /Bertrandite/);
-  assert.match(user, /Hurston Ring/);
-  assert.match(user, /380/);
-  assert.match(user, /names:/);
-  assert.match(user, /numbers:/);
-  // The fence is framed as a limit, not a word bank — a small model handed a
-  // list of nouns splices them into sentences instead of writing dialogue.
-  assert.match(user, /you need not use any of it/);
+test('no channel, act or function reintroduces a fence', () => {
+  // The fence cost roughly nine scenes in ten and caught fabrications that were
+  // never doing any harm. Nothing downstream reads comms, so there is nothing to
+  // protect — this asserts the whole vocabulary of restriction is gone, on every
+  // combination, not just the one the last edit happened to look at.
+  const channels = ['STATION', 'LOCAL', 'CREW', 'DEEP', 'EMERGENCY', 'CARRIER', 'CONCOURSE'] as const;
+  const funcs = ['establish', 'complicate', 'reverse', 'aftermath', 'texture'] as const;
+  const acts = ['QUIET', 'BUILDING', 'CRISIS', 'AFTERMATH'] as const;
+
+  for (const channel of channels) {
+    for (const func of funcs) {
+      for (const act of acts) {
+        const all = buildSceneChat(req({ channel, func, act })).map((m) => m.content).join('\n');
+        const where = `${channel}/${func}/${act}`;
+        assert.doesNotMatch(all, /may not name/i, where);
+        assert.doesNotMatch(all, /THE FENCE/i, where);
+        assert.doesNotMatch(all, /^\s*names:/im, where);
+        assert.doesNotMatch(all, /^\s*numbers:/im, where);
+        assert.doesNotMatch(all, /never invent/i, where);
+        assert.doesNotMatch(all, /STRICT grounding/i, where);
+        assert.doesNotMatch(all, /name nothing outside/i, where);
+        assert.doesNotMatch(all, /that appear in the provided facts/i, where);
+        // "Most good lines name nothing at all" must SURVIVE — it is a style
+        // rule about not name-dropping, not a restriction on what may be named.
+        assert.match(all, /name nothing at all/i, where);
+      }
+    }
+  }
 });
 
-test('fiction mode softens the fence wording', () => {
-  const chat = buildSceneChat(req({ allowFiction: true }));
-  const user = chat[1].content;
-  assert.match(user, /FACTS YOU CAN USE/i);
-  assert.match(user, /invention is allowed/i);
-  assert.doesNotMatch(user, /you may not name anything outside this/i);
+test('the prompt tells the model it may invent', () => {
+  const all = buildSceneChat(req()).map((m) => m.content).join('\n');
+  assert.match(all, /invent/i);
 });
 
-test('an empty brief tells the model to name nothing', () => {
-  const chat = buildSceneChat(req({ brief: textureBrief('t') }));
-  assert.match(chat[1].content, /name nothing/);
-  assert.match(chat[1].content, /state no numbers/);
+test('the dossier rides in as background, not as a permission list', () => {
+  const dossier = 'System: Kaine — Low security, Democracy\nStations: Wood’s Pride';
+  const user = buildSceneChat(req({ dossier }))[1].content;
+  assert.match(user, /Wood’s Pride/);
+  assert.match(user, /the world these people live in/i);
 });
 
-test('the prompt names the speakers it expects', () => {
-  const chat = buildSceneChat(req());
-  assert.match(chat[1].content, /hauler: Marla Brandt/);
-  assert.match(chat[1].content, /hauler2: Otto Petrov/);
+test('with no dossier the brief summary still sets the scene', () => {
+  const user = buildSceneChat(req({ dossier: undefined }))[1].content;
+  assert.match(user, /Bertrandite at Hurston Ring/);
+});
+
+test('the prompt names the speakers, in the order lines will be assigned', () => {
+  const user = buildSceneChat(req())[1].content;
+  assert.match(user, /1\. Marla Brandt/);
+  assert.match(user, /2\. Otto Petrov/);
+  // The model is told the order matters, because that IS the speaker protocol.
+  assert.match(user, /in this order/i);
+});
+
+test('the prompt asks for bare lines and no labels', () => {
+  const system = buildSceneChat(req())[0].content;
+  assert.match(system, /one per line/i);
+  assert.match(system, /no labels/i);
+  assert.doesNotMatch(system, /\[speakerRef\]/i);
+  assert.doesNotMatch(system, /\[control\]/i);
+});
+
+test('the line count asked for follows the roster', () => {
+  assert.match(buildSceneChat(req({ speakers: ['hauler'] }))[0].content, /exactly 1 line\b/);
+  assert.match(buildSceneChat(req())[0].content, /exactly 2 lines\b/);
 });
 
 test('the channel changes the register the model is asked for', () => {
@@ -135,6 +175,28 @@ test('the transcript trims on exchange boundaries, never mid-pair', () => {
   assert.equal(h[0].role, 'user', 'history must never open on an assistant reply');
 });
 
+test('what goes into the transcript is what the prompt asks for', () => {
+  // The bug this whole tier was rewritten around. The transcript is replayed to
+  // the model as its OWN prior output, so if it is recorded in a shape the
+  // prompt never asked for, the model imitates the recorded shape and drifts off
+  // contract. Because rejected scenes are never recorded, that drift is one-way
+  // and permanent. Round-tripping the recorded text back through the parser is
+  // the check: whatever we store must still parse as a scene.
+  const out = acceptSceneReply('Hold at the marker.\nHolding. Again.', req(), 'id', 60_000);
+  assert.equal(out.ok, true);
+
+  const recorded = sceneTranscript((out as { ok: true; scene: Scene }).scene);
+  assert.doesNotMatch(recorded, /[[\]]/, 'no speaker tags may reach the transcript');
+  assert.equal(recorded, 'Hold at the marker.\nHolding. Again.');
+
+  const reparsed = parseSceneReply(recorded, ['hauler', 'hauler2']);
+  assert.equal(reparsed.length, 2, 'the recorded shape must still parse');
+  assert.deepEqual(
+    reparsed.map((t) => t.text),
+    ['Hold at the marker.', 'Holding. Again.'],
+  );
+});
+
 test('the transcript survives a restart', () => {
   const a = new ChatterConversation();
   a.record('STATION', 'a delay', 'Hold at the marker.');
@@ -161,9 +223,9 @@ test('every channel has situations to draw on', () => {
 // Parsing
 // ---------------------------------------------------------------------------
 
-test('well-formed turns parse', () => {
+test('plain lines parse, one turn each', () => {
   const turns = parseSceneReply(
-    '[hauler] They have taken 380 off Bertrandite.\n[hauler2] Third time this month.',
+    'They have taken 380 off Bertrandite.\nThird time this month.',
     ['hauler', 'hauler2'],
   );
   assert.equal(turns.length, 2);
@@ -171,46 +233,50 @@ test('well-formed turns parse', () => {
   assert.equal(turns[1].text, 'Third time this month.');
 });
 
-test('markdown bullets and stray punctuation are tolerated', () => {
-  const turns = parseSceneReply(
-    '- [hauler]: "One."\n* {hauler2} Two.\n(hauler) Three.',
-    ['hauler', 'hauler2'],
+test('speakers come from position, wrapping past the end of the roster', () => {
+  const turns = parseSceneReply('One.\nTwo.\nThree.', ['hauler', 'hauler2']);
+  assert.deepEqual(
+    turns.map((t) => t.speakerRef),
+    ['hauler', 'hauler2', 'hauler'],
   );
-  assert.equal(turns.length, 3);
-  assert.equal(turns[0].text, 'One.', 'surrounding quotes should be stripped');
 });
 
-test('unknown speakers are dropped rather than guessed at', () => {
-  const turns = parseSceneReply('[narrator] Space is vast.\n[hauler] One.', ['hauler']);
+test('a single line is a single turn', () => {
+  const turns = parseSceneReply('Hold at the marker.', ['control', 'ship']);
   assert.equal(turns.length, 1);
-  assert.equal(turns[0].speakerRef, 'hauler');
-});
-
-test('preamble lines are ignored', () => {
-  const turns = parseSceneReply(
-    "Here is the scene you asked for:\n\n[hauler] One.\n[hauler2] Two.",
-    ['hauler', 'hauler2'],
-  );
-  assert.equal(turns.length, 2);
+  assert.equal(turns[0].speakerRef, 'control');
 });
 
 test('parsing stops at the turn cap', () => {
-  const many = Array.from({ length: 9 }, (_, i) => `[hauler${i % 2 === 0 ? '' : '2'}] Line ${i}.`);
-  assert.ok(parseSceneReply(many.join('\n'), ['hauler', 'hauler2']).length <= 4);
+  const many = Array.from({ length: 9 }, (_, i) => `Line ${i}.`);
+  assert.equal(parseSceneReply(many.join('\n'), ['hauler', 'hauler2']).length, 4);
+});
+
+test('blank lines between turns are not turns', () => {
+  const turns = parseSceneReply('One.\n\n\nTwo.\n', ['hauler', 'hauler2']);
+  assert.equal(turns.length, 2);
 });
 
 test('an empty reply parses to nothing', () => {
   assert.deepEqual(parseSceneReply('', ['hauler']), []);
-  assert.deepEqual(parseSceneReply('I cannot help with that.', ['hauler']), []);
+  assert.deepEqual(parseSceneReply('   \n\n  ', ['hauler']), []);
+});
+
+test('a reply that is only markup parses to nothing', () => {
+  assert.deepEqual(parseSceneReply('- \n**\n[]', ['hauler']), []);
+});
+
+test('an empty roster yields nothing rather than throwing', () => {
+  assert.deepEqual(parseSceneReply('One.', []), []);
 });
 
 // ---------------------------------------------------------------------------
 // Acceptance — the gate before synthesis
 // ---------------------------------------------------------------------------
 
-test('a grounded reply is accepted', () => {
+test('a plain reply is accepted', () => {
   const out = acceptSceneReply(
-    '[hauler] They have taken 380 off Bertrandite at Hurston Ring.\n[hauler2] Third time this month.',
+    'They have taken 380 off Bertrandite at Hurston Ring.\nThird time this month.',
     req(),
     'id',
     60_000,
@@ -219,82 +285,66 @@ test('a grounded reply is accepted', () => {
   assert.equal(out.ok && out.scene.tier, 'llm');
 });
 
-test('a reply naming an unbriefed faction is rejected whole', () => {
+test('a reply naming an unbriefed faction is accepted', () => {
   const out = acceptSceneReply(
-    '[hauler] They took 380 off Bertrandite at Hurston Ring.\n[hauler2] The Sirius Corporation again.',
+    'They took 380 off Bertrandite at Hurston Ring.\nThe Sirius Corporation again.',
     req(),
     'id',
     60_000,
   );
-  assert.equal(out.ok, false);
-  assert.equal(!out.ok && out.why, 'unverified');
-  assert.ok(!out.ok && out.why === 'unverified' && out.offending.some((o) => /Sirius/.test(o)));
+  assert.equal(out.ok, true, 'comms invents by design — nothing downstream reads it');
 });
 
-test('a reply stating an unbriefed figure is rejected whole', () => {
-  const out = acceptSceneReply(
-    '[hauler] They took 9000 off Bertrandite.\n[hauler2] Brutal.',
-    req(),
-    'id',
-    60_000,
-  );
-  assert.equal(out.ok, false);
-  assert.equal(!out.ok && out.why, 'unverified');
-});
-
-test('fiction mode accepts a reply that would fail strict verification', () => {
-  const out = acceptSceneReply(
-    '[hauler] They took 9000 off Bertrandite.\n[hauler2] Brutal.',
-    req({ allowFiction: true }),
-    'id',
-    60_000,
-    undefined,
-    { verifyAgainstBrief: false },
-  );
+test('a reply stating an unbriefed figure is accepted', () => {
+  const out = acceptSceneReply('They took 9000 off it.\nBrutal.', req(), 'id', 60_000);
   assert.equal(out.ok, true);
 });
 
-test('rejection discards the ENTIRE scene, not the offending line', () => {
-  // Editing out one turn would leave a scene written to lead somewhere it no
-  // longer goes. The contract is not negotiable.
+test('an entirely invented scene is accepted', () => {
+  // Nothing in this reply appears in the brief. Under the old fence every noun
+  // and figure here was grounds for discarding the whole scene.
   const out = acceptSceneReply(
-    '[hauler] They took 380 off Bertrandite at Hurston Ring.\n[hauler2] The Sirius Corporation again.',
-    req(),
-    'id',
-    60_000,
-  );
-  assert.equal(out.ok, false);
-  assert.ok(!('scene' in out));
-});
-
-test('a reply with no usable turns is rejected', () => {
-  const out = acceptSceneReply('Sorry, I cannot do that.', req(), 'id', 60_000);
-  assert.equal(out.ok, false);
-  assert.equal(!out.ok && out.why, 'no-turns');
-});
-
-test('a structurally invalid reply is rejected before verification', () => {
-  const out = acceptSceneReply(
-    '[hauler] One.\n[hauler] Two.',
-    req({ speakers: ['hauler'] }),
-    'id',
-    60_000,
-  );
-  assert.equal(out.ok, false);
-  assert.equal(!out.ok && out.why, 'invalid');
-});
-
-test('an invented speaker with a true fact is accepted', () => {
-  const b = marketBrief({
-    nouns: [...marketBrief().nouns, { value: 'Marla Brandt', source: { kind: 'cast' } }],
-  });
-  const out = acceptSceneReply(
-    '[hauler] Marla Brandt here. 380 off Bertrandite at Hurston Ring.\n[hauler2] Noted.',
-    req({ brief: b }),
+    'Kepler Landing says the Iron Marlin is four hours late again.\nThat is Vance for you.',
+    req({ brief: textureBrief('t') }),
     'id',
     60_000,
   );
   assert.equal(out.ok, true, `rejected: ${JSON.stringify(out)}`);
+});
+
+test('a reply with no usable turns is rejected', () => {
+  const out = acceptSceneReply('   ', req(), 'id', 60_000);
+  assert.equal(out.ok, false);
+  assert.equal(!out.ok && out.why, 'no-turns');
+  assert.ok(!('scene' in out));
+});
+
+test('the two rejection reasons the writer can produce stay distinct', () => {
+  // The panel tallies drops by reason, and the whole value of that tally is
+  // that the reasons do not collapse into each other — a writer that cannot
+  // parse and one that emits a broken token want opposite fixes.
+  const empty = acceptSceneReply('', req(), 'id', 60_000);
+  const broken = acceptSceneReply('Cleared to pad <padnum>.', req(), 'id', 60_000);
+  assert.equal(!empty.ok && empty.why, 'no-turns');
+  assert.equal(!broken.ok && broken.why, 'invalid');
+  assert.notEqual(!empty.ok && empty.why, !broken.ok && broken.why);
+});
+
+test('an unbound template token is still rejected', () => {
+  // The one structural check that genuinely protects immersion: a scene spoken
+  // with literal angle brackets in it is the worst thing this feature can do.
+  const out = acceptSceneReply('Cleared to pad <padnum>.\nOn approach.', req(), 'id', 60_000);
+  assert.equal(out.ok, false);
+  assert.equal(!out.ok && out.why, 'invalid');
+});
+
+test('prose the model refuses with is still a scene, not a rejection', () => {
+  // Deliberate. Under the old parser "I cannot help with that." mapped to no
+  // known speaker and vanished; now it becomes one turn and the structural
+  // checks pass. This is the accepted cost of never dropping real dialogue —
+  // and in practice the prompt does not trip refusals.
+  const out = acceptSceneReply('I cannot help with that.', req(), 'id', 60_000);
+  assert.equal(out.ok, true);
 });
 
 // ---------------------------------------------------------------------------
@@ -380,109 +430,94 @@ test('fulfilling an unreserved slot is a no-op', () => {
 // Parsing what models actually return
 // ---------------------------------------------------------------------------
 
-test('a bare speaker prefix parses — models drop the brackets', () => {
-  // Measured against a local gemma-4-e4b: brackets were omitted on roughly
-  // three replies in four. Insisting on them threw away most of the model's
-  // perfectly good output and reported it as "wrote nothing parseable".
+// Everything below is markup the model VOLUNTEERS out of screenplay habit. None
+// of it is trusted — the speaker is always positional — it is simply removed so
+// it is never spoken aloud.
+
+test('a volunteered bracket tag is stripped, not obeyed', () => {
   const turns = parseSceneReply(
-    'control The pad reassignment is confirmed.\nhauler Understood.',
+    '[control] The pad reassignment is confirmed.\n[hauler] Understood.',
     ['control', 'hauler'],
   );
   assert.equal(turns.length, 2);
-  assert.equal(turns[0].speakerRef, 'control');
   assert.equal(turns[0].text, 'The pad reassignment is confirmed.');
+  assert.equal(turns[1].text, 'Understood.');
 });
 
-test('a bare prefix with a colon parses', () => {
-  const turns = parseSceneReply('control: Hold at the marker.', ['control', 'hauler']);
-  assert.equal(turns[0]?.text, 'Hold at the marker.');
-});
-
-test('speaker refs containing a colon still work bare', () => {
-  const turns = parseSceneReply(
-    'crew:ops Everyone is accounted for.\ncrew:engineering Then I will start the list.',
-    ['crew:ops', 'crew:engineering'],
+test('a tag naming the WRONG speaker does not move the line', () => {
+  // The tag is ornament. Position decides, so a model that mislabels its own
+  // lines cannot scramble the cast.
+  const turns = parseSceneReply('[hauler] Hold.\n[control] Holding.', ['control', 'hauler']);
+  assert.deepEqual(
+    turns.map((t) => t.speakerRef),
+    ['control', 'hauler'],
   );
-  assert.equal(turns.length, 2);
-  assert.equal(turns[1].speakerRef, 'crew:engineering');
 });
 
-test('markdown bold around a speaker is tolerated', () => {
-  const turns = parseSceneReply('**control** Hold.\n**hauler** Holding.', ['control', 'hauler']);
-  assert.equal(turns.length, 2);
-});
-
-test('case differences in the speaker label are tolerated', () => {
-  const turns = parseSceneReply('[Control] Hold.\n[HAULER] Holding.', ['control', 'hauler']);
-  assert.equal(turns.length, 2);
-  assert.equal(turns[0].speakerRef, 'control', 'the canonical ref is what comes back');
-});
-
-test('a bare line that is not a known speaker is still ignored', () => {
-  // Tolerance must not become "treat any prose as a turn".
-  assert.deepEqual(parseSceneReply('Space is vast and full of wonder.', ['control']), []);
-  assert.deepEqual(parseSceneReply('narrator Something happened.', ['control']), []);
-});
-
-test('the prompt carries a worked example', () => {
-  // A small model with thinking disabled follows a demonstrated shape far more
-  // reliably than a described one.
-  const chat = buildSceneChat(req());
-  assert.match(chat[0].content, /\[control\] Hold at the marker/);
-  assert.match(chat[0].content, /names nothing and is still worth overhearing/);
-});
-
-test('an entire exchange on ONE line still parses as two turns', () => {
-  // Observed from a live gemma-4-e4b. A line-based parser swallows the second
-  // label into the first turn's text, and the verifier then flags the stray
-  // capital as an unlicensed name and drops a perfectly good scene.
+test('a volunteered name prefix is stripped', () => {
   const turns = parseSceneReply(
-    '[crew:ops] The beacon signal is stable enough. [crew:engineering] Barely. Watch the angle.',
-    ['crew:ops', 'crew:engineering'],
+    'Yusuf Fiore: Holding. Again.\nControl: Acknowledged.',
+    ['hauler', 'control'],
   );
-  assert.equal(turns.length, 2);
-  assert.equal(turns[0].text, 'The beacon signal is stable enough.');
-  assert.equal(turns[1].text, 'Barely. Watch the angle.');
-  assert.ok(!turns[0].text.includes('crew:engineering'), 'the label must not leak into the text');
+  assert.equal(turns[0].text, 'Holding. Again.');
+  assert.equal(turns[1].text, 'Acknowledged.');
 });
 
-test('a label in the middle of a line does not corrupt the turn before it', () => {
-  const turns = parseSceneReply('[control] Hold. [hauler] Holding.', ['control', 'hauler']);
+test('a colon inside real dialogue survives', () => {
+  // The prefix strip is capped at four words, or "Told you: it never works"
+  // loses half its line.
+  const turns = parseSceneReply(
+    'I told you last week and I will say it again: it never works.',
+    ['hauler'],
+  );
+  assert.match(turns[0].text, /^I told you last week/);
+});
+
+test('bullets, dashes and emphasis are stripped', () => {
+  const turns = parseSceneReply('- **Pad four is gone.**\n* Take seven.\n> Understood.', [
+    'control',
+    'ship',
+  ]);
   assert.deepEqual(
     turns.map((t) => t.text),
-    ['Hold.', 'Holding.'],
+    ['Pad four is gone.', 'Take seven.', 'Understood.'],
   );
 });
 
-test('a leading colon after a bracketed label is stripped', () => {
+test('quotes wrapping a whole line are stripped', () => {
+  const turns = parseSceneReply('"One."\n\'Two.\'', ['hauler', 'hauler2']);
+  assert.deepEqual(
+    turns.map((t) => t.text),
+    ['One.', 'Two.'],
+  );
+});
+
+test('a quoted phrase inside a line is left alone', () => {
+  const turns = parseSceneReply('He said "clear" and then went quiet.', ['hauler']);
+  assert.equal(turns[0].text, 'He said "clear" and then went quiet.');
+});
+
+test('a bracketed tag and a colon together are both stripped', () => {
   const turns = parseSceneReply('[control]: Hold at the marker.', ['control']);
   assert.equal(turns[0].text, 'Hold at the marker.');
 });
 
-test('a shortened or named speaker label still resolves', () => {
-  // Observed live: asked for `crew:ops` the model answered `[ops]`, and asked
-  // for `crew:engineering` — shown as "Halloran" — it answered `[Halloran]`.
-  // Both are reasonable readings of the roster it was handed.
-  const turns = parseSceneReply(
-    '[ops] Quiet now. Too quiet.\n[Halloran] The drive is steady.',
-    ['crew:ops', 'crew:engineering'],
-    { 'crew:ops': 'Okonjo', 'crew:engineering': 'Halloran' },
+test('curly and round tags are stripped like square ones', () => {
+  const turns = parseSceneReply('{hauler} One.\n(hauler2) Two.', ['hauler', 'hauler2']);
+  assert.deepEqual(
+    turns.map((t) => t.text),
+    ['One.', 'Two.'],
   );
-  assert.equal(turns.length, 2);
-  assert.equal(turns[0].speakerRef, 'crew:ops');
-  assert.equal(turns[1].speakerRef, 'crew:engineering');
 });
 
-test('a first name resolves to its speaker', () => {
-  const turns = parseSceneReply('[Priya] On approach.', ['hauler'], { hauler: 'Priya Achebe' });
-  assert.equal(turns[0]?.speakerRef, 'hauler');
-});
-
-test('the longest matching label wins', () => {
-  // `crew:ops` must not be shadowed by the `ops` alias.
+test('unstructured prose is a turn, not a rejection', () => {
+  // This is the regression that mattered. Untagged prose is exactly what the
+  // model produced once its own transcript had taught it the house style, and
+  // the old parser mapped every line of it to nothing.
   const turns = parseSceneReply(
-    '[crew:ops] Mine.\n[crew:engineering] Also mine.',
-    ['crew:ops', 'crew:engineering'],
+    'Anyone else hear about the lane closure? Third time this week.',
+    ['hauler'],
   );
-  assert.deepEqual(turns.map((t) => t.speakerRef), ['crew:ops', 'crew:engineering']);
+  assert.equal(turns.length, 1);
+  assert.match(turns[0].text, /lane closure/);
 });

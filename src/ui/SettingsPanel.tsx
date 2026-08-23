@@ -490,17 +490,6 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
           <label className="check">
             <input
               type="checkbox"
-              checked={s.comms.allowFiction}
-              onChange={(e) =>
-                set({ ...s, comms: { ...s.comms, allowFiction: e.target.checked } })
-              }
-              disabled={!s.comms.enabled || s.comms.source === 'grammar'}
-            />
-            Allow fiction beyond journal facts
-          </label>
-          <label className="check">
-            <input
-              type="checkbox"
               checked={s.comms.persistLog}
               onChange={(e) => set({ ...s, comms: { ...s.comms, persistLog: e.target.checked } })}
               disabled={!s.comms.enabled}
@@ -985,6 +974,15 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
               />
             </label>
           </div>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={s.hud.autoView}
+              onChange={(e) => set({ ...s, hud: { ...s.hud, autoView: e.target.checked } })}
+            />
+            Follow the game (a market at a build site opens the shopping list, undocking
+            brings back the map)
+          </label>
           <label className="check">
             <input
               type="checkbox"

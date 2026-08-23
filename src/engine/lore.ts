@@ -31,11 +31,29 @@ export function lorePrimer(setting?: string | null): string {
 /** Back-compat for prompts with no positional context (briefings, saga). */
 export const LORE_PRIMER = lorePrimer();
 
+/**
+ * Sound like Elite Dangerous.
+ *
+ * Split out from GROUNDING_RULES because it is a rule about REGISTER, not about
+ * truth, and one caller wants it without the fence. Ambient comms is allowed to
+ * invent — it is overheard radio and nothing downstream reads it — but a hauler
+ * who says "no worries mate" or quotes a film is still wrong for the universe.
+ */
+export const UNIVERSE_REGISTER =
+  'Use correct Elite Dangerous terminology; no modern-Earth idioms or pop-culture references.';
+
+/**
+ * Never make anything up.
+ *
+ * For every voice that speaks TO the commander — the operator, the copilot, the
+ * glance and the flavour lines. These are read as information about the real
+ * game state, so an invented station is a lie the commander may act on. The
+ * comms tier deliberately does NOT use this; see UNIVERSE_REGISTER.
+ */
 export const GROUNDING_RULES =
   'STRICT grounding: only ever name factions, companies, organizations, stations, systems, ships ' +
   'and people that appear in the provided facts — never invent new ones, and never invent ' +
-  'events, objectives or outcomes. Use correct Elite Dangerous terminology; no modern-Earth ' +
-  'idioms or pop-culture references.';
+  `events, objectives or outcomes. ${UNIVERSE_REGISTER}`;
 
 export const OPERATOR_VOICE =
   'Voice: a seasoned operations officer on a private comm channel — dry, understated frontier ' +

@@ -79,7 +79,6 @@ export type ClosedReason =
   | 'no-crew'
   | 'too-soon'
   | 'act-suppressed'
-  | 'hourly-ceiling'
   | 'others-in-range'
   | 'no-verified-brief';
 
@@ -94,7 +93,6 @@ export const CLOSED_REASON_LABEL: Readonly<Record<ClosedReason, string>> = {
   'no-crew': 'no crew aboard',
   'too-soon': 'holding',
   'act-suppressed': 'channel clear — priority traffic',
-  'hourly-ceiling': 'traffic limit',
   'others-in-range': 'local traffic in range',
   'no-verified-brief': 'nothing to report',
 };

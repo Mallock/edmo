@@ -53,7 +53,7 @@ export interface ModelProfile {
   /** Where hidden reasoning is WANTED, per call path. Stated explicitly rather
    *  than inferred: the three paths genuinely disagree, and which ones differ
    *  changes from family to family. */
-  thinkingFor: { chatter: boolean; ask: boolean; json: boolean };
+  thinkingFor: { chatter: boolean; ask: boolean; json: boolean; comms: boolean };
   /** Something the player should know, shown in Settings. Null when the model
    *  simply works. */
   note: string | null;
@@ -75,7 +75,18 @@ const GEMMA: ModelProfile = {
   // against the current stack: beats that engage with the actual event rose
   // from 6/10 to 8/10, duplicates and fence flags unchanged, and the cost fell
   // to ~1.5 s because only the first beats think hard.
-  thinkingFor: { chatter: true, ask: true, json: true },
+  //
+  // ...but NOT for ambient comms, which is a different job wearing the same
+  // word. An operator beat weighs an arc, a mood, a rotating angle and local
+  // lore, and reasoning demonstrably improves it. A comms scene is two people
+  // saying under twelve words each on a radio channel, and measured against
+  // this engine the reasoning is pure cost: 449 output tokens and 4.1 s with it
+  // on, 15 tokens and 0.34 s with it off, both accepted 4/4, and the fast lines
+  // sat BETTER in register ("That beacon is old junk." against the reasoned
+  // "Something is moving near the beacon."). Twelve times the latency for no
+  // gain, on a tier that writes ahead into slots and throws away anything that
+  // arrives late.
+  thinkingFor: { chatter: true, ask: true, json: true, comms: false },
   note: null,
 };
 
@@ -103,7 +114,7 @@ const PROFILES: Array<{ match: RegExp; profile: ModelProfile }> = [
       // 8/8 identical openers at 0.5/0.3; needs the firmest hand of any family.
       penalties: { presence: 1.0, frequency: 0.6 },
       resamplePenalties: { presence: 1.2, frequency: 0.8 },
-      thinkingFor: { chatter: true, ask: true, json: true },
+      thinkingFor: { chatter: true, ask: true, json: true, comms: false },
       note:
         'This model thinks before it speaks, so the operator answers more slowly than with the ' +
         'recommended one — switching that off crashes some graphics drivers, so it is left on. ' +
@@ -119,7 +130,7 @@ const PROFILES: Array<{ match: RegExp; profile: ModelProfile }> = [
       resamplePenalties: { presence: 1.0, frequency: 0.6 },
       // Its reasoning eats the entire token budget when a schema is attached:
       // 3,000 tokens, 23 s, empty result, every time. Off on every path.
-      thinkingFor: { chatter: false, ask: false, json: false },
+      thinkingFor: { chatter: false, ask: false, json: false, comms: false },
       note: 'Hidden reasoning is switched off everywhere for this model — with it on, ' +
         'schema-constrained calls (session memory, screen readings) return nothing.',
     },
@@ -132,7 +143,7 @@ const PROFILES: Array<{ match: RegExp; profile: ModelProfile }> = [
       // 13/16 duplicates at the defaults; still 5/8 at triple strength.
       penalties: { presence: 1.0, frequency: 0.6 },
       resamplePenalties: { presence: 1.2, frequency: 0.8 },
-      thinkingFor: { chatter: true, ask: true, json: true },
+      thinkingFor: { chatter: true, ask: true, json: true, comms: false },
       note: 'This model tends to repeat its previous line; many beats will be filtered out.',
     },
   },
@@ -161,7 +172,7 @@ export function profileFor(id: string | null | undefined): ModelProfile {
  */
 export function suppressThinkingFor(
   profile: ModelProfile,
-  kind: 'chatter' | 'json' | 'ask',
+  kind: 'chatter' | 'json' | 'ask' | 'comms',
 ): boolean {
   // Only the template mechanism can suppress per request. 'keep' wants
   // reasoning; 'server' must never be sent this kwarg — that request is

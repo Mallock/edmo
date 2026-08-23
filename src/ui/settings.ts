@@ -36,6 +36,15 @@ export interface AppSettings {
     opacity: number; // 0.3 .. 1
     fontScale: number; // 0.8 .. 1.5
     clickThrough: boolean;
+    /**
+     * Let the game move the panel: opening a market at a build site shows the
+     * shopping list, undocking brings back the system map.
+     *
+     * The point is hands-on-throttle. Both switches are guarded by whether the
+     * target tab renders at all, so this can never strand the commander on a
+     * blank panel.
+     */
+    autoView: boolean;
   };
   journal: {
     directory: string | null; // null = auto-detect default Saved Games path
@@ -87,8 +96,6 @@ export interface AppSettings {
     source: 'llm' | 'hybrid' | 'grammar';
     promoteRealShips: boolean;
     persistLog: boolean;
-    /** Let the model improvise beyond observed journal nouns and figures. */
-    allowFiction: boolean;
     grammarFile: string | null;
   };
   saga: {
@@ -177,6 +184,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     opacity: 0.95,
     fontScale: 1.0,
     clickThrough: false,
+    autoView: true,
   },
   journal: {
     directory: null,
@@ -210,8 +218,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
     source: 'hybrid',
     promoteRealShips: true,
     persistLog: false,
-    // Ambient chatter is flavor text; allow light invention by default.
-    allowFiction: true,
     grammarFile: null,
   },
   saga: {

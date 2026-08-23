@@ -48,11 +48,33 @@ test('the per-path map is what decides, not the mechanism', () => {
   // A family that wants reasoning only for plans must be expressible.
   const askOnly = {
     ...profileFor('gemma-4-e4b'),
-    thinkingFor: { chatter: false, ask: true, json: false },
+    thinkingFor: { chatter: false, ask: true, json: false, comms: false },
   };
   assert.equal(suppressThinkingFor(askOnly, 'chatter'), true);
   assert.equal(suppressThinkingFor(askOnly, 'ask'), false);
   assert.equal(suppressThinkingFor(askOnly, 'json'), true);
+  assert.equal(suppressThinkingFor(askOnly, 'comms'), true);
+});
+
+test('comms is not chatter — the operator reasons, the radio does not', () => {
+  // The bug this split exists to stop. Comms rode on the 'chatter' policy while
+  // hardcoding a 220-token budget, so gemma spent all 220 thinking and returned
+  // an empty `content` on EVERY request: 49 drops, 0 scenes on the air. The two
+  // paths genuinely want different things and must be able to say so.
+  const p = profileFor('gemma-4-e2b');
+  assert.equal(suppressThinkingFor(p, 'chatter'), false, 'operator beats keep reasoning');
+  assert.equal(suppressThinkingFor(p, 'comms'), true, 'radio exchanges do not');
+});
+
+test('every shipped profile answers for the comms path', () => {
+  // A profile missing this silently inherits "reasoning on" and starves.
+  for (const id of ['gemma-4-e2b', 'gemma-4-e4b', 'GLM-4.6V', 'Qwen3.5-4B', 'Qwen3-VL', 'something-new']) {
+    assert.equal(
+      typeof profileFor(id).thinkingFor.comms,
+      'boolean',
+      `${id} has no comms policy`,
+    );
+  }
 });
 
 test('Qwen3.5 also loses reasoning on JSON, where gemma keeps it', () => {
