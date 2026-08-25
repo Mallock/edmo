@@ -1,5 +1,7 @@
-//! Bundled AI engine — the app fetches its own llama.cpp runtime and model so
-//! LM Studio becomes optional rather than required (TASKS-1.0.md, M7.1–M7.4).
+//! Bundled AI engine — the app fetches its own llama.cpp runtime and model.
+//! This is the ONLY engine: LM Studio support existed through 1.3.0 and was
+//! cut deliberately (one engine the app launches, owns and can read the logs
+//! of, instead of two it can only poke over HTTP).
 //!
 //! Design notes from the M7.0 spike, all of which shaped this module:
 //!   * `llama-server` inherits ambient env (`LLAMA_API_KEY`, `LLAMA_ARG_*`) and
@@ -85,7 +87,17 @@ fn runtime_artifacts() -> Vec<RuntimeArtifact> {
     }
 }
 
-/// A model tier. Vision (`mmproj`) is required — the copilot reads the screen.
+/// A model tier.
+///
+/// Vision (`mmproj`) is OPTIONAL. It used to be mandatory, because the copilot
+/// reads the screen — but the screen is the least of what this app knows. The
+/// journal already gives it the system, the station, the faction board, the
+/// cargo, the missions and every event as it happens, and the copilot has
+/// always had a text-only path for exactly that (`fireCopilotBeat` with no
+/// scene). Requiring an mmproj shut the door on every text-only model, which is
+/// most of the ones worth trying for narrative, in exchange for a feature that
+/// is opt-in and off by default.
+///
 /// Mirrors are deliberately UNGATED: Google's own Gemma repos are licence-gated
 /// on HuggingFace and 403 an unattended download.
 #[derive(Clone)]
@@ -95,42 +107,70 @@ struct ModelArtifact {
     /// Minimum GPU budget (GB) this tier wants while the game is also running.
     needs_gb: f32,
     url: &'static str,
-    mmproj_url: &'static str,
+    mmproj_url: Option<&'static str>,
+    /// A co-trained multi-token-prediction drafter, where the family ships one.
+    ///
+    /// Measured on an RX 7800 XT with E4B: generation went 8 -> 15 tok/s, a
+    /// comms scene 2536 -> 2011 ms and a copilot answer 9480 -> 8440 ms, for
+    /// ~200 MiB of card and ~99 MB on disk. It is not a second model in the
+    /// ordinary speculative-decoding sense — it shares activations with the
+    /// base model, which is why something this small is worth loading at all.
+    /// Output is identical to normal generation; only the speed changes.
+    drafter_url: Option<&'static str>,
     bytes: u64,
     licence: &'static str,
 }
 
+/// Deliberately TWO entries: the speed pick and the quality pick, both Gemma.
+/// The catalogue held five models at its widest (E2B, E4B, Qwen 3.5 4B,
+/// Llama 3.1 8B, GLM 4.6V) and every extra one was measured worse for this
+/// app on this generation of hardware. A new entry earns its place with
+/// measurements, not a spec sheet — the harnesses in scripts/ (comms-lore,
+/// comms-build-probe, probeG, bench-engine) are the bar it has to clear, and
+/// four candidates failed it on 2026-08-24/25 before the 12B QAT passed.
 fn model_artifacts() -> Vec<ModelArtifact> {
     vec![
         ModelArtifact {
-            id: "gemma-4-e2b",
-            label: "Gemma 4 E2B (smallest, 8 GB cards)",
-            needs_gb: 2.5,
-            url: "https://huggingface.co/lmstudio-community/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf",
-            mmproj_url: "https://huggingface.co/lmstudio-community/gemma-4-E2B-it-GGUF/resolve/main/mmproj-gemma-4-E2B-it-BF16.gguf",
-            // Measured from the CDN: 3.19 GB model + 0.92 GB mmproj.
-            bytes: 4_150_000_000,
-            licence: "Gemma Terms of Use",
-        },
-        ModelArtifact {
             id: "gemma-4-e4b",
-            label: "Gemma 4 E4B (recommended)",
+            label: "Gemma 4 E4B — vision, tools, and a fast-generation helper",
             needs_gb: 4.5,
             url: "https://huggingface.co/lmstudio-community/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf",
-            mmproj_url: "https://huggingface.co/lmstudio-community/gemma-4-E4B-it-GGUF/resolve/main/mmproj-gemma-4-E4B-it-BF16.gguf",
-            // Measured from the CDN: 4.97 GB model + 0.92 GB mmproj.
-            bytes: 5_950_000_000,
+            mmproj_url: Some("https://huggingface.co/lmstudio-community/gemma-4-E4B-it-GGUF/resolve/main/mmproj-gemma-4-E4B-it-BF16.gguf"),
+            drafter_url: Some("https://huggingface.co/AtomicChat/gemma-4-E4B-it-assistant-GGUF/resolve/main/gemma-4-E4B-it-assistant.Q8_0.gguf"),
+            // Measured from the CDN: 4.97 GB model + 0.92 GB mmproj + 0.10 GB drafter.
+            bytes: 6_050_000_000,
             licence: "Gemma Terms of Use",
         },
+        // The Qwen 3.5 9B "Defiant Fable" held a second slot for one day
+        // (2026-08-24 → 25). It earned it through the full battery — comms
+        // 6/6, gate 6/6, news 3/3, tool loop passed — and was removed by
+        // product decision after live sessions: half E4B's speed, no screen
+        // glance, and the comms prompt refinements closed the prose gap that
+        // was its whole case. The battery record stays in git history; a
+        // return visit starts from the same bar.
         ModelArtifact {
-            id: "glm-4-6v-flash-9b",
-            label: "GLM 4.6V Flash (9B)",
-            needs_gb: 6.5,
-            url: "https://huggingface.co/lmstudio-community/GLM-4.6V-Flash-GGUF/resolve/main/GLM-4.6V-Flash-Q4_K_M.gguf",
-            mmproj_url: "https://huggingface.co/lmstudio-community/GLM-4.6V-Flash-GGUF/resolve/main/mmproj-GLM-4.6V-Flash-F16.gguf",
-            // Measured from the CDN: 6.17 GB model + 1.79 GB mmproj.
-            bytes: 7_953_537_376,
-            licence: "MIT",
+            id: "gemma-4-12b-qat",
+            label: "Gemma 4 12B QAT — the finer voice: slower, sharper scenes (vision; fast-generation on GPU)",
+            needs_gb: 8.0,
+            url: "https://huggingface.co/unsloth/gemma-4-12B-it-qat-GGUF/resolve/main/gemma-4-12B-it-qat-UD-Q4_K_XL.gguf",
+            mmproj_url: Some("https://huggingface.co/unsloth/gemma-4-12B-it-qat-GGUF/resolve/main/mmproj-BF16.gguf"),
+            // Co-trained MTP drafter. GPU ONLY by the existing launch gate:
+            // measured on the 9800X3D it made CPU comms 44% SLOWER (14.7 s vs
+            // 10.2 s bare) — the third drafter to lose on the CPU path — while
+            // the same co-trained design took E4B from 8 to 15 tok/s on the card.
+            drafter_url: Some("https://huggingface.co/unsloth/gemma-4-12B-it-qat-GGUF/resolve/main/mtp-gemma-4-12B-it.gguf"),
+            // 6.72 GB model + 0.18 GB mmproj + 0.25 GB drafter.
+            //
+            // Earned its slot 2026-08-25, fourth candidate through the door
+            // that day (Defiant retired, official Qwen3.5-9B and a Llama MoE
+            // both refused): comms 10/10 with the best scene discipline of
+            // any model tested — real factions end to end, situations played
+            // rather than ignored — at 10.2 s a scene on the CPU, a pace the
+            // slot TTLs already absorb. Gate 5/6 (one payout miss the old
+            // non-QAT 12B did not make), news 3/3, tool loop clean. This is
+            // the quality tier: E4B stays the default and the speed pick.
+            bytes: 7_150_000_000,
+            licence: "Apache 2.0",
         },
     ]
 }
@@ -373,6 +413,19 @@ pub struct ModelInfo {
     external_path: Option<String>,
     needs_gb: f32,
     licence: String,
+    /**
+     * Can this model actually SEE?
+     *
+     * Reported from the projector file on disk, not from the catalogue's
+     * intent, because that is the thing the engine will or will not have been
+     * launched with. The app used to take vision for granted on the bundled
+     * engine — every shipped model had an mmproj, and the code said so — and
+     * making the projector optional quietly broke that: the screen glance kept
+     * firing at a text-only model and the server answered every one with
+     * `image input is not supported`, which read from the outside as an
+     * operator that had simply gone quiet.
+     */
+    vision: bool,
 }
 
 // ---------------------------------------------------------------- downloader
@@ -605,7 +658,8 @@ fn status_of(app: &AppHandle, ctl: &EngineCtl, gpus: Vec<String>) -> EngineStatu
         .iter()
         .map(|m| {
             let path = mdir.join(format!("{}.gguf", m.id));
-            let installed = path.is_file() && mdir.join(format!("{}.mmproj.gguf", m.id)).is_file();
+            let installed = path.is_file()
+                && (m.mmproj_url.is_none() || mdir.join(format!("{}.mmproj.gguf", m.id)).is_file());
             // Sum any partial transfers so an interrupted download is visible.
             let part = |n: String| fs::metadata(mdir.join(n)).map(|x| x.len()).unwrap_or(0);
             let partial_bytes = if installed {
@@ -613,8 +667,10 @@ fn status_of(app: &AppHandle, ctl: &EngineCtl, gpus: Vec<String>) -> EngineStatu
             } else {
                 part(format!("{}.part", m.id))
                     + part(format!("{}.mmproj.part", m.id))
+                    + part(format!("{}.drafter.part", m.id))
                     + if path.is_file() { fs::metadata(&path).map(|x| x.len()).unwrap_or(0) } else { 0 }
             };
+            let has_vision = mdir.join(format!("{}.mmproj.gguf", m.id)).is_file();
             ModelInfo {
                 id: m.id.into(),
                 label: m.label.into(),
@@ -628,6 +684,7 @@ fn status_of(app: &AppHandle, ctl: &EngineCtl, gpus: Vec<String>) -> EngineStatu
                 external_path: None,
                 needs_gb: m.needs_gb,
                 licence: m.licence.into(),
+                vision: has_vision,
             }
         })
         .collect();
@@ -703,6 +760,9 @@ pub fn engine_scan_local_models() -> Vec<ModelInfo> {
                 external_path: Some(format!("{}|{}", md.display(), mm.display())),
                 needs_gb: (bytes as f32 / 1e9) + 1.0,
                 licence: "as provided by the model publisher".into(),
+                // Only pairs WITH a projector are discovered here, so this
+                // branch is vision-capable by construction.
+                vision: true,
             });
         }
     }
@@ -782,17 +842,72 @@ pub async fn engine_download_model(
 
     download_file(&app, &client, art.url, &dir.join(format!("{}.gguf", art.id)), "model", &cancel)
         .await?;
-    download_file(
-        &app,
-        &client,
-        art.mmproj_url,
-        &dir.join(format!("{}.mmproj.gguf", art.id)),
-        "mmproj",
-        &cancel,
-    )
-    .await?;
+    if let Some(mm) = art.mmproj_url {
+        download_file(&app, &client, mm, &dir.join(format!("{}.mmproj.gguf", art.id)), "mmproj", &cancel)
+            .await?;
+    }
+    // The MTP drafter is an OPTIMISATION, so its failure must not fail the
+    // download. It roughly doubles generation speed when present, and when it
+    // is absent the launcher simply omits the speculative flags and the engine
+    // runs exactly as it did before. Making this fatal would turn a 99 MB
+    // nicety into a reason a 6 GB download has to be started again.
+    if let Some(url) = art.drafter_url {
+        let path = dir.join(format!("{}.drafter.gguf", art.id));
+        if let Err(e) = download_file(&app, &client, url, &path, "drafter", &cancel).await {
+            let _ = fs::remove_file(&path);
+            eprintln!("drafter download skipped: {e}");
+        }
+    }
     emit_progress(&app, "model-done", 1, 1);
     Ok(())
+}
+
+/// Fetch the MTP drafter for an ALREADY-INSTALLED model, if it is missing.
+///
+/// Without this the speed-up would only ever reach fresh installs. A commander
+/// who downloaded the model before drafters existed has a complete, valid
+/// install — model and mmproj both present — so nothing in the normal download
+/// path would ever run again, and they would sit at half the generation speed
+/// for ever unless they deleted six gigabytes and started over.
+///
+/// Called on engine start and deliberately quiet: it returns Ok(false) when
+/// there is nothing to do, when the model has no drafter, or when the fetch
+/// fails. A missing drafter costs speed, never correctness — the launcher just
+/// omits the speculative flags.
+#[tauri::command]
+pub async fn engine_ensure_drafter(
+    app: AppHandle,
+    ctl: State<'_, EngineCtl>,
+    model_id: String,
+) -> Result<bool, String> {
+    let Some(art) = model_artifacts().into_iter().find(|m| m.id == model_id) else {
+        return Ok(false);
+    };
+    let Some(url) = art.drafter_url else { return Ok(false) };
+    let dir = models_dir(&app)?;
+    // Only for a model that is actually installed — never pull a 99 MB drafter
+    // for something the commander has not chosen to download.
+    if !dir.join(format!("{}.gguf", art.id)).is_file() {
+        return Ok(false);
+    }
+    let path = dir.join(format!("{}.drafter.gguf", art.id));
+    if path.is_file() {
+        return Ok(false);
+    }
+    let cancel = ctl.cancel.clone();
+    cancel.store(false, Ordering::Relaxed);
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|e| e.to_string())?;
+    match download_file(&app, &client, url, &path, "drafter", &cancel).await {
+        Ok(()) => Ok(true),
+        Err(e) => {
+            let _ = fs::remove_file(&path);
+            eprintln!("drafter top-up skipped: {e}");
+            Ok(false)
+        }
+    }
 }
 
 #[tauri::command]
@@ -800,6 +915,9 @@ pub fn engine_remove_model(app: AppHandle, model_id: String) -> Result<(), Strin
     let dir = models_dir(&app)?;
     let _ = fs::remove_file(dir.join(format!("{model_id}.gguf")));
     let _ = fs::remove_file(dir.join(format!("{model_id}.mmproj.gguf")));
+    // The MTP drafter goes with it, or "remove" leaves 99 MB behind for a model
+    // that is no longer there.
+    let _ = fs::remove_file(dir.join(format!("{model_id}.drafter.gguf")));
     Ok(())
 }
 
@@ -810,6 +928,7 @@ pub fn engine_discard_partial(app: AppHandle, model_id: String) -> Result<(), St
     let dir = models_dir(&app)?;
     let _ = fs::remove_file(dir.join(format!("{model_id}.part")));
     let _ = fs::remove_file(dir.join(format!("{model_id}.mmproj.part")));
+    let _ = fs::remove_file(dir.join(format!("{model_id}.drafter.part")));
     // A finished main file with no mmproj is also an incomplete install.
     if !dir.join(format!("{model_id}.mmproj.gguf")).is_file() {
         let _ = fs::remove_file(dir.join(format!("{model_id}.gguf")));
@@ -875,11 +994,11 @@ pub async fn engine_start(
     let key = session_key();
 
     let mut cmd = Command::new(server_exe(&dir));
-    cmd.arg("--model")
-        .arg(&model)
-        .arg("--mmproj")
-        .arg(&mmproj)
-        .arg("--host")
+    cmd.arg("--model").arg(&model);
+    if let Some(mm) = &mmproj {
+        cmd.arg("--mmproj").arg(mm);
+    }
+    cmd.arg("--host")
         .arg("127.0.0.1")
         .arg("--port")
         .arg(port.to_string())
@@ -897,7 +1016,51 @@ pub async fn engine_start(
         .arg("--parallel")
         .arg("1")
         .arg("-ngl")
-        .arg(gpu_layers.unwrap_or(99).to_string());
+        .arg(gpu_layers.unwrap_or(99).to_string())
+        // Quantise the K/V cache to 8 bits. Measured on an RX 7800 XT with
+        // gemma-4-e4b at ctx 32768: 3818 -> 3563 MiB on the card and 7542 ->
+        // 6997 MiB of RAM, with comms and copilot latency unchanged inside
+        // run-to-run noise. Near-lossless at q8_0 — it is q4 that costs
+        // accuracy — so this is memory handed back to the game for nothing.
+        //
+        // Worth recording what did NOT work, so it is not retried: cutting
+        // --ctx-size from 32768 to 8192 saved only ~430 MiB, because Gemma's
+        // grouped-query plus sliding-window attention makes its KV cache small
+        // to begin with. The context length is not where the VRAM goes; the
+        // weights are.
+        .arg("-ctk")
+        .arg("q8_0")
+        .arg("-ctv")
+        .arg("q8_0");
+
+    // Multi-token prediction, when this model shipped a drafter and it actually
+    // downloaded. Measured on an RX 7800 XT with gemma-4-e4b: generation 8 ->
+    // 15 tok/s, a comms scene 2536 -> 2011 ms, a copilot answer 9480 -> 8440
+    // ms, for ~200 MiB of card. Three draft tokens, not five: at five the
+    // rejection rate ate the gain and it measured slower (13 tok/s).
+    //
+    // Absent drafter, absent flags — an install from before this existed keeps
+    // working exactly as it did.
+    //
+    // Never on the processor. Speculative decoding wins by verifying several
+    // drafted tokens in ONE batched forward pass, which is a GPU's trick; on
+    // the CPU the draft costs about what it saves and measured slower — a
+    // comms scene went 1706 -> 2168 ms with the drafter attached at -ngl 0.
+    let on_gpu = gpu_layers.unwrap_or(99) > 0;
+    let drafter = models_dir(&app)
+        .map(|d| d.join(format!("{model_id}.drafter.gguf")))
+        .ok()
+        .filter(|p| on_gpu && p.is_file());
+    if let Some(path) = drafter {
+        cmd.arg("--spec-type")
+            .arg("draft-mtp")
+            .arg("--spec-draft-model")
+            .arg(&path)
+            .arg("--spec-draft-n-max")
+            .arg("3")
+            .arg("-ngld")
+            .arg("99");
+    }
     // Keep the vision projector off the card unless asked otherwise. It only
     // runs when a screen glance fires (opt-in, off by default), and measured on
     // an RX 7800 XT it costs 0.9-2.2 GB of VRAM for no gain to the text beats
@@ -995,19 +1158,28 @@ pub async fn engine_start(
     Err("the engine did not become ready in time".into())
 }
 
-fn resolve_model_paths(app: &AppHandle, model_id: &str) -> Result<(PathBuf, PathBuf), String> {
-    // An external (LM Studio) pair is passed through as "local:<model>|<mmproj>".
+/// The model file, and its vision projector if it has one.
+///
+/// A missing projector is no longer an error. Text-only models are the majority
+/// of what is worth trying for prose, and the copilot reads the journal — the
+/// system, the station, the faction board, the cargo, every event — with or
+/// without a screenshot. What it loses is the opt-in screen glance, which is
+/// off by default anyway.
+fn resolve_model_paths(app: &AppHandle, model_id: &str) -> Result<(PathBuf, Option<PathBuf>), String> {
+    // An external (LM Studio) pair is passed through as "local:<model>|<mmproj>";
+    // the mmproj half may be empty for a text-only model.
     if let Some(rest) = model_id.strip_prefix("local:") {
-        let (m, mm) = rest.split_once('|').ok_or("malformed local model id")?;
-        return Ok((PathBuf::from(m), PathBuf::from(mm)));
+        let (m, mm) = rest.split_once('|').unwrap_or((rest, ""));
+        let vision = if mm.is_empty() { None } else { Some(PathBuf::from(mm)) };
+        return Ok((PathBuf::from(m), vision));
     }
     let dir = models_dir(app)?;
     let model = dir.join(format!("{model_id}.gguf"));
-    let mmproj = dir.join(format!("{model_id}.mmproj.gguf"));
-    if !model.is_file() || !mmproj.is_file() {
+    if !model.is_file() {
         return Err("that model is not downloaded yet".into());
     }
-    Ok((model, mmproj))
+    let mmproj = dir.join(format!("{model_id}.mmproj.gguf"));
+    Ok((model, mmproj.is_file().then_some(mmproj)))
 }
 
 pub fn stop_engine(ctl: &EngineCtl) {
@@ -1052,20 +1224,26 @@ mod tests {
     use super::model_artifacts;
 
     #[test]
-    fn bundled_catalog_includes_glm_46v_flash_q4km() {
+    fn bundled_catalog_is_deliberate() {
+        // Every entry here walked through the measurement battery — this test
+        // is the door. E4B is the default (fastest, vision, tools, drafter);
+        // the 12B QAT is the quality tier, earned 2026-08-25 on scene
+        // discipline. Both are Gemma: one profile, one set of quirks.
         let models = model_artifacts();
-        let model = models
-            .iter()
-            .find(|entry| entry.id == "glm-4-6v-flash-9b")
-            .expect("missing GLM 4.6V Flash model entry");
+        assert_eq!(models.len(), 2);
 
-        assert!(model.url.ends_with("GLM-4.6V-Flash-Q4_K_M.gguf"));
-        assert!(
-            model
-                .mmproj_url
-                .ends_with("mmproj-GLM-4.6V-Flash-F16.gguf")
-        );
-        assert!(model.bytes > 7_000_000_000);
-        assert!(model.needs_gb >= 6.0);
+        let e4b = &models[0];
+        assert_eq!(e4b.id, "gemma-4-e4b");
+        assert!(e4b.mmproj_url.is_some(), "E4B ships a vision projector");
+        assert!(e4b.drafter_url.is_some(), "the MTP drafter is part of the tier");
+
+        let qat = &models[1];
+        assert_eq!(qat.id, "gemma-4-12b-qat");
+        // The id must keep matching the Gemma profile pattern in
+        // modelprofile.ts (/gemma[-_ ]?4/i) — it carries the family's
+        // thinking and penalty settings.
+        assert!(qat.id.contains("gemma-4"));
+        assert!(qat.mmproj_url.is_some(), "the 12B sees the screen");
+        assert!(qat.drafter_url.is_some(), "MTP pays on the GPU path");
     }
 }

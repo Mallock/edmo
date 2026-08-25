@@ -7,9 +7,9 @@ WHAT THIS IS
   index.html                              the page
   img/                                    screenshots + icons
   fonts/                                  the two webfonts, self-hosted
-  ED-Mission-Operator-1.2.0-setup.exe       the Windows installer (~132 MB)
-  ED-Mission-Operator-1.2.0-amd64.deb       Linux beta, Ubuntu/Debian (~147 MB)
-  ED-Mission-Operator-1.2.0-x86_64.AppImage Linux beta, any distro (~231 MB)
+  ED-Mission-Operator-1.5.0-setup.exe       the Windows installer (~132 MB)
+  ED-Mission-Operator-1.5.0-amd64.deb       Linux beta, Ubuntu/Debian (~147 MB)
+  ED-Mission-Operator-1.5.0-x86_64.AppImage Linux beta, any distro (~231 MB)
 
 HOW TO PUT IT ON YOUR WEB HOTEL
   1. Open your web hotel's File Manager (or connect with FTP, e.g. FileZilla).
@@ -22,8 +22,121 @@ NOTES
   * The installer is ~132 MB. Browser-based file managers sometimes limit
     uploads (often to 100 MB) — if the .exe upload fails, use FTP instead,
     or upload it to a file service and change the download link in
-    index.html (search for "ED-Mission-Operator-1.2.0-setup.exe").
-  * 1.2.0 fixes COMMS and changes what it promises.
+    index.html (search for "ED-Mission-Operator-1.5.0-setup.exe").
+  * 1.5.0 overhauls the COMMS WRITING and adds a second model.
+
+    RADIO THAT SOUNDS LIKE PEOPLE. A week of live sessions and simulated
+    batteries taught one law: a small model imitates what is vivid in front
+    of it far more than it obeys instructions. Everything quotable was
+    removed from the prompt (worked examples were surfacing verbatim in
+    scenes), trouble now comes from people rather than equipment (no more
+    beacons "flickering" for drama — a beacon is just the navigation stop,
+    and the data says so), tonnage figures never reach the air (a build
+    order is a shopping list, not a crisis), names shrink with familiarity
+    the way regulars actually talk, and the parser strips narration the
+    model occasionally dresses its radio in. The writer's rolling transcript
+    resets once on upgrade (v3) to shed habits learned under the old prompt.
+
+    234 SITUATIONS x 25 MOMENTS. The situation table tripled (petty
+    bureaucracy, personality clashes, overheard history, fatigue, small
+    victories, mistakes), and every scene now also carries a MOMENT — routine
+    and efficient, quietly suspicious, unexpectedly warm, slightly absurd —
+    an axis independent of the subject. The register/moment pairing does not
+    repeat for 3,575 consecutive scenes.
+
+    A SECOND MODEL, EARNED. Gemma 4 12B QAT joins the catalogue as the
+    quality tier: the best scene discipline of five candidates tested
+    (comms 10/10, tools clean), at about twice E4B's time per line — a pace
+    the scene scheduling absorbs. Vision included; the fast-generation
+    helper engages on the graphics card (measured slower on CPU, so it
+    stays off there). Four other models failed the same bench that week:
+    a Qwen fine-tune (retired after one day), the official Qwen3.5-9B, a
+    Llama MoE (called a tool when told "hello"), all measured, all declined.
+    E4B remains the default and the speed pick.
+
+    Also: comms timeouts no longer paint a red "last error" that outlives
+    the problem — errors clear on the next successful scene.
+
+  * 1.4.0 added THE CAMPAIGN — the story that follows you between systems —
+    and rewrote the feature section of the page into bullet points.
+
+    THE CAMPAIGN SPINE. Everything narrative used to reset at the jump: the
+    dossier and cast are per-system, the session arc per-session. Now a small
+    persistent campaign travels with you: a PURSUER (the faction working
+    against you) and a PATRON (the one you keep helping), both ELECTED from
+    journal evidence — interdictions, crimes, failed and completed contracts,
+    reputation — never invented, with decay and hysteresis so threads neither
+    flap nor last for ever. Each carries a six-segment threat clock that ticks
+    on real events; a filled clock comes to a head in all three voices. A
+    standing VOW is derived from what you actually fly. All of it is computed
+    in code from the journal — the AI voices read it, they never write it.
+
+    THREE VOICES, ONE BOUNDARY. The comms traffic gossips about the threads
+    (it may invent), the local wire covers the gossip AS gossip, and the
+    operator only ever states what really happened — anything fictional it
+    passes on is attributed as "heard on comms", which is factually true.
+
+    ORACLE COMMANDS. Type or speak "reveal a detail", "advance a threat"
+    (moves the dominant clock one segment — never the last, payoffs come from
+    real events only), or "flashback" (retells a real chronicle episode).
+
+    ON THE HUD. A compact strip under the ship status: pursuer and patron
+    with clock pips, and the current vow. "Reset campaign" lives in Settings.
+
+    THE PAGE. The feature manifest was prose walls; it is bullet points now.
+    New comms screenshot (img/hud-comms.png) in the gallery; architect, news
+    and settings screenshots refreshed from 1.4.0.
+
+  * 1.3.0 let the AI run on the PROCESSOR, made the wire and the traffic
+    far more reliable — and REMOVED LM STUDIO SUPPORT.
+
+    ONE ENGINE. The app's own bundled llama.cpp is now the only engine.
+    Supporting two meant every model quirk existed twice: vision detection had
+    two code paths with two failure modes, the capability map came from LM
+    Studio's private API and silently did not exist on the bundled engine, and
+    connection errors blamed LM Studio for faults in our own engine. GGUF
+    model+projector pairs already on disk (from LM Studio or anywhere else)
+    are still discovered and reused in place — only the second server is gone.
+
+    ON THE PROCESSOR. The graphics card is what the game needs, so the AI can
+    now be moved off it — Settings -> AI engine -> "Run the AI on". On a strong
+    CPU this is not a sacrifice: measured on a Ryzen 7 9800X3D against an RX
+    7800 XT, prompt reading went 2.7x faster, answers came 41% quicker, and
+    3.6 GB of graphics memory went back to Elite. The card stays the default,
+    because on an ordinary processor it is still the faster place.
+
+    FASTER GENERATION. Gemma models now fetch a ~99 MB multi-token prediction
+    helper that drafts several tokens per pass and verifies them together:
+    generation 8 -> 15 tokens a second, a radio exchange 2.5 s -> 2.0 s, for
+    about 200 MB. Output is identical; only the speed changes. Existing
+    installs pick it up on the next engine start — no re-download.
+
+    TWO MORE MODELS. Qwen 3.5 4B for anyone running on the processor — half the
+    weight of the others, still sees the screen, and the quickest of everything
+    tested on a CPU — and Llama 3.1 8B for a livelier voice. Vision is now OPTIONAL, which is what let a text-only model
+    in at all; the copilot reads the journal with or without a screenshot, and
+    only the opt-in screen glance is lost. The app tunes itself per family —
+    reasoning, tool use, screen reading, repetition — from measurements.
+
+    THE WIRE FILES DIFFERENTLY. One story at a time, as prose, instead of the
+    whole edition as JSON. That was the paper's most fragile part: a model whose
+    punctuation slipped lost the entire edition however well it wrote. A bad
+    story now costs that story, not the paper.
+
+    TRAFFIC THAT KEEPS TALKING. Several faults could each silence the comms
+    channel for a whole session — a writer that never handed itself back, a
+    repetition filter that could never learn because learning required speaking,
+    and a writer that declined to start whenever the operator was busy. All
+    three are fixed, and the Comms panel now reports exactly why anything was
+    dropped rather than just how many.
+
+    LESS REPETITION EVERYWHERE. Every briefing the app builds capped its lists
+    and always took the first few, so a system with six factions showed the same
+    four for ever and the model saw identical input every time. The lists now
+    rotate, so everything gets its turn, and the tone each piece is pitched in
+    rotates too.
+
+  * 1.2.0 fixed COMMS and changed what it promises.
 
     THE FIX: on the bundled engine comms produced nothing at all. The writer
     capped each request at 220 tokens, which is generous for two lines of radio
@@ -109,7 +222,7 @@ NOTES
     Windows' own speech engine gives no access to its output, so with system
     voices the radio character is skipped.
 
-    There is no new screenshot for the Comms tab yet; the gallery is unchanged.
+    (A Comms screenshot was added to the gallery in 1.4.0: img/hud-comms.png.)
 
   * 1.0.4 adds the ORRERY tab: the system map, at the size of a HUD. Every
     Scan the game writes carries the body's whole orbit — semi-major axis,
@@ -273,7 +386,7 @@ NOTES
     ranges and payout estimates; and four opt-in community lookups the operator
     calls only when asked (Spansh routes, galaxy-wide markets via Ardent
     Insight, the EDAstro exploration catalogue, and the Galnet news wire).
-  * All three installers are 1.2.0.
+  * All three installers are 1.5.0.
 
     Windows:  npm run tauri build
               -> src-tauri/target/release/bundle/nsis/

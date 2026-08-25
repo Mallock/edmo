@@ -573,3 +573,4 @@ test('gossip and celebrity may invent people; the reported desks may not', () =>
   // reusing it verbatim next edition is exactly the continuity we want.
   assert.deepEqual(cast.map((c) => c.name).sort(), ['Ring-runner Kaelen Roe', 'Sal Vance']);
 });
+

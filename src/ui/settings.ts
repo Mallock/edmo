@@ -8,13 +8,20 @@ export type TtsEngine = 'piper' | 'system';
 
 export interface AppSettings {
   lm: {
-    /** 'bundled' = the app's own llama.cpp engine (no LM Studio needed);
-     *  'lmstudio' = talk to a user-run LM Studio at `endpoint`. */
-    engine: 'bundled' | 'lmstudio';
+    /**
+     * The app's own llama.cpp engine is the ONLY engine.
+     *
+     * LM Studio support was cut deliberately, not lost. Supporting a second
+     * engine meant every model quirk existed twice — the capability map came
+     * from LM Studio's private REST API and silently did not exist on the
+     * bundled engine, vision detection had two code paths with two failure
+     * modes, and the connection-error message blamed LM Studio for faults in
+     * our own engine because it could not tell whose port it was talking to.
+     * One engine the app launches, owns and can read the logs of beats two
+     * it can only poke over HTTP.
+     */
     /** Model id the bundled engine should serve (see engine.rs manifest). */
     bundledModel: string | null;
-    endpoint: string;
-    model: string | null; // null = auto-pick first non-embedding model
     temperature: number;
     maxTokens: number;
     tools: boolean; // let the operator call tools to read live game data
@@ -22,6 +29,23 @@ export interface AppSettings {
      *  ships. The archive is ~32 MB and still comes from the pinned URL
      *  in engine.rs — this only removes the click, not the pinning. */
     autoUpdateRuntime: boolean;
+    /**
+     * Where the bundled engine runs: the graphics card, or the processor.
+     *
+     * 'gpu' keeps today's behaviour and stays the default, because on an
+     * ordinary processor the card is the faster place by a wide margin.
+     *
+     * 'cpu' exists because on a strong one it is not — and the card is the
+     * thing the game needs. Measured on a Ryzen 7 9800X3D (8 cores, 3D
+     * V-Cache, DDR5-6000) against an RX 7800 XT running gemma-4-e4b: prompt
+     * processing 202 -> 538 tok/s, a copilot answer 6957 -> 4105 ms, a comms
+     * scene unchanged, and the engine's hold on the card fell from 4,020 MiB
+     * to 391. Generation alone is slower (21 -> 15 tok/s), but the app's work
+     * is prompt-heavy, so the exchange is worth making. Inference is
+     * memory-bandwidth bound and a large L3 cache is worth more to it than a
+     * mid-range GPU's compute.
+     */
+    compute: 'gpu' | 'cpu';
   };
   voice: {
     enabled: boolean;
@@ -149,12 +173,7 @@ export interface AppSettings {
 
 export const DEFAULT_SETTINGS: AppSettings = {
   lm: {
-    // Existing installs keep talking to LM Studio; the bundled engine is opted
-    // into from Settings (or the first-run flow) once it has been downloaded.
-    engine: 'lmstudio',
     bundledModel: null,
-    endpoint: 'http://127.0.0.1:1234',
-    model: null,
     // 0.3 was a guidance-era default, from when the ask path mostly recited
     // procedure. The operator is a conversation now, and 0.3 reads flat.
     temperature: 0.8,
@@ -170,6 +189,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     // because build.txt was written and never read. Turn it off to keep
     // the strict never-fetch-unasked behaviour.
     autoUpdateRuntime: true,
+    compute: 'gpu',
   },
   voice: {
     enabled: true,

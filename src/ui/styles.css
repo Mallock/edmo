@@ -984,6 +984,20 @@ body {
   animation: blink 1.1s ease-in-out infinite;
 }
 
+/* The campaign spine strip: pursuer/patron chips reuse .status-chip; the vow
+   rides beside them, quieter — an aim, not an alarm. */
+.campaign-strip .status-chip {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.campaign-vow {
+  font-size: var(--fs-micro);
+  color: var(--text);
+  opacity: 0.65;
+  font-style: italic;
+}
+
 .explore-card {
   border-color: rgba(64, 224, 96, 0.4);
   background: rgba(64, 224, 96, 0.05);

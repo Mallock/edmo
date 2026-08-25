@@ -31,9 +31,21 @@ const ago = (atMs: number, nowMs: number): string => {
  * A bare drop total is not actionable: a writer that cannot reach the model and
  * one whose replies will not parse look identical, and they want opposite fixes.
  */
-const dominantDrop = (reasons: Record<string, number>): string => {
-  const top = Object.entries(reasons).sort((a, b) => b[1] - a[1])[0];
-  return top ? ` (mostly ${top[0]})` : '';
+/**
+ * Every drop reason with its count, biggest first.
+ *
+ * "mostly error" was not enough. With four drops spread across three causes it
+ * named one and hid the rest, and the three want completely different fixes:
+ * `busy` is the writer standing aside for the operator (working as intended),
+ * `late` is a scene that missed its own moment, `error` is the engine call
+ * failing. Showing the split turns the strip into a diagnosis instead of a hint.
+ */
+const dropBreakdown = (reasons: Record<string, number>): string => {
+  const parts = Object.entries(reasons)
+    .filter(([, n]) => n > 0)
+    .sort((a, b) => b[1] - a[1])
+    .map(([why, n]) => `${n} ${why}`);
+  return parts.length ? ` (${parts.join(', ')})` : '';
 };
 
 const quietLabel = (raw: string): string => {
@@ -179,10 +191,23 @@ export function CommsPanel({
         <span>{Math.max(0, view.diag.pending - view.diag.ready)} writing</span>
         <span>
           {view.diag.spoken} on the air
-          {view.diag.rejected > 0 && ` · ${view.diag.rejected} dropped${dominantDrop(view.diag.dropReasons)}`}
+          {view.diag.rejected > 0 && ` · ${view.diag.rejected} dropped${dropBreakdown(view.diag.dropReasons)}`}
         </span>
+        {view.diag.lastError && (
+          <span className="comms-diag-why" title={view.diag.lastError}>
+            last error: {view.diag.lastError}
+          </span>
+        )}
         {view.diag.quiet && <span className="comms-diag-why">{quietLabel(view.diag.quiet)}</span>}
-        {view.diag.lastGenAt > 0 && (
+        {/*
+          Gated on the OUTCOME, not on lastGenAt. It used to key off
+          `lastGenAt > 0`, which is set only when a scene is successfully
+          written — so a writer that had never once succeeded showed nothing at
+          all, and the one line that says WHY ("writer error — ...") was hidden
+          in exactly the situation it exists for. Silence about a failure is the
+          failure mode this whole diagnostic strip was added to end.
+        */}
+        {view.diag.lastGenOutcome && view.diag.lastGenOutcome !== 'waiting' && (
           <span className="comms-diag-last" title={view.diag.lastGenOutcome}>
             {view.diag.lastGenOutcome}
           </span>

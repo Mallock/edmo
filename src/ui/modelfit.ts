@@ -1,11 +1,11 @@
 /**
- * Model-fit estimator — parses parameter counts out of LM Studio model ids
+ * Model-fit estimator — parses parameter counts out of model ids
  * and classifies each model against the machine's RAM/VRAM so the player
  * doesn't load something too big for their rig.
  *
  * Pure module (no DOM/Tauri) — unit-tested in tests/modelfit.test.ts.
  *
- * Heuristics (Q4_K_M-class quantization, the LM Studio default):
+ * Heuristics (Q4_K_M-class quantization, the catalogue default):
  *   weights ≈ params_B × 0.6 GB, plus ~1.5 GB for KV-cache/runtime overhead.
  *   GPU budget = VRAM − 1 GB driver/display reserve − 6 GB for ED's renderer
  *   while the game runs (this is a game companion — fit is judged for play).

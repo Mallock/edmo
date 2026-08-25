@@ -18,6 +18,8 @@
  * without booting a HUD.
  */
 import { isFleetCarrier } from '../operator.ts';
+import { rotateWindow } from '../rotate.ts';
+import { describeSignal, stateGlossary } from '../gloss.ts';
 import type { SystemIntel } from '../types.ts';
 
 /** Lines cap. The prompt shares an output budget with a rolling transcript. */
@@ -34,12 +36,17 @@ export interface DossierInput {
   portSeparationLs?: number | null;
   /** Summaries from the fact briefs — construction depots, markets, events. */
   extra?: readonly string[];
+  /**
+   * Which slice of each capped list to show, so the briefing is not identical
+   * on every call.
+   *
+   * A system with six factions used to show the same four for ever, and the
+   * writer saw byte-identical input every time it wrote for that system — which
+   * is the one condition under which temperature buys nothing. The caller hands
+   * over a counter; see rotate.ts.
+   */
+  rotate?: number;
 }
-
-const trim = <T>(xs: readonly T[], cap: number): { shown: T[]; more: number } => ({
-  shown: xs.slice(0, cap),
-  more: Math.max(0, xs.length - cap),
-});
 
 const plus = (more: number): string => (more ? ` (+${more} more)` : '');
 
@@ -48,6 +55,9 @@ const pct = (influence: number): string => `${(influence * 100).toFixed(1)}%`;
 export function buildDossier(input: DossierInput): string {
   const s = input.intel;
   const lines: string[] = [];
+  const rot = input.rotate ?? 0;
+  const trim = <T>(xs: readonly T[], cap: number): { shown: T[]; more: number } =>
+    rotateWindow(xs, cap, rot);
 
   // Who and what this place is.
   const props: string[] = [];
@@ -86,6 +96,15 @@ export function buildDossier(input: DossierInput): string {
     lines.push(`Going on locally: ${shown.join(' · ')}${plus(more)}`);
   }
 
+  // What those state words MEAN — the journal's code for "Expansion" or
+  // "Lockdown" explains nothing by itself, and a model that does not know
+  // writes around it or invents (gloss.ts).
+  const glossary = stateGlossary([
+    ...(s?.factions ?? []).flatMap((f) => [f.state, ...(f.pending ?? []), ...(f.recovering ?? [])]),
+    ...(s?.factionStates ?? []).map((f) => f.state),
+  ]);
+  if (glossary) lines.push(glossary);
+
   // Places. Carriers are COUNTED, never named — a hub system carries a dozen
   // XXX-XXX registrations and they crowd out the names that mean something.
   const stationSignals = (s?.signals ?? []).filter((x) => x.isStation);
@@ -97,7 +116,16 @@ export function buildDossier(input: DossierInput): string {
   }
   if (carriers) lines.push(`Fleet carriers parked here: ${carriers}`);
 
-  const sites = (s?.signals ?? []).filter((x) => !x.isStation).map((x) => x.name);
+  // Plain nav beacons are left OUT — same law as carriers being counted, not
+  // named. A beacon is scenery in every system, worth nothing to a scene, and
+  // two model families independently kept electing it as the thing that must
+  // malfunction. It stays in the news and operator intel, where it is a fact
+  // rather than a prop. Compromised and tourist beacons are situations and stay.
+  const isPlainBeacon = (x: { name: string; type?: string }): boolean =>
+    (x.type === 'NavBeacon' || /\bbeacon\b/i.test(x.name)) && !/compromised|tourist/i.test(x.name);
+  const sites = (s?.signals ?? [])
+    .filter((x) => !x.isStation && !isPlainBeacon(x))
+    .map(describeSignal);
   if (sites.length) {
     const { shown, more } = trim([...new Set(sites)], 6);
     lines.push(`Signals detected: ${shown.join(' · ')}${plus(more)}`);
@@ -121,9 +149,18 @@ export function buildDossier(input: DossierInput): string {
 
   // Anything the briefs know that the intel does not. Summaries only: the nouns
   // and figures underneath them were the fence, and are not wanted here.
-  for (const summary of input.extra ?? []) {
-    const line = summary.trim();
-    if (!line || line === 'atmosphere' || lines.includes(line)) continue;
+  // Rotating the ORDER was not enough — with few briefs every one of them
+  // still sat in every single prompt, and a live session watched one build
+  // shortfall anchor three scenes running. One brief now sits each call OUT,
+  // rotating which, so every fact gets scenes it is absent from — absence is
+  // the only rotation a model actually notices.
+  const extras = (input.extra ?? [])
+    .map((s) => s.trim())
+    .filter((s) => s && s !== 'atmosphere');
+  const shownExtras =
+    extras.length > 1 ? rotateWindow(extras, extras.length - 1, rot).shown : extras;
+  for (const line of shownExtras) {
+    if (lines.includes(line)) continue;
     lines.push(line);
     if (lines.length >= MAX_LINES) break;
   }

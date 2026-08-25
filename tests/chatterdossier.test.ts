@@ -41,6 +41,46 @@ test('the dossier states what kind of place this is', () => {
   assert.match(out, /population 1,240,000/);
 });
 
+test('plain nav beacons are left out of the comms briefing entirely', () => {
+  // Explaining the beacon was not enough: two model families independently
+  // elected it as the thing that must malfunction, however boring the note.
+  // Same law as carriers being counted, not named — a beacon is scenery in
+  // every system and worth nothing to a scene. Compromised beacons ARE a
+  // situation and stay; other signals stay annotated.
+  const out = buildDossier({
+    system: 'HIP 71120',
+    intel: intel({
+      signals: [
+        site('Henry Beacon'),
+        { name: 'Unmarked Signal', isStation: false, type: 'NavBeacon' },
+        site('Compromised Nav Beacon'),
+        site('Resource Extraction Site [Hazardous]'),
+      ],
+    }),
+    docked: false,
+  });
+  assert.doesNotMatch(out, /Henry Beacon/);
+  assert.doesNotMatch(out, /Unmarked Signal/);
+  assert.match(out, /Compromised Nav Beacon \(the navigation stop, currently overrun/);
+  assert.match(out, /Resource Extraction Site \[Hazardous\] \(ring mining/);
+});
+
+test('the dossier explains the state words on its own board', () => {
+  const out = buildDossier({ system: 'HIP 71120', intel: intel(), docked: false });
+  // Explorer on Tour is in Expansion — the board's states get their meanings.
+  assert.match(out, /\(state meanings: Expansion = pushing into a neighbouring system\)/);
+  // And a stateless board earns no glossary line.
+  const calm = buildDossier({
+    system: 'X',
+    intel: intel({
+      factions: [{ name: 'Quiet Party', influence: 0.5 }],
+      factionStates: [],
+    }),
+    docked: false,
+  });
+  assert.doesNotMatch(calm, /state meanings/);
+});
+
 test('the controlling faction carries its influence share', () => {
   const out = buildDossier({ system: 'HIP 71120', intel: intel(), docked: false });
   assert.match(out, /Runs this system: HIP 71462 Council \(30\.6%\)/);
@@ -96,11 +136,11 @@ test('signals are listed under their own heading', () => {
 test('duplicate signals are collapsed', () => {
   const out = buildDossier({
     system: 'X',
-    intel: intel({ signals: [site('Nav Beacon'), site('Nav Beacon'), site('Combat Zone')] }),
+    intel: intel({ signals: [site('Distress Call'), site('Distress Call'), site('Combat Zone')] }),
     docked: false,
   });
   const line = out.split('\n').find((l) => l.startsWith('Signals detected:'))!;
-  assert.equal(line.match(/Nav Beacon/g)?.length, 1);
+  assert.equal(line.match(/Distress Call/g)?.length, 1);
 });
 
 test('port separation is stated when the commander is out in the system', () => {
@@ -151,6 +191,17 @@ test('brief summaries ride along as extra background', () => {
   });
   assert.match(out, /Bertrandite at Hurston Ring down 380/);
   assert.doesNotMatch(out, /^atmosphere$/m, 'the texture placeholder is not a fact');
+});
+
+test('one extra sits each call out, so no brief rides every prompt', () => {
+  const extra = ['Fact alpha', 'Fact beta', 'Fact gamma'];
+  const at = (rotate: number) =>
+    buildDossier({ system: 'X', intel: intel(), docked: false, extra, rotate });
+  for (const fact of extra) {
+    const present = [0, 1, 2].filter((r) => at(r).includes(fact)).length;
+    assert.ok(present >= 1, `${fact} never shown`);
+    assert.ok(present < 3, `${fact} rode every prompt — absence is the rotation that matters`);
+  }
 });
 
 test('the dossier is bounded however much is known', () => {

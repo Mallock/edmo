@@ -8,6 +8,9 @@
  * See SPEC.md §3.2.4, §3.5.
  */
 import type { ChatMessage } from './lmstudio.ts';
+import { rotateWindow } from './rotate.ts';
+import { operatorAngle } from './tone.ts';
+import { describeSignal, stateGlossary } from './gloss.ts';
 import type { Mission, MissionCategory, OperatorState } from './types.ts';
 import { askPersona, LORE_PRIMER, UNIVERSAL_LORE } from './lore.ts';
 
@@ -336,10 +339,14 @@ const baseSystem = (cmdr?: string): string =>
   'terminology. Output 2-4 short speakable sentences, plain text only, and always return an answer.';
 
 /** The same operator, with no contract on the board to plan around. */
-export const idleAskSystem = (cmdr?: string): string =>
+export const idleAskSystem = (cmdr?: string, rotate = 0): string =>
   `${askPersona(cmdr)} ${LORE_PRIMER} ${UNIVERSAL_LORE} ` +
   'No mission is active. Answer from the facts provided — never invent places, prices, ' +
-  'mechanics or events. Output 2-4 short speakable sentences, plain text only, no markdown.';
+  'mechanics or events. Output 2-4 short speakable sentences, plain text only, no markdown. ' +
+  // The persona is fixed and the lore is fixed, so without this the operator
+  // reads an identical system prompt on every question it is ever asked. This
+  // shifts what it leans on, never what is true.
+  operatorAngle(rotate);
 
 /** Back-compat for callers with no commander name. */
 export const IDLE_ASK_SYSTEM = idleAskSystem();
@@ -365,7 +372,7 @@ export function isFleetCarrier(x: { name: string; type?: string }): boolean {
  * security/faction plus concrete places to go (RES, Nav Beacon, stations).
  * Null when nothing useful is known (e.g. no FSS scan yet).
  */
-export function describeSystemIntel(state: OperatorState): string | null {
+export function describeSystemIntel(state: OperatorState, rotate = 0): string | null {
   const s = state.system;
   if (!s) return null;
   const lines: string[] = [];
@@ -375,22 +382,30 @@ export function describeSystemIntel(state: OperatorState): string | null {
   if (s.controllingFaction) props.push(`controlled by ${s.controllingFaction}`);
   if (props.length) lines.push(`Current system (${state.location.system}): ${props.join(', ')}`);
   if (s.factionStates?.length) {
-    lines.push(
-      `Local faction states: ${s.factionStates.slice(0, 6).map((f) => `${f.name} (${f.state})`).join(', ')}`,
-    );
+    // Rotated, not sliced. A system with eight factions in a state showed the
+    // operator the same six on every answer, so the same three got mentioned
+    // all evening and the rest may as well not have existed.
+    const { shown } = rotateWindow(s.factionStates, 6, rotate);
+    lines.push(`Local faction states: ${shown.map((f) => `${f.name} (${f.state})`).join(', ')}`);
+    const glossary = stateGlossary(shown.map((f) => f.state));
+    if (glossary) lines.push(glossary);
   }
 
   const stationSignals = s.signals.filter((x) => x.isStation);
   const stations = stationSignals.filter((x) => !isFleetCarrier(x)).map((x) => x.name);
   const carriers = stationSignals.filter(isFleetCarrier).length;
-  const sites = s.signals.filter((x) => !x.isStation).map((x) => x.name);
-  if (sites.length) lines.push(`Signals detected here: ${sites.slice(0, 8).join(' · ')}`);
+  // Annotated with what each thing IS (gloss.ts) — advice about a hazardous
+  // extraction site starts with knowing it has no police cover.
+  const sites = s.signals.filter((x) => !x.isStation).map(describeSignal);
+  if (sites.length) {
+    lines.push(`Signals detected here: ${rotateWindow(sites, 8, rotate).shown.join(' · ')}`);
+  }
   if (stations.length || carriers) {
     const parts: string[] = [];
-    if (stations.length)
-      parts.push(
-        `stations: ${stations.slice(0, 6).join(', ')}${stations.length > 6 ? ` (+${stations.length - 6} more)` : ''}`,
-      );
+    if (stations.length) {
+      const { shown, more } = rotateWindow(stations, 6, rotate);
+      parts.push(`stations: ${shown.join(', ')}${more ? ` (+${more} more)` : ''}`);
+    }
     if (carriers) parts.push(`${carriers} fleet carrier${carriers === 1 ? '' : 's'}`);
     lines.push(`Docking here — ${parts.join(' · ')}`);
   }

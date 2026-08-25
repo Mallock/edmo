@@ -53,7 +53,42 @@ export interface ModelProfile {
   /** Where hidden reasoning is WANTED, per call path. Stated explicitly rather
    *  than inferred: the three paths genuinely disagree, and which ones differ
    *  changes from family to family. */
-  thinkingFor: { chatter: boolean; ask: boolean; json: boolean; comms: boolean };
+  thinkingFor: { chatter: boolean; ask: boolean; json: boolean; comms: boolean; news: boolean };
+  /**
+   * May this family drive the operator's tool loop?
+   *
+   * Not every model that ADVERTISES tool support can be trusted with one.
+   * Measured on Llama 3.1 8B with the app's fifteen schemas attached: it
+   * answered the word "hello" by calling `get_current_market({})` and returning
+   * empty prose — a tool call for a greeting — and once the result came back it
+   * recited the market row verbatim instead of saying anything. The same model
+   * with tools withheld answered "Hello, Commander. Just watched the Galnet
+   * evening broadcast..." So the loop is switched off per family rather than
+   * per user: a commander should not have to work out that the operator has
+   * gone strange because of a checkbox they never touched.
+   */
+  tools: boolean;
+  /**
+   * May this family be trusted to decide when the operator speaks?
+   *
+   * True for everything shipped today, and the story of why this exists at all
+   * is worth keeping. Llama 3.1 was measured answering SKIP to five events out
+   * of five and the gate was withheld from it — but the five were docking, a
+   * cargo hand-over, undocking, arriving and a body scan, which are almost
+   * verbatim the examples BEAT_GATE_SYSTEM instructs it to skip ("ordinary
+   * jumps, docking clearances, undocks, incremental cargo ticks"). The model was
+   * answering correctly; the test was asking the wrong questions. Re-run against
+   * events the gate is meant to accept — an interdiction at 12% shields, a four
+   * million credit payout, a first discovery, a hull at 31% — Gemma 4 12B
+   * answered SPEAK 4/4 and still skipped the routine two.
+   *
+   * So the knob stays at true and the operator's quiet stretches are the design
+   * working: it speaks at most once in three events, and a session of docking
+   * and hauling is exactly the texture it is told to sit out. Kept rather than
+   * deleted because a family that genuinely cannot judge this is plausible, and
+   * `parseBeatGate` failing open does not catch one that is confidently wrong.
+   */
+  beatGate: boolean;
   /** Something the player should know, shown in Settings. Null when the model
    *  simply works. */
   note: string | null;
@@ -86,7 +121,9 @@ const GEMMA: ModelProfile = {
   // "Something is moving near the beacon."). Twelve times the latency for no
   // gain, on a tier that writes ahead into slots and throws away anything that
   // arrives late.
-  thinkingFor: { chatter: true, ask: true, json: true, comms: false },
+  thinkingFor: { chatter: true, ask: true, json: true, comms: false, news: true },
+  tools: true,
+  beatGate: true,
   note: null,
 };
 
@@ -114,11 +151,32 @@ const PROFILES: Array<{ match: RegExp; profile: ModelProfile }> = [
       // 8/8 identical openers at 0.5/0.3; needs the firmest hand of any family.
       penalties: { presence: 1.0, frequency: 0.6 },
       resamplePenalties: { presence: 1.2, frequency: 0.8 },
-      thinkingFor: { chatter: true, ask: true, json: true, comms: false },
+      thinkingFor: { chatter: true, ask: true, json: true, comms: false, news: true },
+      tools: true,
+      beatGate: true,
       note:
         'This model thinks before it speaks, so the operator answers more slowly than with the ' +
         'recommended one — switching that off crashes some graphics drivers, so it is left on. ' +
         'It also repeats itself more than most, so repeated lines are filtered out.',
+    },
+  },
+  {
+    match: /llama[-_ ]?3|meta-llama/i,
+    profile: {
+      family: 'Llama 3',
+      // No hidden reasoning pass in this family, so there is nothing to
+      // suppress and the kwarg is never sent.
+      thinking: 'keep',
+      penalties: { presence: 0.5, frequency: 0.3 },
+      resamplePenalties: { presence: 0.7, frequency: 0.5 },
+      thinkingFor: { chatter: false, ask: false, json: false, comms: false, news: false },
+      // See ModelProfile.tools — measured calling a market tool for "hello".
+      tools: false,
+      beatGate: true,
+      note:
+        'This model writes well but cannot be trusted with the data tools — it called ' +
+        'one to answer "hello" — so tool use is switched off for it. It also has no vision, so ' +
+        'the screen glance is unavailable.',
     },
   },
   {
@@ -130,7 +188,9 @@ const PROFILES: Array<{ match: RegExp; profile: ModelProfile }> = [
       resamplePenalties: { presence: 1.0, frequency: 0.6 },
       // Its reasoning eats the entire token budget when a schema is attached:
       // 3,000 tokens, 23 s, empty result, every time. Off on every path.
-      thinkingFor: { chatter: false, ask: false, json: false, comms: false },
+      thinkingFor: { chatter: false, ask: false, json: false, comms: false, news: false },
+      tools: true,
+      beatGate: true,
       note: 'Hidden reasoning is switched off everywhere for this model — with it on, ' +
         'schema-constrained calls (session memory, screen readings) return nothing.',
     },
@@ -143,7 +203,9 @@ const PROFILES: Array<{ match: RegExp; profile: ModelProfile }> = [
       // 13/16 duplicates at the defaults; still 5/8 at triple strength.
       penalties: { presence: 1.0, frequency: 0.6 },
       resamplePenalties: { presence: 1.2, frequency: 0.8 },
-      thinkingFor: { chatter: true, ask: true, json: true, comms: false },
+      thinkingFor: { chatter: true, ask: true, json: true, comms: false, news: true },
+      tools: true,
+      beatGate: true,
       note: 'This model tends to repeat its previous line; many beats will be filtered out.',
     },
   },
@@ -172,7 +234,7 @@ export function profileFor(id: string | null | undefined): ModelProfile {
  */
 export function suppressThinkingFor(
   profile: ModelProfile,
-  kind: 'chatter' | 'json' | 'ask' | 'comms',
+  kind: 'chatter' | 'json' | 'ask' | 'comms' | 'news',
 ): boolean {
   // Only the template mechanism can suppress per request. 'keep' wants
   // reasoning; 'server' must never be sent this kwarg — that request is

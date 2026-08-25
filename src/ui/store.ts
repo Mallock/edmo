@@ -89,13 +89,15 @@ import {
 import {
   acceptNews,
   buildNewsBrief,
-  buildNewsChat,
+  buildStoryChat,
+  parseStory,
   desksFor,
   marketPulse,
   newsDue,
   newsMaxTokens,
   trimCast,
   type CastMember,
+  type NewsDesk,
   type NewsItem,
   type PriceMemory,
 } from '../engine/news.ts';
@@ -129,6 +131,9 @@ import {
 import { loreForSystem } from '../engine/lore.ts';
 import { momentOf, CombatStreak } from '../engine/moments.ts';
 import { SessionArc } from '../engine/arc.ts';
+import { CampaignTracker } from '../engine/campaign.ts';
+import { spineLines } from '../engine/spine.ts';
+import { oracleCommandOf, planOracle, type OraclePlan } from '../engine/oracle.ts';
 import {
   profileFor,
   suppressThinkingFor,
@@ -231,7 +236,6 @@ import {
   llmChat,
   llmQuick,
   llmModels,
-  llmModelTypes,
   ardentMarket,
   type ArdentMarketRow,
   ardentSystemCommodities,
@@ -246,6 +250,7 @@ import {
   engineDownloadModel,
   engineCancelDownload,
   engineDiscardPartial,
+  engineEnsureDrafter,
   engineStart,
   engineStop,
   engineAlive,
@@ -342,6 +347,14 @@ interface PendingVision {
   recent?: string[];
   /** verdict mode */
   context?: string;
+}
+
+/** The campaign spine, as the HUD shows it: who is in the story and how tight
+ *  their clock is wound. Data only — the block renders nothing when null. */
+export interface CampaignHudView {
+  pursuer: { faction: string; clock: number } | null;
+  patron: { faction: string; clock: number } | null;
+  vow: string | null;
 }
 
 /** Compact ship telemetry surfaced to the HUD (from Status.json). */
@@ -452,13 +465,26 @@ export interface CommsView {
     spoken: number;
     rejected: number;
     /**
-     * Drops broken out by reason: `no-turns`, `invalid`, `late`, `error`.
+     * Drops broken out by reason: `no-turns`, `invalid`, `late`, `error`,
+     * `busy`.
      *
      * A single total cannot tell a writer that is timing out from one whose
      * replies will not parse, and those want opposite fixes. Not having this
-     * split is what let a 90% drop rate sit undiagnosed.
+     * split is what let a 90% drop rate sit undiagnosed. `busy` is the one that
+     * is not a fault at all — it means the operator and the wire are using the
+     * engine and the writer stood aside, which is the intended order.
      */
     dropReasons: Record<string, number>;
+    /**
+     * The last transport failure, kept until another one replaces it.
+     *
+     * Separate from lastGenOutcome on purpose: that field is overwritten by
+     * every subsequent success, skip and late drop, so the one message that
+     * says WHY the engine call failed was gone by the time anybody looked at
+     * the panel. An error that scrolls past unread is the same as no error
+     * message at all.
+     */
+    lastError: string;
     quiet: string;
     lastGenAt: number;
     lastGenOutcome: string;
@@ -490,6 +516,8 @@ export interface AppSnapshot {
   bio: BioLead | null;
   /** Live ship telemetry from Status.json, or null before any snapshot. */
   shipStatus: HudShipStatus | null;
+  /** The campaign spine readout — null until anything is elected or vowed. */
+  campaign: CampaignHudView | null;
   /** Highest-value unmapped body known this session, or null. */
   exploreLead: ExploreLead | null;
   route: TradeRoute | null;
@@ -535,6 +563,15 @@ export interface AppSnapshot {
 }
 
 const GAME_LIVE_WINDOW_MS = 90_000;
+
+/**
+ * The longest a comms write can legitimately hold the writer.
+ *
+ * The engine wait is capped at 15 s and the request timeout at the scene's
+ * remaining life, which tops out at the longest slot TTL (150 s). Anything past
+ * the sum of those plus a margin is not slow, it is lost.
+ */
+const COMMS_WRITE_CEILING_MS = 180_000;
 
 function stripThink(text: string): string {
   return (
@@ -703,7 +740,6 @@ export class AppCore {
   }
 
   // ------------------------------------------------------------ screen sight
-  private modelTypes: Record<string, string> = {};
   private lastGlanceAt = 0;
   private glanceActivity: string | null = null;
   private glanceActivityAt = 0;
@@ -746,6 +782,18 @@ export class AppCore {
   private beatsSinceTally = 0;
   /** The session's story — chapters, turns, mood — computed in arc.ts. */
   private sessionArc = new SessionArc();
+  /** The story that SURVIVES the session — elected pursuer/patron, threat
+   *  clocks, the derived vow. Advanced only in code from the journal
+   *  (campaign.ts); the three voices read it, they never write it. */
+  private campaign = (() => {
+    const c = new CampaignTracker();
+    try {
+      c.load(JSON.parse(localStorage.getItem('edmo.campaign.v1') ?? 'null'));
+    } catch {
+      /* a fresh campaign — the journal re-teaches it from here on */
+    }
+    return c;
+  })();
   /** The fight being fought right now, told once when it ends (moments.ts). */
   private combatStreak = new CombatStreak();
   /** Last new-vocabulary moment, so an identical one inside ten minutes
@@ -1048,19 +1096,19 @@ export class AppCore {
   /**
    * The writer's rolling transcript.
    *
-   * v2, and the bump is the migration. v1 holds assistant turns recorded from
-   * `sceneText` — the whole scene flattened onto one line with the speaker tags
-   * stripped — written under a prompt that demanded `[speakerRef]` labels. Any
-   * installation carrying one is sitting in a trap: the model reads its own
-   * history, concludes the house style has no labels, writes none, and every
-   * reply parses to nothing. Rejected scenes are never recorded, so no labelled
-   * example can get back in and the state never recovers. Starting clean is the
-   * only fix, and the new format cannot re-enter it.
+   * v3, and as with v2 the bump IS the migration — the cure for a poisoned
+   * history. v1 taught the model a tag format the parser no longer wanted.
+   * v2 was written under the pre-refinement prompt: scenes quoting exact
+   * tonnages line after line, and since the model imitates its own history
+   * harder than any instruction, every new scene re-learned the habit from
+   * the old ones ("2,483-ton" surfaced in scenes whose briefing no longer
+   * contained any figure at all). Starting clean is the only fix that sticks;
+   * the new prompt and figure-free briefs cannot re-enter the loop.
    */
   private commsConversation = (() => {
     const convo = new ChatterConversation();
     try {
-      convo.load(JSON.parse(localStorage.getItem('edmo.comms.convo.v2') ?? '[]'));
+      convo.load(JSON.parse(localStorage.getItem('edmo.comms.convo.v3') ?? '[]'));
     } catch {
       /* start with an empty transcript */
     }
@@ -1084,12 +1132,26 @@ export class AppCore {
     spoken: 0,
     rejected: 0,
     dropReasons: {},
+    lastError: '',
     quiet: 'not-due',
     lastGenAt: 0,
     lastGenOutcome: 'waiting',
   };
   private commsDirty = false;
   private commsWriteInFlight = false;
+  /** When the current write claimed the writer, for the watchdog below. */
+  private commsWriteStartedAt = 0;
+  /**
+   * How many briefs this session has built.
+   *
+   * Every capped list in every brief — factions, stations, signals, previous
+   * headlines — used to take the first N, so a system produced byte-identical
+   * input on every call and the model returned its favourite answer however hot
+   * the sampling was. This advances once per brief and rotates those windows.
+   * A plain counter rather than a random seed: two runs from the same state
+   * stay reproducible, and the briefs stay pure functions.
+   */
+  private briefSeq = 0;
 
   /** Count a dropped generation against both the total and its reason. */
   private noteCommsDrop(reason: string): void {
@@ -1251,6 +1313,7 @@ export class AppCore {
       trade: this.tradeOpp,
       bio: this.bioLead,
       shipStatus: this.hudShipStatus(),
+      campaign: this.campaignHud(),
       exploreLead: this.explore.leads()[0] ?? null,
       route: this.route,
       tradeRun: this.tradeRun,
@@ -1312,31 +1375,44 @@ export class AppCore {
     };
   }
 
-  /** VLM per LM Studio's REST API; unknown (older LM Studio) counts as capable
-   *  — a failed glance is silent, so optimism costs nothing. On the bundled
-   *  engine vision is known by construction: every shipped model has an mmproj
-   *  (T7.5.2), so the "no vision" warning can never fire spuriously. */
+  /**
+   * Can the model in front of us actually see?
+   *
+   * Answered from the projector file on disk, which the engine reports per
+   * model. It used to answer "yes, if the engine is up" — true while every
+   * shipped model had a projector, and quietly wrong the day text-only models
+   * were allowed in: the glance kept firing, llama.cpp answered `image input
+   * is not supported` five hundred times, and from the outside the operator
+   * had simply gone quiet. (An LM Studio branch also lived here, reading a
+   * capability map from LM Studio's private REST API — one of the two failure
+   * modes that motivated cutting the second engine entirely.)
+   */
   private activeModelIsVlm(): boolean {
-    if (this.settings.lm.engine === 'bundled') return this.engine?.running ?? false;
-    const m = this.activeModel();
-    if (!m) return false;
-    const ty = this.modelTypes[m];
-    return ty === undefined ? true : ty === 'vlm';
+    if (!this.engine?.running) return false;
+    const id = this.settings.lm.bundledModel;
+    const info = this.engine.models.find((m) => m.id === id);
+    // A model the engine does not list (an external gguf pair) is treated as
+    // sighted; a failed glance is silent, so optimism costs nothing.
+    return info ? info.vision : true;
   }
 
   // ------------------------------------------------------- bundled AI engine
   /** Last known state of the app's own llama.cpp engine (null until polled). */
   private engine: EngineStatus | null = null;
   private engineProgress: EngineProgress | null = null;
+  /** True while the engine is being (re)started — the old port is already dead
+   *  and the new one is not listening yet. */
+  private engineRestarting = false;
 
-  /** Where chat requests actually go, and the key they need. The bundled engine
-   *  serves OpenAI-compatible endpoints on a random loopback port behind a
-   *  per-session token; LM Studio needs no auth. */
+  /** Where chat requests go: the bundled engine's OpenAI-compatible endpoints,
+   *  on a random loopback port behind a per-session token. When the engine is
+   *  down this returns a dead port on purpose — callers already treat a failed
+   *  request as "engine not running", and that is the truth. */
   private lmTarget(): { endpoint: string; apiKey: string | null } {
-    if (this.settings.lm.engine === 'bundled' && this.engine?.running && this.engine.port) {
+    if (this.engine?.running && this.engine.port) {
       return { endpoint: `http://127.0.0.1:${this.engine.port}`, apiKey: this.engine.api_key };
     }
-    return { endpoint: this.settings.lm.endpoint, apiKey: null };
+    return { endpoint: 'http://127.0.0.1:0', apiKey: null };
   }
 
   /** Refresh engine status (installed runtime, models, whether it's serving). */
@@ -1440,6 +1516,15 @@ export class AppCore {
   async engineStartModel(modelId: string): Promise<void> {
     if (!isTauri) return;
     this.pushFeed('system', '⚙ Starting the local AI engine…');
+    // Down NOW, not at the next poll. The go/no-go check every background
+    // writer uses is `lmOk`, refreshed on a 20-second cycle — so for up to 20 s
+    // after a restart began, comms still believed the OLD engine was up, fired
+    // a scene at a port that no longer answers, and logged a connect error.
+    // Measured live: exactly one red "did not answer" per engine start, three
+    // starts, "3 dropped (3 error)" on the panel for a system with nothing
+    // wrong with it.
+    this.engineRestarting = true;
+    this.lmOk = false;
     try {
       // Fit the engine around the game, not the other way round: the layer
       // budget and the vision-on-CPU choice both come from the GPU headroom
@@ -1447,18 +1532,34 @@ export class AppCore {
       // the card, whatever the settings panel's own advisor was warning.
       const info = this.engine?.models.find((m) => m.id === modelId);
       const modelGb = info ? info.bytes / 1e9 : 0;
-      const layers = gpuLayerBudget(this.specs, modelGb, MODEL_LAYERS_ESTIMATE, true);
+      // Zero layers on the card is the whole of "run it on the processor" —
+      // llama.cpp needs no other flag, and its own default thread count
+      // measured within noise of the best hand-tuned one, so none is sent.
+      const layers =
+        this.settings.lm.compute === 'cpu'
+          ? 0
+          : gpuLayerBudget(this.specs, modelGb, MODEL_LAYERS_ESTIMATE, true);
       const visionOnCpu = shouldKeepVisionOnCpu(this.specs, true);
       // Some models cannot be told to skip reasoning per-request without
       // crashing the driver; they get it capped at launch instead.
       const budget = reasoningBudgetFor(profileFor(modelId));
+      // Top up the multi-token-prediction drafter before starting, so an
+      // install that predates it still gets the speed-up. Measured on an
+      // RX 7800 XT with E4B: generation 8 -> 15 tok/s for a 99 MB file. Quiet
+      // and never fatal — the launcher omits the speculative flags when it is
+      // absent, which is exactly how the engine behaved before it existed.
+      if (await engineEnsureDrafter(modelId)) {
+        this.pushFeed('system', '⚙ Fetched the fast-generation helper for this model.');
+      }
       this.engine = await engineStart(modelId, this.engineCtxSize(), layers, visionOnCpu, budget);
-      this.settings = { ...this.settings, lm: { ...this.settings.lm, engine: 'bundled', bundledModel: modelId } };
+      this.settings = { ...this.settings, lm: { ...this.settings.lm, bundledModel: modelId } };
       saveSettings(this.settings);
-      this.pushFeed('system', '✅ Local AI engine ready — no LM Studio needed.');
+      this.pushFeed('system', '✅ Local AI engine ready.');
       await this.pollLm();
     } catch (e) {
       this.pushFeed('system', `The AI engine could not start: ${String(e)}`);
+    } finally {
+      this.engineRestarting = false;
     }
     this.emit();
   }
@@ -1478,7 +1579,7 @@ export class AppCore {
 
   /**
    * The first-run offer: shown only when there is genuinely nothing to talk to
-   * — no bundled engine running, no LM Studio answering — and we have a tier
+   * — the bundled engine not running — and we have a tier
    * that fits. Everything else in the app works without it, so this is an
    * invitation, never a wall.
    */
@@ -1606,7 +1707,20 @@ export class AppCore {
         .then(() => {
         // Auto-resume the bundled engine the user last chose, so the copilot is
         // ready without a visit to Settings.
-        const { engine, bundledModel } = this.settings.lm;
+        //
+        // A catalogue entry can also be RETIRED (the Defiant 9B, 2026-08-25):
+        // a remembered id the catalogue no longer lists would leave the AI
+        // silently off for ever, with Settings showing a ghost. Fall back to
+        // the first bundled model — if it is installed it starts, and if not
+        // the ordinary setup offer takes it from there.
+        const known = (id: string): boolean =>
+          id.startsWith('local:') || (this.engine?.models.some((m) => m.id === id) ?? false);
+        if (this.settings.lm.bundledModel && !known(this.settings.lm.bundledModel)) {
+          const first = this.engine?.models[0]?.id ?? '';
+          this.settings = { ...this.settings, lm: { ...this.settings.lm, bundledModel: first } };
+          saveSettings(this.settings);
+        }
+        const { bundledModel } = this.settings.lm;
         // Only resume a model that is actually still on disk — a remembered id
         // whose files were removed must fall through to the setup offer quietly,
         // not greet the commander with a start failure.
@@ -1614,7 +1728,7 @@ export class AppCore {
           !!bundledModel &&
           (bundledModel.startsWith('local:') ||
             (this.engine?.models.some((m) => m.id === bundledModel && m.installed) ?? false));
-        if (engine === 'bundled' && stillInstalled && !this.engine?.running) {
+        if (stillInstalled && !this.engine?.running) {
           void this.engineStartModel(bundledModel!);
         } else {
           void this.pollLm();
@@ -1767,6 +1881,28 @@ export class AppCore {
         }
       }
       const changes = this.sm.apply(ev);
+      // The campaign spine folds AFTER the state manager, so it reads the
+      // system intel this very event just updated (standings, controlling
+      // faction). Bootstrap replays respect the watermark — history never
+      // double-counts — while live events always fold (journal timestamps are
+      // seconds-resolution and collide inside a burst).
+      {
+        const sys = this.sm.getState().system;
+        const folded = this.campaign.observe(
+          ev,
+          { factions: sys?.factions, controlling: sys?.controllingFaction },
+          !(live && this.bootstrapped),
+        );
+        const vowMoved =
+          ev.event === 'MissionAccepted' ||
+          ev.event === 'MissionCompleted' ||
+          ev.event === 'MissionFailed' ||
+          ev.event === 'MissionAbandoned' ||
+          ev.event === 'Missions'
+            ? this.campaign.updateVow(this.sm.activeMissions(), this.sessionArc.chapterKind())
+            : false;
+        if (folded || vowMoved) this.persistCampaign();
+      }
       // Position on the plotted route, recomputed AFTER the state manager has
       // moved the commander. Runs during bootstrap too, so a route restored
       // from last session opens at the waypoint they are actually standing on.
@@ -3138,7 +3274,10 @@ export class AppCore {
     const state = this.sm.getState();
     const depot = this.construction.depot;
     const inSystem = (depot?.system ?? '').toLowerCase() === system.toLowerCase();
-    return buildNewsBrief(system, state.system, {
+    return buildNewsBrief(
+      system,
+      state.system,
+      {
       construction:
         depot && inSystem && !depot.complete
           ? [
@@ -3181,7 +3320,16 @@ export class AppCore {
         .filter((n) => n.system === system)
         .slice(0, 6)
         .map((n) => `${n.headline} — ${n.body.slice(0, 70)}…`),
-    });
+      },
+      // The edition counter already means "how many papers has this system
+      // seen", which is exactly the rotation the brief wants: consecutive
+      // editions from an unchanged system are built from different facts.
+      this.newsEdition,
+    ).concat(
+      // The campaign spine as desk material: the running threads plus the lane
+      // chatter, attributed — the paper covers the gossip AS gossip.
+      spineLines(this.campaign.view(), 'news', this.newsEdition),
+    );
   }
 
   /**
@@ -3308,39 +3456,54 @@ export class AppCore {
         0,
         this.settings.news.perEdition,
       );
-      const raw = await llmQuick({
-        ...this.lmTarget(),
-        model: this.activeModel()!,
-        messages: buildNewsChat(
-          brief,
-          this.settings.news.perEdition,
-          recent,
-          desks,
-          this.settings.news.tone,
-        ) as unknown as ChatMessageWire[],
-        // MUST be set: llmQuick defaults to eight tokens (see newsMaxTokens).
-        maxTokens: newsMaxTokens(this.settings.news.perEdition),
-        // LET IT THINK. This is the one call in the app with real writing to
-        // do — six desks, a fact brief it must not contradict, and a voice to
-        // hold — and reasoning is free on a local engine. The gate suppresses
-        // thinking because it answers one word; the wire is the opposite case.
-        // The budget above covers the thinking pass so it cannot crowd out the
-        // stories, which is what made this look broken.
-        noThinking: false,
-        // A paper on temperature 0 files the same edition from the same brief
-        // for ever; the gate's default is exactly wrong here.
-        temperature: 0.85,
-        // Prose AND a reasoning pass, on a GPU the game is also using.
-        // Measured with Elite running: 7.86 tokens/second against 60 on an idle
-        // card, so the same edition is 30 s or 5 minutes depending on the
-        // scene. Generous, because the wire is background work and the only
-        // cost of waiting is the wire itself.
-        timeoutSecs: 420,
-        // Say what actually went wrong. Swallowing this is why a stopped
-        // engine looked identical to an unparseable reply.
-        strict: true,
-      });
-      const { items, rejected, cast } = acceptNews(raw, {
+      // One call per desk, prose in and prose out.
+      //
+      // The wire used to ask for the whole edition as a JSON array, which made
+      // the paper only as reliable as the model's grasp of punctuation. Llama
+      // 3.1 8B — better prose than the model this app ships — answered
+      // `{"civic","Headline"}`, which is not valid JSON, and the entire edition
+      // was lost over output that read perfectly well. Nothing in that array was
+      // ever news: the desk is picked here, the count is picked here, and the
+      // edition is assembled here. So the model is asked for the one thing only
+      // it can do, a headline and a paragraph, and the structure stays in code.
+      //
+      // Story by story rather than all at once, because a paper that loses one
+      // story should print the other two. The old shape lost the edition.
+      const stories: Array<{ headline: string; body: string; desk: NewsDesk }> = [];
+      const seen = [...recent];
+      for (const desk of desks) {
+        const one = await llmQuick({
+          ...this.lmTarget(),
+          model: this.activeModel()!,
+          messages: buildStoryChat(
+            brief,
+            desk,
+            seen,
+            this.settings.news.tone,
+            this.newsEdition * 3 + stories.length,
+          ) as unknown as ChatMessageWire[],
+          // MUST be set: llmQuick defaults to eight tokens (see newsMaxTokens).
+          maxTokens: newsMaxTokens(1),
+          // Per family, NOT hardcoded. This said `noThinking: false` — "let it
+          // think, the wire has real writing to do" — which is measured right
+          // for Gemma and catastrophic for Qwen 3.5, whose own profile warns it
+          // burns the whole budget on hidden reasoning. Observed live: one
+          // story call generated its full 1,420-token cap in 113 seconds with
+          // nothing usable in `content`, and three comms scenes timed out
+          // behind it on the single slot. No news AND no comms, from one flag.
+          noThinking: suppressThinkingFor(profileFor(this.activeModel()!), 'news'),
+          temperature: 0.85,
+          timeoutSecs: 240,
+          strict: true,
+        });
+        const story = parseStory(one, desk);
+        if (!story) continue;
+        stories.push(story as { headline: string; body: string; desk: NewsDesk });
+        // Hand this edition's own headlines forward, so the third story does
+        // not re-report what the first one just did.
+        seen.push(story.headline);
+      }
+      const { items, rejected, cast } = acceptNews(stories, {
         brief,
         system,
         at: new Date().toISOString(),
@@ -3372,6 +3535,8 @@ export class AppCore {
           /* the comparison still holds for this session */
         }
       }
+      // A published edition spends the news payoff — the paper has covered it.
+      if (items.length && this.campaign.consumePayoff('news')) this.persistCampaign();
       if (items.length && this.settings.news.speak) this.readBulletin(items);
       if (cast.length) {
         this.newsCast = cast;
@@ -3402,11 +3567,12 @@ export class AppCore {
         if (rejected.length) {
           this.newsError = `Every story was spiked this cycle (${rejected[0]}).`;
         } else {
-          const sample = raw.replace(/\s+/g, ' ').trim().slice(0, 100);
-          this.newsError = sample
-            ? `The model did not answer in a shape the wire could read. It said: "${sample}…"`
-            : 'The model returned nothing at all — an empty reply from the engine.';
-          this.noteGlance(`news — unparseable reply (${raw.length} chars): ${sample}`);
+          // Nothing came back at all. There is no longer a "wrong shape" case
+          // to report: a story is a headline and a paragraph, and anything with
+          // words in it parses. Silence is the only remaining failure.
+          this.newsError =
+            'The model returned nothing at all — an empty reply from the engine.';
+          this.noteGlance(`news — ${desks.length} desks asked, no story came back`);
         }
       }
       this.newsAt = Date.now();
@@ -3494,7 +3660,7 @@ export class AppCore {
     const faction = factionBrief(intel, system, pick);
     if (faction) out.push(faction);
 
-    const build = constructionBrief(this.construction.depot);
+    const build = constructionBrief(this.construction.depot, this.briefSeq);
     if (build) out.push(build);
 
     return out;
@@ -3538,14 +3704,28 @@ export class AppCore {
     return Math.max(this.comms.readyCount(), this.comms.sceneSlots.size);
   }
 
+  /**
+   * How long a scene stays worth saying.
+   *
+   * Sized for the slowest model the catalogue ships, not the fastest. On the
+   * CPU path a 9B writes a comms scene in ~5-6 s, a copilot beat holds the
+   * single engine slot 10-20 s, and the writer waits for a gap before it even
+   * starts — so a scene's real life is wait + queue + generation. STATION at
+   * 45 s left ~35 s of usable wait, which one long beat plus one slow
+   * generation could eat entirely; the drops read "late" and "busy" while
+   * nothing was actually wrong. The ceilings below leave room for one full
+   * beat AND a slow generation. They stay under COMMS_WRITE_CEILING_MS (180 s)
+   * so the stuck-writer watchdog can never fire on a legitimate write.
+   */
   private commsSlotTtlMs(channel: ChannelId): number {
     switch (channel) {
       case 'STATION':
-        return 45_000;
+        return 75_000;
       case 'EMERGENCY':
-        return 20_000;
+        // Still the tightest: an emergency spoken late is worse than unspoken.
+        return 30_000;
       case 'LOCAL':
-        return 90_000;
+        return 120_000;
       default:
         return 150_000;
     }
@@ -3607,7 +3787,9 @@ export class AppCore {
   /** Live state, shaped for the comms writer's briefing. See dossier.ts. */
   private commsDossier(briefs: readonly Brief[]): string {
     const st = this.statusTracker.current;
+    this.briefSeq += 1;
     return buildDossier({
+      rotate: this.briefSeq,
       system: this.sm.location.system,
       intel: this.sm.getState().system,
       docked: this.sm.docked,
@@ -3615,7 +3797,13 @@ export class AppCore {
       onFoot: !!st?.onFoot,
       supercruise: !!st?.supercruise,
       portSeparationLs: this.commsContext().portSeparationLs,
-      extra: briefs.map((b) => b.summary),
+      // The campaign spine rides in as MORE dossier data — same idiom, no new
+      // prompt shape. The writer sees the running threads beside the system
+      // facts and grounds its invention in both.
+      extra: [
+        ...briefs.map((b) => b.summary),
+        ...spineLines(this.campaign.view(), 'comms', this.briefSeq),
+      ],
     });
   }
 
@@ -3653,9 +3841,39 @@ export class AppCore {
 
   private maybeWriteComms(nowMs: number, act: Act, channels: ChannelState[], briefs: readonly Brief[]): void {
     if (this.settings.comms.source === 'grammar') return;
-    if (this.commsWriteInFlight) return;
+    // Watchdog. Nothing inside runCommsWrite can legitimately outlive its own
+    // slot — the wait is capped at 15 s and the request timeout is capped by the
+    // scene's remaining life — so a claim older than that ceiling means the
+    // writer was never handed back. It cost a whole session once: the flag was
+    // set outside the try, a throw while building the brief escaped before the
+    // function was entered, and comms was dead until the app restarted. That
+    // hole is closed above; this makes the failure survivable rather than fatal
+    // whatever causes it next.
+    if (this.commsWriteInFlight) {
+      const stuckFor = Date.now() - this.commsWriteStartedAt;
+      if (this.commsWriteStartedAt > 0 && stuckFor > COMMS_WRITE_CEILING_MS) {
+        this.commsWriteInFlight = false;
+        this.comms.sceneSlots.sweep(nowMs);
+        this.noteCommsDrop('stuck');
+        this.commsDiag.lastGenOutcome = `writer recovered after ${Math.round(stuckFor / 1000)}s`;
+        this.commsDirty = true;
+      } else {
+        return;
+      }
+    }
     if (!this.lmOk || !this.activeModel()) return;
-    if (this.engineBusy()) return;
+    // Deliberately NOT gated on engineBusy() here.
+    //
+    // It used to be, and that made the writer doubly timid: it refused to even
+    // start unless the engine happened to be idle at that instant, and then
+    // waited for it again inside. Measured on a live session with the copilot
+    // running — beats of ~15 s arriving every ~19 s, an 80% duty cycle — the
+    // engine log showed SIX copilot requests to one comms request. The writer
+    // was not losing the race, it was declining to enter it.
+    //
+    // runCommsWrite waits properly, against the scene's own deadline, and gives
+    // up with a `busy` drop if the engine never clears. That is the polite
+    // behaviour; this gate only ever subtracted chances.
 
     const open = channels.filter((c): c is Extract<ChannelState, { open: true }> => c.open);
     if (!open.length) return;
@@ -3684,26 +3902,55 @@ export class AppCore {
     const { speakers, speakerNames } = this.commsSpeakerSpec(target.id);
     const situation = this.pickCommsSituation(target.id);
 
+    // Build the whole plan BEFORE claiming the writer.
+    //
+    // This used to be assembled inside the `runCommsWrite(...)` argument list,
+    // after `commsWriteInFlight` had already been set — so anything that threw
+    // while building it (the dossier reads live orrery, status and intel state)
+    // escaped before `runCommsWrite` was ever entered, its `finally` never ran,
+    // and the flag stayed true FOR THE REST OF THE SESSION. Every later tick
+    // returned at the first line. Observed live: one comms request, then not
+    // one more in seventy-five seconds, with a slot stuck pending and the panel
+    // frozen on "writing station scene…".
+    let plan: Parameters<AppCore['runCommsWrite']>[0];
+    try {
+      plan = {
+        key,
+        channel: target.id,
+        func: choice.func,
+        arcId: choice.arcId,
+        act,
+        brief,
+        speakers,
+        speakerNames,
+        situation,
+        ttlMs,
+        // The moment this scene stops being worth saying. Carried so the writer
+        // can budget against it rather than against a constant.
+        readyBy: nowMs + ttlMs,
+        dossier: this.commsDossier(briefs),
+        rotate: this.briefSeq,
+      };
+    } catch (e) {
+      // Free the slot we just reserved; a briefing we cannot build is not a
+      // scene anybody is waiting for.
+      this.comms.sceneSlots.fulfil(key, null, nowMs);
+      this.noteCommsDrop('error');
+      this.commsDiag.lastError = `brief: ${String(e).replace(/\s+/g, ' ').trim().slice(0, 80)}`;
+      this.commsDiag.lastGenOutcome = `dropped ${target.id.toLowerCase()} (brief failed)`;
+      this.commsDirty = true;
+      return;
+    }
+
     this.commsWriteInFlight = true;
-    this.commsDiag.lastGenOutcome = `writing ${target.id.toLowerCase()} sceneâ€¦`;
+    this.commsWriteStartedAt = Date.now();
+    this.commsDiag.lastGenOutcome = `writing ${target.id.toLowerCase()} scene…`;
     this.commsDiag.ready = this.comms.readyCount();
     this.commsDiag.pending = this.commsPendingCount();
     this.commsDirty = true;
     this.emit();
 
-    void this.runCommsWrite({
-      key,
-      channel: target.id,
-      func: choice.func,
-      arcId: choice.arcId,
-      act,
-      brief,
-      speakers,
-      speakerNames,
-      situation,
-      ttlMs,
-      dossier: this.commsDossier(briefs),
-    });
+    void this.runCommsWrite(plan);
   }
 
   private async runCommsWrite(plan: {
@@ -3717,13 +3964,49 @@ export class AppCore {
     speakerNames: Record<string, string>;
     situation?: string;
     ttlMs: number;
+    readyBy: number;
     dossier: string;
+    rotate: number;
   }): Promise<void> {
     try {
       const model = this.activeModel();
       if (!this.lmOk || !model) {
         this.comms.sceneSlots.fulfil(plan.key, null, Date.now());
-        this.commsDiag.lastGenOutcome = 'writer idle â€” no active model';
+        this.commsDiag.lastGenOutcome = 'writer idle — no active model';
+        return;
+      }
+
+      // Wait for the engine to go quiet, the same way the news wire does.
+      //
+      // The writer already declines to START while the engine is busy, but
+      // nothing yields to IT: `fireCopilotBeat` never looks at
+      // `commsWriteInFlight`, so a beat fired a moment later lands on the same
+      // slot. And the engine runs `--parallel 1` deliberately, so the second
+      // request does not share the GPU — it queues. Measured from a live
+      // session: copilot beats decode ~300 tokens over a 4,800-token prompt at
+      // ~13 tok/s, so they hold the slot 20-30 s, and every comms scene queued
+      // behind one blew its timeout and was counted an error. The panel read
+      // "0 on the air · 5 dropped (mostly error)" while the operator and the
+      // wire worked perfectly, because those two own the slot and comms is the
+      // only caller that has to wait for it.
+      //
+      // Giving up is correct when the wait fails: this tier writes AHEAD into
+      // slots, so a scene skipped now simply gets written on a later tick.
+      // Wait as long as the scene can afford, keeping enough of its life back
+      // to actually write it. The scene's own deadline is the ONLY cap.
+      //
+      // There used to be a 15-second ceiling on top, tuned when copilot beats
+      // ran ~8 s on a GPU. On a CPU a beat is 8-16 s and the next one starts
+      // ~10 s later, so a capped wait usually expired inside a single beat and
+      // the panel filled with busy drops — 5 of 6 scenes lost on a live Qwen
+      // session, with ~35 s of usable scene life thrown away each time. Waiting
+      // longer costs nothing: the wait returns the moment the engine clears,
+      // and if it never clears then 'busy' was the true answer anyway.
+      const left = (): number => plan.readyBy - Date.now();
+      if (!(await this.waitForEngine(Math.max(0, left() - 10_000)))) {
+        this.noteCommsDrop('busy');
+        this.commsDiag.lastGenOutcome = `skipped ${plan.channel.toLowerCase()} — engine busy`;
+        this.comms.sceneSlots.fulfil(plan.key, null, Date.now());
         return;
       }
 
@@ -3736,6 +4019,7 @@ export class AppCore {
         speakerNames: plan.speakerNames,
         situation: plan.situation,
         dossier: plan.dossier,
+        rotate: plan.rotate,
       };
 
       const raw = await llmQuick({
@@ -3755,7 +4039,17 @@ export class AppCore {
         // without crashing its driver, and it would starve here identically.
         maxTokens: 700,
         temperature: Math.max(0.4, Math.min(1.2, this.settings.lm.temperature)),
-        timeoutSecs: 25,
+        // Budget against the scene's own deadline, not a constant.
+        //
+        // A flat 60 s was wrong in both directions. Twenty-five was shorter
+        // than a copilot beat, so a queued request died before the slot even
+        // freed; sixty is LONGER than a STATION slot lives (45 s), so a scene
+        // could be generated perfectly and then thrown away for arriving after
+        // its own moment — which is exactly what "dropped station (late)" was.
+        // Spending more time than the scene has left is pure waste: the answer
+        // is discarded the instant it arrives. Floor of 8 s so a nearly-expired
+        // slot fails fast instead of firing a request it cannot use.
+        timeoutSecs: Math.max(8, Math.floor(left() / 1000)),
         // 'comms', not 'chatter'. Two different jobs: an operator beat reasons
         // over an arc and a mood and is better for it, a radio exchange is
         // twelve words and measured 12x faster without it, at equal quality.
@@ -3789,11 +4083,46 @@ export class AppCore {
       this.commsConversation.record(plan.channel, plan.situation, sceneTranscript(accepted.scene));
       this.commsDiag.lastGenAt = Date.now();
       this.commsDiag.lastGenOutcome = `wrote a ${plan.channel.toLowerCase()} scene`;
+      // A success clears the sticky last-error line: it describes a CURRENT
+      // condition, and a writer that just delivered is not in that condition.
+      // The drop counters keep the history.
+      this.commsDiag.lastError = '';
+      // The spine hears the lane: an aired line that NAMES an elected faction
+      // is remembered verbatim (news and the operator quote it as chatter,
+      // which is factually true — it really went on air). A pending comms
+      // payoff is spent by the scene that carried it.
+      const aired = this.campaign.recordOnAir(
+        accepted.scene.turns.map((t) => t.text),
+        new Date().toISOString(),
+      );
+      const spent = this.campaign.consumePayoff('comms');
+      if (aired || spent) this.persistCampaign();
     } catch (e) {
-      this.noteCommsDrop('error');
+      // A write that was already in flight when a restart killed the port is
+      // contention, not a fault — the writer simply picked the wrong seconds.
+      // Reserve the red `error` (and the sticky last-error line) for an engine
+      // that is genuinely dead.
+      if (this.engineRestarting) {
+        this.noteCommsDrop('busy');
+        this.commsDiag.lastGenOutcome = `skipped ${plan.channel.toLowerCase()} — engine restarting`;
+        this.comms.sceneSlots.fulfil(plan.key, null, Date.now());
+        return;
+      }
       const msg = String(e).replace(/\s+/g, ' ').trim().slice(0, 90);
+      // A TIMEOUT is the same class: the request outlived the scene's own
+      // deadline — a cold first generation, or a queue behind a news edition —
+      // while the engine itself is alive. Observed live: one boot-time timeout
+      // painted the sticky red line over a session with eight scenes on air.
+      if (/timed? ?out/i.test(msg)) {
+        this.noteCommsDrop('busy');
+        this.commsDiag.lastGenOutcome = `timed out ${plan.channel.toLowerCase()} — engine busy, scene expired`;
+        this.comms.sceneSlots.fulfil(plan.key, null, Date.now());
+        return;
+      }
+      this.noteCommsDrop('error');
+      this.commsDiag.lastError = msg || 'unknown';
       this.commsDiag.lastGenOutcome = msg
-        ? `writer error â€” ${msg}`
+        ? `writer error — ${msg}`
         : 'writer error';
       this.comms.sceneSlots.fulfil(plan.key, null, Date.now());
     } finally {
@@ -3879,13 +4208,41 @@ export class AppCore {
     this.commsDirty = true;
   }
 
+  private persistCampaign(): void {
+    try {
+      localStorage.setItem('edmo.campaign.v1', JSON.stringify(this.campaign.toJSON()));
+    } catch {
+      /* the spine re-learns what it can from the journal next session */
+    }
+  }
+
+  private campaignHud(): CampaignHudView | null {
+    const v = this.campaign.view();
+    if (!v.pursuer && !v.patron && !v.vow) return null;
+    return {
+      pursuer: v.pursuer ? { faction: v.pursuer.faction, clock: v.pursuer.clock } : null,
+      patron: v.patron ? { faction: v.patron.faction, clock: v.patron.clock } : null,
+      vow: v.vow,
+    };
+  }
+
+  /** Settings action: wipe the campaign but KEEP the watermark — a reset must
+   *  not let the next bootstrap re-fold months of history into fresh threads. */
+  resetCampaign(): void {
+    this.campaign.reset();
+    this.persistCampaign();
+    this.pushFeed('system', 'Campaign reset — the spine starts listening from here.');
+    this.emit();
+  }
+
   private persistComms(): void {
     if (!this.commsDirty) return;
     this.commsDirty = false;
     try {
       localStorage.setItem('edmo.comms.v1', JSON.stringify(this.comms.toJSON()));
-      localStorage.setItem('edmo.comms.convo.v2', JSON.stringify(this.commsConversation.toJSON()));
+      localStorage.setItem('edmo.comms.convo.v3', JSON.stringify(this.commsConversation.toJSON()));
       localStorage.removeItem('edmo.comms.convo.v1');
+      localStorage.removeItem('edmo.comms.convo.v2');
       if (this.settings.comms.persistLog) {
         localStorage.setItem('edmo.commslog.v1', JSON.stringify(this.commsLog));
       } else {
@@ -4630,7 +4987,7 @@ export class AppCore {
     }
     const model = this.activeModel();
     if (!isTauri || !this.lmOk || !model) {
-      if (manual) this.pushFeed('system', 'Memory distillation needs LM Studio running.');
+      if (manual) this.pushFeed('system', 'Memory distillation needs the local AI engine running.');
       this.emit();
       return;
     }
@@ -4658,7 +5015,7 @@ export class AppCore {
   private visionStatusLine(): string {
     const now = Date.now();
     const waiting: string[] = [];
-    if (!this.lmOk) waiting.push('LM Studio offline');
+    if (!this.lmOk) waiting.push('AI engine offline');
     else if (!this.activeModelIsVlm()) waiting.push('active model has no vision');
     if (now - this.lastGameActivity >= GAME_LIVE_WINDOW_MS)
       waiting.push('game looks idle (no journal/status updates)');
@@ -4689,7 +5046,7 @@ export class AppCore {
     if (this.glanceInFlight) return;
     const model = this.activeModel();
     if (!isTauri || !this.lmOk || !model) {
-      if (manual) this.pushFeed('system', 'Screen glances need LM Studio running.');
+      if (manual) this.pushFeed('system', 'Screen glances need the local AI engine running.');
       this.emit();
       return;
     }
@@ -4823,6 +5180,10 @@ export class AppCore {
     if (turn) {
       this.copilotEvent(turn);
       this.copilotReact('mission', 'copilot — a chapter turns…');
+      // A new chapter can carry the vow when no contracts are open.
+      if (this.campaign.updateVow(this.sm.activeMissions(), this.sessionArc.chapterKind())) {
+        this.persistCampaign();
+      }
     }
     // The fight folds silently; it is told ONCE, after it ends. Kills also
     // arm the ambient combat-quiet gate, same as the tactical layer.
@@ -4963,7 +5324,7 @@ export class AppCore {
 
     // What this place actually IS — the antidote to reading a station's name as
     // a description of it, which the prompt bans and the fact fence cannot catch.
-    const intel = describeSystemIntel(this.sm.getState());
+    const intel = describeSystemIntel(this.sm.getState(), (this.briefSeq += 1));
     if (intel) {
       available.push('place');
       facts.push(intel);
@@ -5230,6 +5591,10 @@ export class AppCore {
       this.copilotStateLine(),
       this.sessionArc.arcLine() ?? '',
       this.sessionArc.moodLine(Date.now(), hours),
+      // The campaign substrate: real standing trouble/friends and chatter
+      // attributed as chatter — never the fiction itself (spine.ts splits the
+      // registers; the operator's advice stays checkable against the journal).
+      spineLines(this.campaign.view(), 'operator', this.briefSeq).join('\n'),
       this.copilotAngleBlock(),
       this.copilotLengthHint(),
     ]
@@ -5363,6 +5728,19 @@ export class AppCore {
    *  first time it says no. Fire-and-forget: nothing awaits a copilot beat. */
   private async gateThenReact(note: string): Promise<void> {
     const line = this.lastCopilotEventLine;
+    // Some families cannot be trusted with this question. Llama 3.1 answered
+    // SKIP to five ordinary events out of five — docking, a cargo hand-over,
+    // undocking, arriving, a body scan — at both an 8-token and a 40-token
+    // budget, which mutes the operator entirely. `parseBeatGate` fails open for
+    // a confused model precisely so nothing can silence the operator for a whole
+    // session; one that answers confidently and always negatively walks straight
+    // past that. So it is not asked. The tier and density gates upstream still
+    // decide how often the operator speaks.
+    if (!profileFor(this.activeModel()).beatGate) {
+      this.noteGlance(note);
+      this.fireCopilotBeat(null);
+      return;
+    }
     this.beatGateInFlight = true;
     let speak = true;
     try {
@@ -5938,7 +6316,7 @@ export class AppCore {
       missions: this.sm.activeMissions(),
       materialsLine: this.materials.contextLine(),
       exploreLine: this.explore.contextLine(),
-      systemIntelLine: describeSystemIntel(state),
+      systemIntelLine: describeSystemIntel(state, (this.briefSeq += 1)),
       // "Where is tritium cheapest" is really "where do I buy the 4,865 t my
       // plotted carrier route needs" — so the market tool gets to see the
       // shortfall and can rule out sellers who cannot fill it.
@@ -5979,12 +6357,17 @@ export class AppCore {
   /** Whether the operator may use the tool loop for this question. */
   private toolsActive(model: string | null): boolean {
     if (!isTauri || !this.lmOk || !model || !this.settings.lm.tools) return false;
+    // Some families advertise tool support and cannot be trusted with it.
+    // Llama 3.1 answered "hello" by calling get_current_market() and returning
+    // no prose at all, then read the result out as its reply. The setting stays
+    // the commander's, but a model that cannot drive the loop is never offered
+    // it — that is tuning, not preference.
+    if (!profileFor(model).tools) return false;
     // Embedding models can't chat, let alone call tools.
-    return !/embed/i.test(this.modelTypes[model] ?? '') && !/embed/i.test(model);
+    return !/embed/i.test(model);
   }
 
   private activeModel(): string | null {
-    if (this.settings.lm.model) return this.settings.lm.model;
     return this.lmModels.find((id) => !/embed/i.test(id)) ?? this.lmModels[0] ?? null;
   }
 
@@ -6005,14 +6388,14 @@ export class AppCore {
       // get three attempts per crash, not three for the whole night.
       if (this.engine?.running) this.engineRestarts = 0;
     } catch {
-      this.pushFeed('system', 'Could not restart the engine — Settings → AI engine, or switch to LM Studio.');
+      this.pushFeed('system', 'Could not restart the engine — Settings → AI engine to start it by hand.');
     }
   }
 
   private async pollLm(): Promise<void> {
     // The bundled engine can die under us (driver crash, OOM) — notice it here
     // so the HUD's LM dot tells the truth instead of every request timing out.
-    if (this.settings.lm.engine === 'bundled' && this.engine?.running && isTauri) {
+    if (this.engine?.running && isTauri) {
       const alive = await engineAlive().catch(() => false);
       if (!alive) {
         const crashedModel = this.settings.lm.bundledModel;
@@ -6040,7 +6423,7 @@ export class AppCore {
           void this.reviveEngine(crashedModel!);
           return;
         }
-        this.pushFeed('system', 'The local AI engine stopped — restart it in Settings, or switch to LM Studio.');
+        this.pushFeed('system', 'The local AI engine stopped — restart it from Settings → AI engine.');
         // Say WHY, if it left a reason. Without this the only record of the
         // last crash was a Windows fault bucket.
         const why = await engineLog().catch(() => '');
@@ -6058,15 +6441,6 @@ export class AppCore {
     } catch {
       this.lmModels = [];
       this.lmOk = false;
-    }
-    // The capability map is an LM Studio REST extra; the bundled engine knows
-    // its own models are vision-capable by construction.
-    if (this.lmOk && this.settings.lm.engine !== 'bundled') {
-      try {
-        this.modelTypes = await llmModelTypes(this.settings.lm.endpoint);
-      } catch {
-        /* capability map stays as-is */
-      }
     }
     this.emit();
   }
@@ -6129,12 +6503,30 @@ export class AppCore {
     );
     if (mission) knowledge.push(`THE ACTIVE CONTRACT:
 ${missionContext(mission, state)}`);
-    const intel = describeSystemIntel(state);
+    const intel = describeSystemIntel(state, (this.briefSeq += 1));
     if (intel) knowledge.push(intel);
+    // Oracle commands (oracle.ts): three lead-in phrases that ride the SAME
+    // ask pipeline with a plan instead of the raw text. Only `advance a
+    // threat` touches state — one clock segment, in code, never the last.
+    const oracleKind = oracleCommandOf(q);
+    let oraclePlan: OraclePlan | null = null;
+    if (oracleKind === 'advance') {
+      const t = this.campaign.advanceThreat(Date.now());
+      if (t) this.persistCampaign();
+      oraclePlan = planOracle('advance', { thread: t });
+    } else if (oracleKind === 'flashback') {
+      oraclePlan = planOracle('flashback', { episodes: this.sagaEpisodes, rotate: this.briefSeq });
+    } else if (oracleKind === 'reveal') {
+      oraclePlan = planOracle('reveal', { dossier: intel, rotate: this.briefSeq });
+    }
+    if (oraclePlan) knowledge.push(...oraclePlan.knowledge);
     if (this.navRouteJumps > 0 && this.navRouteDest) {
       knowledge.push(`Plotted route: ${this.navRouteJumps} jump(s) to ${this.navRouteDest}.`);
     }
     if (this.plot) knowledge.push(plotContextLine(this.plot, this.plotIdx));
+    // The campaign substrate rides along in answering mode too — same register
+    // rules as the ambient beats (real events; chatter only as chatter).
+    knowledge.push(...spineLines(this.campaign.view(), 'operator', this.briefSeq));
     knowledge.push(...this.contextExtras());
 
     // The SAME operator that has been talking all session, in answering mode —
@@ -6177,7 +6569,9 @@ ${missionContext(mission, state)}`);
     const messages: ChatMessage[] = [
       { role: 'system', content: system },
       ...thread,
-      { role: 'user', content: q },
+      // An oracle command is a stage direction, not a question — the model
+      // hears the plan's phrasing; the feed above showed what was typed.
+      { role: 'user', content: oraclePlan?.question ?? q },
     ];
 
     // The thread above already carries the dialogue; only the previous
@@ -6188,7 +6582,7 @@ ${missionContext(mission, state)}`);
     const entry = this.pushFeed('ai', '', { streaming: true, missionId: mission?.id });
     const model = this.activeModel();
     if (!isTauri || !this.lmOk || !model) {
-      this.finishAiWithFallback(entry, mission, nowIso, 'LM Studio is offline');
+      this.finishAiWithFallback(entry, mission, nowIso, 'the local AI engine is not running');
       return;
     }
     // Tools stay available on every turn and the model decides — the same
@@ -6802,6 +7196,8 @@ ${missionContext(mission, state)}`);
         this.lastStoryText = spoken;
         this.rememberStory(spoken);
         this.speak(spoken);
+        // A spoken beat spends the operator's campaign payoff, if one rode in.
+        if (this.campaign.consumePayoff('operator')) this.persistCampaign();
       }
       this.emit();
       return;
@@ -6927,7 +7323,7 @@ ${missionContext(mission, state)}`);
         this.emit();
       }
     } else {
-      this.finishAiWithFallback(entry, mission, new Date().toISOString(), `LM Studio error: ${message}`);
+      this.finishAiWithFallback(entry, mission, new Date().toISOString(), `engine error: ${message}`);
     }
   }
 
@@ -7141,7 +7537,6 @@ ${missionContext(mission, state)}`);
     } else if (prev.journal.expiryWarningMin !== next.journal.expiryWarningMin) {
       this.hb = new Heartbeat({ expiryWarnMin: next.journal.expiryWarningMin });
     }
-    if (prev.lm.endpoint !== next.lm.endpoint) void this.pollLm();
     if (!next.comms.enabled && this.view === 'comms') this.view = 'missions';
     this.emit();
   }

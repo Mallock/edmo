@@ -75,12 +75,36 @@ test('no channel, act or function reintroduces a fence', () => {
         assert.doesNotMatch(all, /STRICT grounding/i, where);
         assert.doesNotMatch(all, /name nothing outside/i, where);
         assert.doesNotMatch(all, /that appear in the provided facts/i, where);
-        // "Most good lines name nothing at all" must SURVIVE — it is a style
-        // rule about not name-dropping, not a restriction on what may be named.
-        assert.match(all, /name nothing at all/i, where);
+        // The anti-name-dropping STYLE rule must survive — it is about not
+        // reciting facts like labels, not a restriction on what may be named.
+        // Matched loosely on purpose: this pins the rule, not its wording.
+        assert.match(all, /name nothing at all|no proper noun at all/i, where);
       }
     }
   }
+});
+
+test('the prompt tells the model to build the scene on the briefing', () => {
+  // Supplying the dossier is not enough. Measured against a live engine over
+  // real journals: briefing present but no instruction to use it, 2 scenes in 9
+  // touched it; with this line, 9 in 9. Without it the tier reverts to ambience
+  // that would fit any system, which the system prompt calls failure and does
+  // not prevent on its own.
+  const user = buildSceneChat(req())[1].content;
+  const at = user.search(/ANCHOR IT|GROUND THE SCENE/i);
+  assert.ok(at >= 0, 'the prompt must tell the model to build on the briefing');
+  // It belongs in the trailing instructions, after the material it refers to —
+  // the last thing read is the thing obeyed. Pinned against the setup sections
+  // rather than a character ratio: the block itself is long, so "where it
+  // starts" as a fraction of the prompt measures its length, not its position.
+  assert.ok(
+    at > user.search(/WHO IS SPEAKING/i),
+    'the grounding instruction must come after the setup, not before it',
+  );
+  assert.ok(
+    user.slice(at).length < user.length * 0.75,
+    'it must not be the whole back half of the prompt',
+  );
 });
 
 test('the prompt tells the model it may invent', () => {
@@ -105,15 +129,21 @@ test('the prompt names the speakers, in the order lines will be assigned', () =>
   assert.match(user, /1\. Marla Brandt/);
   assert.match(user, /2\. Otto Petrov/);
   // The model is told the order matters, because that IS the speaker protocol.
-  assert.match(user, /in this order/i);
+  // Matched loosely: the wording changed once already (to add "names are for
+  // YOU, not for the lines") and the contract is order-attribution, not prose.
+  assert.match(user, /in this order|line 1 is spoken by the first/i);
 });
 
-test('the prompt asks for bare lines and no labels', () => {
+test('the prompt asks for bare lines and never demonstrates a tag', () => {
+  // The invariant the parser depends on: one utterance per line, no speaker
+  // labels. The exact phrasing is the author's business — a worked [tag]
+  // example is not, because the model copies demonstrated shapes and the
+  // transcript then teaches it the same shape back.
   const system = buildSceneChat(req())[0].content;
-  assert.match(system, /one per line/i);
-  assert.match(system, /no labels/i);
+  assert.match(system, /per line/i);
+  assert.match(system, /only the spoken words|no labels|no speaker names/i);
   assert.doesNotMatch(system, /\[speakerRef\]/i);
-  assert.doesNotMatch(system, /\[control\]/i);
+  assert.doesNotMatch(system, /\[control\]|\[hauler\]/i);
 });
 
 test('the line count asked for follows the roster', () => {
@@ -146,7 +176,11 @@ test('the situation varies the ask, not just the temperature', () => {
   // model returns its favourite answer however hot the sampling is.
   const a = buildSceneChat(req({ situation: 'a pad reassignment nobody is happy about' }));
   const b = buildSceneChat(req({ situation: 'a customs check' }));
-  assert.match(a[1].content, /WHAT IS HAPPENING: a pad reassignment/);
+  // The situation must REACH the model — under whatever heading. Dropping it
+  // silently would make the store's least-recently-used rotation a no-op and
+  // hand the model byte-identical input for every texture beat on a channel.
+  assert.match(a[1].content, /a pad reassignment nobody is happy about/);
+  assert.match(b[1].content, /a customs check/);
   assert.notEqual(a[1].content, b[1].content);
 });
 
@@ -214,8 +248,12 @@ test('loading garbage into the transcript is survivable', () => {
 });
 
 test('every channel has situations to draw on', () => {
+  // The 2026-08-25 expansion took the table well past a hundred situations —
+  // the floor pins that nobody quietly trims it back to five conversations.
+  const total = Object.values(SITUATIONS).reduce((n, xs) => n + xs.length, 0);
+  assert.ok(total >= 150, `the situation table has thinned: ${total}`);
   for (const ch of Object.keys(SITUATIONS)) {
-    assert.ok(SITUATIONS[ch as keyof typeof SITUATIONS].length >= 3, `${ch} is thin`);
+    assert.ok(SITUATIONS[ch as keyof typeof SITUATIONS].length >= 12, `${ch} is thin`);
   }
 });
 
@@ -245,6 +283,64 @@ test('a single line is a single turn', () => {
   const turns = parseSceneReply('Hold at the marker.', ['control', 'ship']);
   assert.equal(turns.length, 1);
   assert.equal(turns[0].speakerRef, 'control');
+});
+
+test('speech-verb narration is stripped, the quoted dialogue kept', () => {
+  // Observed in one prompt-tuning round: the model novelising its own radio.
+  const turns = parseSceneReply(
+    'Control says, "Pad four has been held ten minutes too long."\n' +
+      'Ship replies, "Transfer fee talks are still going."',
+    ['control', 'ship'],
+  );
+  assert.equal(turns.length, 2);
+  assert.equal(turns[0].text, 'Pad four has been held ten minutes too long.');
+  assert.equal(turns[1].text, 'Transfer fee talks are still going.');
+});
+
+test('curly wrapping quotes come off like straight ones', () => {
+  const turns = parseSceneReply('“Fiore, we’re holding departure clearance.”', ['carrier']);
+  assert.equal(turns[0].text, 'Fiore, we’re holding departure clearance.');
+});
+
+test('a bare script label is not a turn', () => {
+  // "Line 1:" spoken aloud as dialogue shunted every later line onto the
+  // wrong speaker — the label is dropped, the dialogue keeps its seats.
+  const turns = parseSceneReply(
+    'Line 1:\nAll outbound traffic is delayed.\nLine 2:\nI was told it was only the haulers.',
+    ['pa', 'traveller'],
+  );
+  assert.equal(turns.length, 2);
+  assert.equal(turns[0].speakerRef, 'pa');
+  assert.match(turns[0].text, /outbound traffic/);
+  assert.equal(turns[1].speakerRef, 'traveller');
+});
+
+test('a degeneration loop is rejected, honest repetition is not', () => {
+  // Verbatim shape from a candidate model on the bench: one clause repeated
+  // until the token budget ran out, and every existing guard passed it.
+  const stuck =
+    'I have been doing the work. ' +
+    Array.from({ length: 20 }, () => "I've been doing the whole thing.").join(' ');
+  const req = {
+    channel: 'CREW', func: 'texture', act: 'QUIET',
+    brief: { kind: 'texture', nouns: [], figures: [], tokens: {}, ageMs: 0, subjectKey: 't', summary: 'atmosphere' },
+    speakers: ['crew:ops', 'crew:engineering'],
+    speakerNames: { 'crew:ops': 'Ops', 'crew:engineering': 'Engineering' },
+  } as unknown as Parameters<typeof acceptSceneReply>[1];
+  const out = acceptSceneReply(`Get the ship back to the warehouse.\n${stuck}`, req, 'x', 60_000);
+  assert.equal(out.ok, false);
+  if (!out.ok) assert.match(String(out.why === 'invalid' ? out.detail : out.why), /degenerate/);
+  // Saying a thing twice for effect is speech, not a stuck record.
+  const fine = acceptSceneReply(
+    'Hold the pad. Hold the pad, I said — they are two minutes out.\nCopy that, holding.',
+    req, 'y', 60_000,
+  );
+  assert.equal(fine.ok, true);
+});
+
+test('a mid-sentence speech verb does not eat the line', () => {
+  const turns = parseSceneReply('Tell them what control says, and mean it.', ['hauler', 'hauler2']);
+  assert.equal(turns[0].text, 'Tell them what control says, and mean it.');
 });
 
 test('parsing stops at the turn cap', () => {
@@ -454,6 +550,46 @@ test('a tag naming the WRONG speaker does not move the line', () => {
   );
 });
 
+test('ordered-list numbering never reaches the air', () => {
+  // Straight from a live panel. Asking for "exactly 2 lines" invites numbering,
+  // and the number blocked the name strip as well — both the index and the
+  // speaker's own name were being spoken next to the name already on screen.
+  const turns = parseSceneReply(
+    '1. HIP 71120: The Explorer on Tour is pushing the expansion too quickly.\n' +
+      '2. Dmitri Sarkis: The committee is demanding faster expansion.',
+    ['control', 'ship'],
+  );
+  assert.deepEqual(
+    turns.map((t) => t.text),
+    [
+      'The Explorer on Tour is pushing the expansion too quickly.',
+      'The committee is demanding faster expansion.',
+    ],
+  );
+  assert.deepEqual(
+    turns.map((t) => t.speakerRef),
+    ['control', 'ship'],
+  );
+});
+
+test('numbering in other shapes is stripped too', () => {
+  const turns = parseSceneReply('1) Hold at the marker.\n2] Holding.', ['control', 'ship']);
+  assert.deepEqual(
+    turns.map((t) => t.text),
+    ['Hold at the marker.', 'Holding.'],
+  );
+});
+
+test('a number that is part of the line survives', () => {
+  // "957 ls out" must not lose its figure to the numbering strip. The rule
+  // needs a delimiter and a space, which ordinary speech does not have.
+  const turns = parseSceneReply('957 ls out and climbing.\n40 tonnes short.', ['a', 'b']);
+  assert.deepEqual(
+    turns.map((t) => t.text),
+    ['957 ls out and climbing.', '40 tonnes short.'],
+  );
+});
+
 test('a volunteered name prefix is stripped', () => {
   const turns = parseSceneReply(
     'Yusuf Fiore: Holding. Again.\nControl: Acknowledged.',
@@ -520,4 +656,112 @@ test('unstructured prose is a turn, not a rejection', () => {
   );
   assert.equal(turns.length, 1);
   assert.match(turns[0].text, /lane closure/);
+});
+
+test('a speaker name alone on a line is not a spoken turn', () => {
+  // Verbatim shape from a live panel. Screenplay habit, and it survived every
+  // other guard because it is not ornament attached to a line — it IS the line.
+  // Four lines became four turns, so "HIP 71120" and "Dmitri Sarkis" were
+  // spoken aloud beside the very same names already printed next to them.
+  const turns = parseSceneReply(
+    "HIP 71120\nWood's Pride, you're cleared for departure.\nDmitri Sarkis\nJust be careful.",
+    ['control', 'ship'],
+    { control: 'HIP 71120', ship: 'Dmitri Sarkis' },
+  );
+  assert.deepEqual(
+    turns.map((t) => t.text),
+    ["Wood's Pride, you're cleared for departure.", 'Just be careful.'],
+  );
+  assert.deepEqual(
+    turns.map((t) => t.speakerRef),
+    ['control', 'ship'],
+  );
+});
+
+test('a first name alone on a line goes too', () => {
+  const turns = parseSceneReply('Dmitri\nHolding.\nYusuf\nAgain.', ['a', 'b'], {
+    a: 'Dmitri Sarkis',
+    b: 'Yusuf Fiore',
+  });
+  assert.deepEqual(turns.map((t) => t.text), ['Holding.', 'Again.']);
+});
+
+test('a name used INSIDE a line is left alone', () => {
+  // The guard must not eat dialogue that happens to address somebody.
+  const turns = parseSceneReply('Dmitri Sarkis, hold at the marker.', ['a', 'b'], {
+    a: 'HIP 71120',
+    b: 'Dmitri Sarkis',
+  });
+  assert.equal(turns.length, 1);
+  assert.equal(turns[0].text, 'Dmitri Sarkis, hold at the marker.');
+});
+
+test('two turns merged onto one line split at the known-name boundary', () => {
+  // Verbatim shape from the first live scene after the length cap was relaxed:
+  // the model ran both turns together with an inline label, and positional
+  // assignment glued the second speaker's dialogue into the first turn.
+  const turns = parseSceneReply(
+    "You're still on the pad? If you don't roll, you're holding the slot for everyone else. " +
+      "Inbound Traffic: I'm already in the bay. Wait for my clearance.",
+    ['control', 'ship'],
+    { control: 'Traffic Control', ship: 'Inbound Traffic' },
+  );
+  assert.equal(turns.length, 2);
+  assert.match(turns[0].text, /holding the slot/);
+  assert.equal(turns[0].speakerRef, 'control');
+  assert.match(turns[1].text, /^I'm already in the bay/);
+  assert.equal(turns[1].speakerRef, 'ship');
+  assert.doesNotMatch(turns[1].text, /Inbound Traffic/);
+});
+
+test('addressing someone by name with a comma does NOT split the line', () => {
+  const turns = parseSceneReply(
+    'Inbound Traffic, hold at the marker until the lane clears.',
+    ['control', 'ship'],
+    { control: 'Traffic Control', ship: 'Inbound Traffic' },
+  );
+  assert.equal(turns.length, 1);
+  assert.match(turns[0].text, /^Inbound Traffic, hold/);
+});
+
+test('a speaker never says their own name — leading self-name stripped', () => {
+  // Verbatim failure from a live panel: "Ines Sarkis: Ines Sarkis, just keep
+  // the Henry Beacon clear". The model labels lines with the speaker's own
+  // name, comma-style. Position already says whose line it is, so the SELF
+  // name is ornament — but only the self name.
+  const turns = parseSceneReply(
+    'Amara Brandt, stick to the main approach; the Dark Wheel is watching.\n' +
+      'Hollis Mbeki, No, cut through Dickens Point instead.',
+    ['hauler', 'hauler2'],
+    { hauler: 'Amara Brandt', hauler2: 'Hollis Mbeki' },
+  );
+  assert.match(turns[0].text, /^stick to the main approach/);
+  assert.match(turns[1].text, /^No, cut through Dickens Point/);
+});
+
+test('a surname alone works as a self-label too', () => {
+  const turns = parseSceneReply('Sarkis: the relay is frying my scope.', ['a'], {
+    a: 'Ines Sarkis',
+  });
+  assert.equal(turns[0].text, 'the relay is frying my scope.');
+});
+
+test('addressing the OTHER speaker by name is dialogue, never stripped', () => {
+  // The collision the position rule resolves: the same comma shape is
+  // legitimate when the name is not the speaker's own.
+  const turns = parseSceneReply(
+    'Kowalczyk, the Lyakhov Horizons signal is bleeding again.\n' +
+      "I'm on it, but the relay's been frying my scope.",
+    ['crew:ops', 'crew:engineering'],
+    { 'crew:ops': 'Ines Sarkis', 'crew:engineering': 'Anna Kowalczyk' },
+  );
+  assert.match(turns[0].text, /^Kowalczyk, the Lyakhov/);
+  assert.equal(turns[0].speakerRef, 'crew:ops');
+});
+
+test('the prompt says names are attribution, not dialogue', () => {
+  const system = buildSceneChat(req())[0].content;
+  assert.match(system, /never says their own name/i);
+  const user = buildSceneChat(req())[1].content;
+  assert.match(user, /names are for YOU, not for the lines/i);
 });

@@ -4,9 +4,8 @@
 
 An **always-on-top HUD** companion for Elite Dangerous. It reads your **active missions** live from
 the Player Journal, shows them as cards with synthesized objective checklists and countdown timers,
-gives **AI operator guidance** via a local LLM (its own bundled llama.cpp engine, or LM Studio if you
-prefer), speaks with a **bundled local neural
-voice** (Piper), and runs a **proactive heartbeat** that nudges you when you stall.
+gives **AI operator guidance** via its own bundled llama.cpp engine, speaks with a **bundled local
+neural voice** (Piper), and runs a **proactive heartbeat** that nudges you when you stall.
 
 Alongside the mission cards there are five tabs for the panels the game keeps somewhere you cannot
 read while flying: a **route plotter** (neutron highway for the ship, the whole carrier trip jump by
@@ -54,14 +53,15 @@ Download it from **[edmo.blinkki.com](https://edmo.blinkki.com)** — or build i
 `npm run tauri build` (output in `src-tauri/target/release/bundle/nsis/`). Double-click, done. It installs per-user (no admin),
 including the offline voice, and starts the HUD. Optional extras:
 
-1. **AI engine** — either let the app install its own (Settings → AI engine → *This app*: it fetches a
-   llama.cpp runtime + a Gemma GGUF with vision, ~4–6 GB one time, resumable), **or** use
-   **LM Studio**: start the local server at `http://127.0.0.1:1234` and load any
-   chat model. The HUD auto-detects it — the `LM` pill goes green. Not sure which model your rig
-   can handle? Open **Settings → AI operator**: the app reads your **RAM, CPU and GPU VRAM** and
-   annotates every model in the selector (`✓ fits GPU` / `◐ CPU only (slow)` / `⚠ TOO BIG`), with a
-   concrete "aim for ≤ N B parameters" recommendation. If the active model looks too big, the
-   footer shows `LM⚠` and Settings explains why.
+1. **AI engine** — Settings → AI engine: pick a model and the app fetches its own
+   llama.cpp runtime + the GGUF (~3–6 GB one time, resumable), then launches and owns the
+   engine itself. The `LM` pill goes green when it is serving. (LM Studio support was removed
+   after 1.3.0 — one engine the app launches and can read the logs of, instead of two it can
+   only poke over HTTP. GGUF+mmproj pairs already on disk are still discovered and reused.)
+   Not sure what your rig can handle? **Settings → AI operator** reads your **RAM, CPU and GPU
+   VRAM** and warns when the active model will not fit, with a concrete "aim for ≤ N B
+   parameters" recommendation. If the active model looks too big, the footer shows `LM⚠` and
+   Settings explains why.
 2. **Elite Dangerous**: just play. The HUD auto-finds
    `%USERPROFILE%\Saved Games\Frontier Developments\Elite Dangerous\` and follows the newest
    journal. Run ED in **Borderless/Windowed** mode so the overlay can sit on top.
@@ -377,8 +377,8 @@ The operator **remembers you across sessions** in a local `memory.json` (app-dat
 screenshot and asks the local vision model what you're doing. The sighting feeds story/advice
 context; it speaks **only** when the model flags something genuinely notable *and* a 10-minute
 cooldown + dedupe gate agrees. The screenshot goes only to your LM endpoint and is never saved.
-All loaded LM Studio models on the dev rig (gemma-4, qwen3.6) report vision capability; the
-Settings panel warns when the active model doesn't.
+Vision capability is read from each model's projector file on disk; the
+Settings panel warns when the active model doesn't have one.
 
 ## Talking to the operator
 
@@ -434,13 +434,14 @@ src/engine/          TypeScript mission intelligence (zero deps, Node 22.6+, 495
   glance.ts            Screen-glance prompts (vision) + reply parsing
   convo.ts             ConvoBuffer — short-term dialogue memory (follow-ups
                        work) + whisper transcript cleaning
-  lmstudio.ts          LM Studio client (used by the Node replay CLI)
+  lmstudio.ts          OpenAI-compatible chat client for the bundled engine
+                       (the filename is a fossil from the LM Studio era)
 src/ui/              React HUD (Vite) — cards, steps, feed, chat, settings
   modelfit.ts          Machine-spec model advisor (params parsed from model ids,
                        Q4 memory estimate vs detected RAM/VRAM budgets)
 src-tauri/           Rust shell:
   journal tail (poll @600ms, read-only), snapshot readers w/ mid-rewrite retry,
-  LM Studio streaming proxy (SSE → events, avoids webview CORS),
+  inference streaming proxy (SSE → events, avoids webview CORS),
   Piper TTS sidecar, global shortcuts, click-through, geometry persistence
 scripts/replay.ts    Journal-replay CLI demo (works without the app)
 ```
@@ -483,8 +484,8 @@ global shortcuts (incl. push-to-talk key) need X11 — on Wayland use the HUD's 
 ## Privacy invariants
 
 - The ED journal directory is opened **read-only**; the app never writes there (X.3).
-- **Inference is always local.** With the bundled engine, chat traffic goes to `127.0.0.1` on a
-  random loopback port, behind a per-session API key; with LM Studio it is `127.0.0.1:1234` (X.2).
+- **Inference is always local.** Chat traffic goes to the bundled engine on `127.0.0.1`, on a
+  random loopback port, behind a per-session API key (X.2).
 - **Downloads are pinned, and models are explicit.** The inference runtime (llama.cpp releases) and
   the model (an ungated GGUF mirror) come only from URLs pinned in one manifest
   (`src-tauri/src/engine.rs`). The multi-GB model is fetched only on a click, never automatically.

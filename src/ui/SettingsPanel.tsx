@@ -1,17 +1,11 @@
-/** Settings drawer — LM Studio, voice, HUD, journal, manual import (T5.6). */
+/** Settings drawer — the bundled AI engine, voice, HUD, journal, manual import (T5.6). */
 import { useEffect, useState } from 'react';
 import type { AppSettings } from './settings.ts';
 import { listSystemVoices } from './tts.ts';
 import type { AppSnapshot } from './store.ts';
 import { core } from './store.ts';
 import { NEWS_INTERVALS, newsIntervalLabel } from '../engine/news.ts';
-import {
-  classifyModel,
-  fitLabel,
-  isEmbeddingModel,
-  recommendationLabel,
-  specsLabel,
-} from './modelfit.ts';
+import { recommendationLabel, specsLabel } from './modelfit.ts';
 import { PIPER_VOICE_CATALOG } from './voices.ts';
 import { RADIO_PROFILE_NAMES } from '../engine/chatter/profiles.ts';
 
@@ -23,6 +17,7 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
   const [voicesTick, setVoicesTick] = useState(0);
   const [importText, setImportText] = useState('');
   const [forgetArmed, setForgetArmed] = useState(false);
+  const [campaignArmed, setCampaignArmed] = useState(false);
 
   useEffect(() => {
     // System voices load asynchronously (T4.1).
@@ -49,24 +44,6 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
       <div className="settings-body">
         <section>
           <h3>AI engine</h3>
-          <div className="row">
-            <label>
-              Run the AI with
-              <select
-                value={s.lm.engine}
-                onChange={(e) => {
-                  const engine = e.target.value as 'bundled' | 'lmstudio';
-                  set({ ...s, lm: { ...s.lm, engine } });
-                  if (engine === 'lmstudio') void core.engineShutdown();
-                }}
-              >
-                <option value="bundled">This app (no other software needed)</option>
-                <option value="lmstudio">LM Studio (run it yourself)</option>
-              </select>
-            </label>
-          </div>
-          {s.lm.engine === 'bundled' && (
-            <>
               {snap.engineProgress ? (
                 <>
                   <div className="hint">
@@ -136,42 +113,35 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
                     plus the model. It runs entirely on this machine; nothing is sent anywhere.
                     Models are published under their own licence terms.
                   </div>
+                  <label>
+                    Run the AI on
+                    <select
+                      value={s.lm.compute}
+                      onChange={(e) =>
+                        set({
+                          ...s,
+                          lm: { ...s.lm, compute: e.target.value as typeof s.lm.compute },
+                        })
+                      }
+                    >
+                      <option value="gpu">Graphics card (default)</option>
+                      <option value="cpu">Processor — leave the card to the game</option>
+                    </select>
+                  </label>
+                  <div className="hint">
+                    The card is usually faster. But on a strong processor it is not, and the card
+                    is what the game needs: measured on a Ryzen 7 9800X3D against an RX 7800 XT,
+                    moving the AI to the processor read prompts <b>2.7× faster</b>, answered{' '}
+                    <b>41% quicker</b>, and handed back <b>3.6 GB</b> of graphics memory. Worth
+                    trying if the game stutters when the operator speaks. Takes effect when the
+                    engine next starts.
+                  </div>
                 </>
               )}
-            </>
-          )}
         </section>
 
-        <section style={{ display: s.lm.engine === 'lmstudio' ? undefined : 'none' }}>
-          <h3>AI operator — LM Studio</h3>
-          <label>
-            Endpoint
-            <input
-              type="text"
-              value={s.lm.endpoint}
-              onChange={(e) => set({ ...s, lm: { ...s.lm, endpoint: e.target.value } })}
-            />
-          </label>
-          <label>
-            Model
-            <select
-              value={s.lm.model ?? ''}
-              onChange={(e) => set({ ...s, lm: { ...s.lm, model: e.target.value || null } })}
-            >
-              <option value="">auto (first chat model)</option>
-              {snap.lm.models.map((id) => {
-                const note = isEmbeddingModel(id)
-                  ? 'embedding — not for chat'
-                  : fitLabel(classifyModel(id, snap.specs));
-                return (
-                  <option key={id} value={id}>
-                    {id}
-                    {note ? ` — ${note}` : ''}
-                  </option>
-                );
-              })}
-            </select>
-          </label>
+        <section>
+          <h3>AI operator</h3>
           {snap.specs && (
             <div className="hint">
               Your machine: {specsLabel(snap.specs)}
@@ -218,7 +188,7 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
           <div className="hint">
             {snap.lm.ok
               ? `Connected — using ${snap.lm.activeModel ?? '?'}`
-              : 'LM Studio unreachable — start its local server and load a model.'}
+              : 'Engine not running — download or start a model above.'}
           </div>
           <label className="check">
             <input
@@ -723,6 +693,29 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
               </div>
             </>
           )}
+          <div className="row">
+            <button
+              className="btn danger"
+              onClick={() => {
+                // Same two-click confirm as the memory wipe — native confirm()
+                // dialogs are unreliable inside webviews.
+                if (campaignArmed) {
+                  core.resetCampaign();
+                  setCampaignArmed(false);
+                } else {
+                  setCampaignArmed(true);
+                  setTimeout(() => setCampaignArmed(false), 4000);
+                }
+              }}
+            >
+              {campaignArmed ? 'Really reset the campaign?' : 'Reset campaign'}
+            </button>
+          </div>
+          <div className="hint">
+            The campaign is the story that follows you between systems — the faction working
+            against you, the one you keep helping, the standing aim. Resetting starts it from
+            scratch; the journal is untouched.
+          </div>
           <label className="check">
             <input
               type="checkbox"

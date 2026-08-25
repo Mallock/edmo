@@ -194,6 +194,11 @@ export class SessionArc {
     return this.chapter;
   }
 
+  /** What the commander is doing, for callers that fold it further (the vow). */
+  chapterKind(): ChapterKind | null {
+    return this.chapter;
+  }
+
   /**
    * The computed story-so-far, for the copilot's ARC line — or null before the
    * session has any shape. Numbers arrive pre-rounded so the model cannot

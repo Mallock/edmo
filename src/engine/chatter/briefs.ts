@@ -24,6 +24,7 @@ import {
   type BriefNoun,
   type FactSource,
 } from './brief.ts';
+import { rotateWindow } from '../rotate.ts';
 
 const noun = (value: string, source: FactSource): BriefNoun => ({ value, source });
 const figure = (value: string | number, source: FactSource): BriefFigure => ({
@@ -271,12 +272,17 @@ export function factionBrief(
 // ---------------------------------------------------------------------------
 
 /** A brief about what a build is still short of. */
-export function constructionBrief(depot: DepotState | null): Brief | null {
+export function constructionBrief(depot: DepotState | null, rotate = 0): Brief | null {
   if (!depot || depot.complete || depot.failed) return null;
-  const short = depot.resources
+  const open = depot.resources
     .filter((r) => r.remaining > 0)
-    .sort((a, b) => b.remaining - a.remaining)[0];
-  if (!short) return null;
+    .sort((a, b) => b.remaining - a.remaining);
+  if (!open.length) return null;
+  // Rotate among the biggest open lines. The single top figure used to ride
+  // EVERY briefing while a build was on the books, and a live session watched
+  // one aluminium shortfall anchor three scenes running — the same fact in
+  // every prompt is an instruction to write about it.
+  const short = rotateWindow(open.slice(0, 3), 1, rotate).shown[0];
 
   const site = depot.station ?? 'the construction site';
   const src: FactSource = { kind: 'construction', site };
@@ -300,7 +306,15 @@ export function constructionBrief(depot: DepotState | null): Brief | null {
     },
     ageMs: Math.max(0, Date.now() - Date.parse(depot.at)),
     subjectKey: `build:${site.toLowerCase()}:${short.key}`,
-    summary: `${site} short ${short.remaining} t of ${short.name}`,
+    // Not "short of" — a build order is a shopping list somebody will fill for
+    // money, and the data says so, or the writer dresses it as a crisis.
+    // And NO tonnage: atmosphere does not need "2,483 t", and a precise figure
+    // in the prompt became a precise figure in scene after scene — nobody on a
+    // working channel quotes the manifest twice. The number stays with the
+    // architect, the operator and the wire, where numbers are the point.
+    summary:
+      `${site} (${Math.round(depot.progress * 100)}% built) is buying ${short.name} for the ` +
+      `build — a construction site's shopping list, routine dock business any hauler can sell into`,
   };
 }
 

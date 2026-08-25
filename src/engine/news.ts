@@ -15,6 +15,10 @@
 import type { OperatorState, SystemIntel } from './types.ts';
 import type { MarketRecord } from './trade.ts';
 import { isNearDuplicate } from './copilot.ts';
+import { rotateWindow } from './rotate.ts';
+import { isModelAside, stripModelAside } from './aside.ts';
+import { newsAngle } from './tone.ts';
+import { describeSignal, stateGlossary } from './gloss.ts';
 
 /**
  * The desks the paper runs.
@@ -179,6 +183,17 @@ export function buildNewsBrief(
   system: string,
   intel: SystemIntel | undefined,
   extras: NewsExtras = {},
+  /**
+   * Which slice of each capped list to print, so two editions from an unchanged
+   * system are not built from byte-identical input.
+   *
+   * The desks already rotate; the FACTS under them did not. A system with ten
+   * stations showed the same eight for ever, so the industry desk reported the
+   * same places week after week and the model, handed identical text, returned
+   * its favourite answer — which no temperature setting can fix. Pass the
+   * edition counter. See rotate.ts.
+   */
+  rotate = 0,
 ): string[] {
   const out: string[] = [];
   if (!system || system === 'unknown') return out;
@@ -198,13 +213,17 @@ export function buildNewsBrief(
       }.`,
     );
   }
+  // The desks are told what those state words mean — a paper covering an
+  // "Outbreak" it cannot define writes around its own front page (gloss.ts).
+  const glossary = stateGlossary((intel?.factions ?? []).map((f) => f.state));
+  if (glossary) out.push(glossary);
 
   const stations = (intel?.signals ?? []).filter((s) => s.isStation).map((s) => s.name);
-  for (const s of stations.slice(0, 8)) out.push(`STATION: ${s}.`);
+  for (const s of rotateWindow(stations, 8, rotate).shown) out.push(`STATION: ${s}.`);
   const sites = (intel?.signals ?? [])
     .filter((s) => !s.isStation && s.type)
-    .map((s) => s.name);
-  for (const s of [...new Set(sites)].slice(0, 6)) out.push(`SIGNAL: ${s}.`);
+    .map(describeSignal);
+  for (const s of rotateWindow([...new Set(sites)], 6, rotate).shown) out.push(`SIGNAL: ${s}.`);
 
   for (const c of extras.construction ?? []) {
     out.push(
@@ -229,7 +248,9 @@ export function buildNewsBrief(
   }
   // A headline alone does not stop the model rewriting the same paragraph
   // under a new one, so the opening of each story rides along too.
-  for (const p of (extras.previously ?? []).slice(0, 6)) out.push(`PREVIOUSLY: ${p}`);
+  for (const p of rotateWindow(extras.previously ?? [], 6, rotate).shown) {
+    out.push(`PREVIOUSLY: ${p}`);
+  }
   return out;
 }
 
@@ -490,6 +511,31 @@ const NEWS_RULES =
   'Reply as a JSON array of {"desk","headline","body"}, desk exactly as given, headline under 60 ' +
   'characters, body one or two sentences under 240. Return only the array.';
 
+/**
+ * The same rules, without the JSON.
+ *
+ * Asking a model for a data structure is asking it for the one thing it is
+ * worst at, in exchange for something the code can do for nothing. The desk is
+ * chosen here, the count is chosen here, and the edition is assembled here —
+ * all the JSON ever carried was a label the caller already knew. Meanwhile it
+ * ruled out models outright: Llama 3.1 8B writes livelier prose than the model
+ * this app ships and returned `{"civic","Headline"}` — not valid JSON, no keys
+ * — so the entire wire fell over on output that read perfectly well.
+ *
+ * So: one story per call, headline on the first line, body underneath. There is
+ * nothing to parse that a blank line does not solve, and every model can do it.
+ * The same lesson the comms tier learned when its `[speakerRef]` tags were
+ * replaced by plain lines and positional assignment.
+ */
+const STORY_RULES =
+  'The BRIEF is authoritative: never change a number, and never invent a faction, station, system ' +
+  'or commodity. You MAY invent people, teams and bars for the sport and life desks — reuse any ' +
+  'RECURRING names rather than inventing rivals for them. ' +
+  'PREVIOUSLY lines are your own back issues: follow one up, never reprint it. No second person. ' +
+  'Write the HEADLINE on the first line, under 60 characters, no label and no quotation marks. ' +
+  'Then a blank line. Then the STORY: one or two sentences, under 240 characters. ' +
+  'Nothing else — no desk name, no preamble, no markdown, no bullet points.';
+
 const systemPrompt = (tone: NewsTone = 'wry'): string => `${NEWS_RULES}
 
 ${TONE[tone] ?? TONE.wry}`;
@@ -524,6 +570,87 @@ export function buildNewsChat(
           : ''),
     },
   ];
+}
+
+/** The chat for ONE story on one desk. Prose in, prose out — see STORY_RULES. */
+export function buildStoryChat(
+  brief: readonly string[],
+  desk: NewsDesk,
+  avoid: readonly string[] = [],
+  tone: NewsTone = 'wry',
+  /** Rotates the angle the story is written from — see tone.ts. */
+  rotate = 0,
+): Array<{ role: 'system' | 'user'; content: string }> {
+  const dodge = avoid.length
+    ? `\n\nAlready published — do not repeat these or their subjects:\n${avoid
+        .slice(-8)
+        .map((h) => `- ${h}`)
+        .join('\n')}`
+    : '';
+  return [
+    { role: 'system', content: `${STORY_RULES}\n\n${TONE[tone] ?? TONE.wry}` },
+    {
+      role: 'user',
+      content:
+        `BRIEF:\n${brief.join('\n')}\n\nWrite one story for the ${DESK_LABEL[desk]} desk — ` +
+        `${DESK_BRIEF[desk]}${dodge}` +
+        // Last thing read before writing, for the same reason the comms prompt
+        // puts its grounding instruction there.
+        (tone === 'wry'
+          ? '\n\nHouse style: deadpan, unimpressed, short. You are not writing a press release.'
+          : '') +
+        // The one line that differs between two stories from the same desk on
+        // the same brief. Without it the desk remit is identical text every
+        // edition, and a desk with one standing fact re-reports it the same way
+        // for ever however hot the sampling is.
+        `\n\nANGLE: ${newsAngle(rotate)}` +
+        '\n\nHeadline on the first line, blank line, then the story.',
+    },
+  ];
+}
+
+/**
+ * One story out of plain prose.
+ *
+ * Forgiving by design, because the failure it replaces was total: a headline
+ * line, a blank line, a body. A model that volunteers "Headline:" or wraps
+ * things in asterisks is tidied rather than rejected, and one that runs it all
+ * together as a single paragraph has its first sentence taken as the headline —
+ * which is what a headline is.
+ */
+export function parseStory(raw: string, desk?: NewsDesk): { headline: string; body: string; desk?: NewsDesk } | null {
+  const text = String(raw ?? '')
+    .replace(/```[a-z]*/gi, '')
+    .replace(/\*\*|__/g, '')
+    .trim();
+  if (!text) return null;
+
+  const lines = text
+    .split(/\r?\n/)
+    .map((l) => l.trim().replace(/^[-*•>]\s*/, '').replace(/^(?:headline|story|body|desk)\s*:\s*/i, ''))
+    .filter(Boolean)
+    // A whole line of the model reporting on its own homework is not a story.
+    .filter((l) => !isModelAside(l));
+  if (!lines.length) return null;
+
+  let headline = lines[0];
+  let body = lines.slice(1).join(' ').trim();
+
+  // All on one line: the first sentence is the headline, the rest is the story.
+  if (!body) {
+    const m = /^(.+?[.!?])\s+(.*\S.*)$/.exec(headline);
+    if (!m) return null;
+    headline = m[1];
+    body = m[2];
+  }
+
+  headline = clean(stripModelAside(headline)).replace(/[.]+$/, '');
+  // The aside usually rides on the END of the body — "(Note: as per your
+  // instructions, I've created new people...)" after a perfectly good
+  // paragraph. Cut before the whitespace collapse so sentence ends still parse.
+  body = clean(stripModelAside(body));
+  if (!headline || !body) return null;
+  return desk ? { headline, body, desk } : { headline, body };
 }
 
 const clean = (s: string): string =>
@@ -580,7 +707,14 @@ export function parseNewsItems(raw: string): Array<{ headline: string; body: str
  */
 export function isTitleCase(line: string): boolean {
   const words = line.trim().split(/\s+/).filter((w) => /[A-Za-z]/.test(w));
-  if (words.length < 3) return false;
+  // Two, not three. A live edition lost "Construction Progress" — a headline
+  // about a construction site the brief names — because at two words it fell
+  // below the old floor, was read as prose, and its capitalised pair was
+  // reported as an invented organisation. Short headlines are the house style
+  // here ("A Quiet Week", "Lifts Fail Again"), so the floor was spiking exactly
+  // the ones the tone asks for. A two-word invention still gets caught in the
+  // body, which is where a story that has one always repeats it.
+  if (words.length < 2) return false;
   const caps = words.filter((w) => /^[A-Z]/.test(w)).length;
   return caps / words.length > 0.6;
 }
@@ -629,7 +763,16 @@ export function findInvention(item: { headline: string; body: string }, allowed:
  * wire is allowed to be thin.
  */
 export function acceptNews(
-  raw: string,
+  /**
+   * A raw model reply to parse, or stories already parsed.
+   *
+   * The array form is how the per-story prose path feeds this: the desk is
+   * known by the caller and the text has already been split, so there is
+   * nothing left to guess at. Every check below — inventions, invented places,
+   * the name budget, headline and body duplication, cast registration — runs
+   * identically either way, which is the point of taking both.
+   */
+  raw: string | ReadonlyArray<{ headline: string; body: string; desk?: NewsDesk }>,
   opts: {
     brief: readonly string[];
     system: string;
@@ -670,7 +813,8 @@ export function acceptNews(
   // Two cost a fifth of the stories in a live run. trimCast is the real cap.
   let budget = opts.newNameBudget ?? 3;
 
-  for (const it of parseNewsItems(raw)) {
+  const parsed = typeof raw === 'string' ? parseNewsItems(raw) : raw;
+  for (const it of parsed) {
     if (items.length >= (opts.max ?? 3)) break;
     // Unlabelled falls back to civic — a REPORTED desk. Defaulting to an
     // invented one would mean a story nobody assigned a desk to gets a licence

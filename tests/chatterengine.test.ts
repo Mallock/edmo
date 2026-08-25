@@ -870,3 +870,54 @@ test('readyCount counts only scenes that are actually finished', () => {
   e.sceneSlots.fulfil('channel:LOCAL', written('LOCAL', 'x'), T);
   assert.equal(e.readyCount(), 1);
 });
+
+test('a channel the guard keeps refusing eventually speaks anyway', () => {
+  // The deadlock this breaks. `guard.remember` only runs when a scene is
+  // TRANSMITTED, so a channel whose every scene is refused never updates the
+  // thing refusing it — written, taken, rejected, written again, for ever.
+  // Seen live as "0 on the air · 1 writing · repetition filtered" for a whole
+  // session while the writer produced a scene every time.
+  const e = new ChatterEngine({ grammar: GRAMMAR, source: 'llm', rand: () => 0.5 });
+  // Teach the guard a subject, then keep offering scenes on that same subject.
+  const make = (id: string): Scene => ({
+    id,
+    channel: 'STATION',
+    func: 'texture',
+    turns: [{ speakerRef: 'control', text: 'Hold at the marker, traffic on your vector.' }],
+    brief: textureBrief('stuck-subject'),
+    ttlMs: 600_000,
+    tier: 'llm',
+  });
+  e.guard.remember(make('seed'));
+
+  const input = () => ({
+    nowMs: Date.now(),
+    pressure: 0,
+    inCrisis: false,
+    crisisResolvedAt: null,
+    density: 'bustling' as const,
+    system: 'HIP 71120',
+    briefs: [textureBrief('stuck-subject')],
+    context: {
+      onFoot: false,
+      resolvedPorts: 2,
+      portSeparationLs: 100,
+      carrierPresent: false,
+      population: 1_000_000,
+      hasCrew: true,
+      mutedChannels: new Set<ChannelId>(),
+      emergencyBriefReady: false,
+    },
+    installedVoices: [] as string[],
+  });
+
+  // Offer the same refused scene repeatedly; by the third it must go out.
+  let spoke = false;
+  for (let i = 0; i < 6 && !spoke; i++) {
+    e.sceneSlots.reserve('channel:STATION', Date.now() + 600_000);
+    e.sceneSlots.fulfil('channel:STATION', make(`s${i}`), Date.now());
+    const r = e.tick(input());
+    if (r.transmission) spoke = true;
+  }
+  assert.equal(spoke, true, 'the channel never recovered from the guard');
+});

@@ -15,7 +15,7 @@ import { fmtClock, phaseOf as jumpPhaseOf } from '../engine/carrierjump.ts';
 import { Feed } from './Feed.tsx';
 import { SettingsPanel } from './SettingsPanel.tsx';
 import { categoryColor, countdown } from './util.ts';
-import type { HudShipStatus } from './store.ts';
+import type { HudShipStatus, CampaignHudView } from './store.ts';
 import type { ShipPanel } from '../engine/shippanel.ts';
 
 /** Compact live ship telemetry: fuel gauge + hazard chips (from Status.json). */
@@ -45,6 +45,38 @@ function ShipStatusStrip({ status }: { status: HudShipStatus }) {
         </span>
       ))}
       {status.onFoot && <span className="status-chip info">ON FOOT</span>}
+    </div>
+  );
+}
+
+/** The campaign spine: who is in the commander's story and how tight their
+ *  clock is wound. Renders nothing until something is elected or vowed —
+ *  the threads are chosen by the journal (campaign.ts), never invented. */
+function CampaignStrip({ campaign }: { campaign: CampaignHudView }) {
+  const pips = (clock: number) => '▓'.repeat(clock) + '░'.repeat(Math.max(0, 6 - clock));
+  return (
+    <div className="status-strip campaign-strip">
+      {campaign.pursuer && (
+        <span
+          className="status-chip warn"
+          title="The faction working against you — the clock is how close things are to a head"
+        >
+          ⚔ {campaign.pursuer.faction} <span className="mono">{pips(campaign.pursuer.clock)}</span>
+        </span>
+      )}
+      {campaign.patron && (
+        <span
+          className="status-chip info"
+          title="The faction you keep helping — the clock builds toward recognition"
+        >
+          🤝 {campaign.patron.faction} <span className="mono">{pips(campaign.patron.clock)}</span>
+        </span>
+      )}
+      {campaign.vow && (
+        <span className="campaign-vow" title="The standing aim, read off what you actually do">
+          {campaign.vow}
+        </span>
+      )}
     </div>
   );
 }
@@ -333,6 +365,8 @@ export function App() {
           )}
 
           {snap.shipStatus && <ShipStatusStrip status={snap.shipStatus} />}
+
+          {snap.campaign && <CampaignStrip campaign={snap.campaign} />}
 
           {snap.trade && (
             <div className="trade-card">

@@ -362,6 +362,29 @@ test('a construction brief reports the biggest shortfall', () => {
   assert.equal(verifyAgainstBrief('Kepler Landing still wants 1542 of Steel.', b).ok, true);
 });
 
+test('the construction summary explains itself and rotates its commodity', () => {
+  const three = depot({
+    resources: [
+      { key: 'alu', name: 'Aluminium', required: 3000, provided: 517, remaining: 2483, payment: 0 },
+      { key: 'steel', name: 'Steel', required: 2542, provided: 1000, remaining: 1542, payment: 0 },
+      { key: 'stab', name: 'Surface Stabilisers', required: 1300, provided: 69, remaining: 1231, payment: 0 },
+    ],
+  });
+  // The line says what a build order IS — a shopping list, not a crisis.
+  const b0 = constructionBrief(three, 0)!;
+  assert.match(b0.summary, /shopping list/);
+  assert.match(b0.summary, /routine dock business/);
+  assert.doesNotMatch(b0.summary, /\bshort\b/);
+  // And carries NO tonnage: a precise figure in the prompt became a precise
+  // figure in scene after scene — the number lives with the architect, the
+  // operator and the wire, never in atmosphere.
+  assert.doesNotMatch(b0.summary, /\d+\s*t\b/);
+  // And the commodity rotates, so no single figure rides every prompt —
+  // a live session watched one aluminium tonnage anchor three scenes running.
+  const names = [0, 1, 2].map((r) => constructionBrief(three, r)!.tokens.commodity);
+  assert.deepEqual([...new Set(names)].sort(), ['Aluminium', 'Steel', 'Surface Stabilisers']);
+});
+
 test('a finished or failed build reports nothing', () => {
   assert.equal(constructionBrief(depot({ complete: true })), null);
   assert.equal(constructionBrief(depot({ failed: true })), null);

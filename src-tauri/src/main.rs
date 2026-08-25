@@ -5,7 +5,7 @@
 //   * journal directory locate + newest-file tail (poll, read-only — X.3)
 //   * snapshot readers with mid-rewrite retry (Missions/Status/Cargo/NavRoute/
 //     Market/ShipLocker/Backpack/Outfitting/Shipyard/ModulesInfo/FCMaterials)
-//   * LM Studio streaming proxy (avoids webview CORS, keeps X.2 auditable)
+//   * bundled-engine streaming proxy (avoids webview CORS, keeps X.2 auditable)
 //   * Piper TTS sidecar (bundled local neural voice)
 //   * global shortcuts, click-through, window-geometry persistence
 
@@ -788,9 +788,9 @@ fn filetime_touch(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-// ------------------------------------------------------------- LM Studio proxy
+// -------------------------------------------------------- inference proxy
 
-/// A chat message forwarded verbatim to LM Studio. Kept as raw JSON so the
+/// A chat message forwarded verbatim to the engine. Kept as raw JSON so the
 /// full OpenAI shape survives untouched: plain-string or content-part
 /// `content` (vision), plus the tool-loop additions — an assistant turn's
 /// `tool_calls` and `role:"tool"` result messages with `tool_call_id`.
@@ -817,9 +817,9 @@ async fn llm_models(endpoint: String, api_key: Option<String>) -> Result<Vec<Str
         .json()
         .await
         .map_err(|e| e.to_string())?;
-    // LM Studio answers OpenAI-style (`data[].id`); llama-server also exposes an
+    // Everything answers OpenAI-style (`data[].id`); llama-server also exposes an
     // Ollama-compatible shape (`models[].name`). Accept either so the bundled
-    // engine and LM Studio look the same to the frontend.
+    // engine looks the same to the frontend either way.
     let from = |key: &str, field: &str| -> Vec<String> {
         v[key]
             .as_array()
@@ -847,7 +847,7 @@ struct ChatTurn {
 const MAX_TOOL_CALLS_PER_TURN: usize = 6;
 
 /// POST one chat body, attaching the bundled engine's per-session key when we
-/// have one (LM Studio needs no auth and passes None).
+/// have one.
 async fn send_chat(
     client: &reqwest::Client,
     url: &str,
@@ -858,9 +858,20 @@ async fn send_chat(
     if let Some(key) = api_key.filter(|k| !k.is_empty()) {
         req = req.bearer_auth(key);
     }
-    req.send()
-        .await
-        .map_err(|e| format!("LM Studio unreachable: {e}"))
+    req.send().await.map_err(|e| {
+        // There is exactly one engine now — the bundled one — so the message
+        // can name it plainly. (This used to guess between LM Studio and the
+        // bundled engine from the port number; the guess, and the second
+        // engine, are both gone.)
+        let why = if e.is_connect() {
+            " (not accepting connections yet — it may still be starting)"
+        } else if e.is_timeout() {
+            " (timed out)"
+        } else {
+            ""
+        };
+        format!("The local AI engine did not answer{why}: {e}")
+    })
 }
 
 async fn stream_chat(
@@ -1280,31 +1291,6 @@ async fn llm_quick(
         .to_string())
 }
 
-/// Model capabilities from LM Studio's richer REST API (`/api/v0/models`):
-/// id → type ("vlm" | "llm" | "embeddings"). Empty map when the endpoint is
-/// unavailable (older LM Studio) — callers must degrade gracefully.
-#[tauri::command]
-async fn llm_model_types(endpoint: String) -> HashMap<String, String> {
-    let mut out = HashMap::new();
-    let Ok(client) = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(3))
-        .timeout(Duration::from_secs(6))
-        .build()
-    else {
-        return out;
-    };
-    let url = format!("{}/api/v0/models", endpoint.trim_end_matches('/'));
-    let Ok(resp) = client.get(url).send().await else { return out };
-    let Ok(v) = resp.json::<serde_json::Value>().await else { return out };
-    if let Some(arr) = v["data"].as_array() {
-        for m in arr {
-            if let (Some(id), Some(ty)) = (m["id"].as_str(), m["type"].as_str()) {
-                out.insert(id.to_string(), ty.to_string());
-            }
-        }
-    }
-    out
-}
 
 // ------------------------------------------------------------- memory bank IO
 
@@ -2772,7 +2758,6 @@ fn main() {
             piper_download_voice,
             piper_speak,
             llm_models,
-            llm_model_types,
             llm_chat,
             memory_load,
             memory_save,
@@ -2801,6 +2786,7 @@ fn main() {
             engine::engine_scan_local_models,
             engine::engine_download_runtime,
             engine::engine_download_model,
+            engine::engine_ensure_drafter,
             engine::engine_remove_model,
             engine::engine_discard_partial,
             engine::engine_hash_model,

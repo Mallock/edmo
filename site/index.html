@@ -168,6 +168,11 @@ section{padding:var(--space-16) 0}
 .mi p{font-size:1rem;color:var(--dim);max-width:52ch}
 .mi p b{color:var(--text);font-weight:500}
 .mi .opt{color:var(--dim);font-size:0.72em;letter-spacing:0.08em}
+/* 1.4.0: the cards say it in bullets — the prose walls are gone. */
+.mi ul{list-style:none;margin:var(--space-2) 0 0;max-width:56ch}
+.mi ul li{padding:5px 0 5px 22px;position:relative;color:var(--dim);font-size:0.98rem;line-height:1.55}
+.mi ul li::before{content:"▸";position:absolute;left:2px;color:var(--cyan)}
+.mi ul li b{color:var(--text);font-weight:500}
 
 /* gallery — screenshots at generous size */
 .gallery{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,400px),1fr));gap:var(--space-12) var(--space-8);align-items:start;justify-items:center}
@@ -251,7 +256,7 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
 <div class="strip">
   <div class="wrap">
     <span><b>ED MISSION OPERATOR</b></span>
-    <span>v1.2.0 · Windows 10/11 · Linux beta</span>
+    <span>v1.5.0 · Windows 10/11 · Linux beta</span>
     <span><span class="dot"></span>100% local</span>
     <nav>
       <a href="#features">Features</a>
@@ -279,15 +284,15 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
         it installs itself.
       </p>
       <div class="cta-row">
-        <a class="dl" href="ED-Mission-Operator-1.2.0-setup.exe" download>
+        <a class="dl" href="ED-Mission-Operator-1.5.0-setup.exe" download>
           ⬇ DOWNLOAD FOR WINDOWS
-          <small>ED-Mission-Operator-1.2.0-setup.exe · 132 MB · no admin needed</small>
+          <small>ED-Mission-Operator-1.5.0-setup.exe · 132 MB · no admin needed</small>
         </a>
         <p class="cta-note">Free hobby project. Two offline voices included. AI features optional.</p>
         <p class="cta-note">🐧 <b>Linux beta:</b>
-          <a href="ED-Mission-Operator-1.2.0-amd64.deb" download class="a-amber">.deb (147 MB)</a>
+          <a href="ED-Mission-Operator-1.5.0-amd64.deb" download class="a-amber">.deb (147 MB)</a>
           ·
-          <a href="ED-Mission-Operator-1.2.0-x86_64.AppImage" download class="a-amber">AppImage (231 MB)</a>
+          <a href="ED-Mission-Operator-1.5.0-x86_64.AppImage" download class="a-amber">AppImage (231 MB)</a>
           — journals auto-detected from the Steam Proton prefix; X11 recommended
           (global hotkeys don't exist on Wayland); screen glances are Windows-only for now.
           Fresh out of the forge — reports welcome. AppImage users: install an emoji font
@@ -311,30 +316,29 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
       <div class="manifest">
       <div class="mi"><div>
         <h4>Live mission tracking</h4>
-        <p>Reads the game's own journal files as you play. Cards show category, destination,
-        reward, <b>kill and cargo counters</b>, gift commodities for VIPs, and a synthesized
-        objective checklist the game never gives you — with live expiry timers. It reads
-        the <b>whole board</b>: couriers and cargo, passengers and sightseeing, massacres and
-        assassinations, plus <b>donations, scans, hacks, sabotage, smuggling and on-foot
-        (Odyssey) work</b> — each with its own checklist and tailored advice.</p>
+        <ul>
+          <li>Cards with category, destination, reward, <b>kill &amp; cargo counters</b> and live expiry timers</li>
+          <li>A synthesized <b>objective checklist</b> the game never gives you</li>
+          <li>The <b>whole board</b>: couriers, cargo, passengers, massacres, assassinations, donations, scans, hacks, smuggling, on-foot</li>
+        </ul>
       </div></div>
       <div class="mi"><div>
         <h4>Flight safety &amp; ship status</h4>
-        <p>The operator watches the game's real-time status feed. A compact strip shows your
-        <b>fuel gauge</b> and live hazards, and it speaks the ones that matter: <b>"interdiction —
-        submit and boost"</b>, overheating, shields down, low fuel. It reads out your
-        <b>docking pad number</b> the instant control clears you, warns before a jump when the
-        next star can't refuel you, and knows when you're deep in a menu so it won't nag you for
-        "stalling" while you plan a route.</p>
+        <ul>
+          <li><b>Fuel gauge</b> + live hazard strip from the game's status feed</li>
+          <li>Speaks what matters: <b>"interdiction — submit and boost"</b>, overheating, low fuel</li>
+          <li>Reads your <b>docking pad number</b> the instant control clears you</li>
+          <li>Warns before a jump when the next star can't refuel you</li>
+          <li>Menu-aware — no "stalling" nags while you plan a route</li>
+        </ul>
       </div></div>
       <div class="mi"><div>
         <h4>Knows your ship, mats &amp; surveys</h4>
-        <p>From your loadout it does the check the mission board never does: <b>"that delivery
-        won't fit your hold"</b>, <b>"you don't have cabins for these VIPs"</b>, <b>"you're not
-        rigged to mine this"</b>. It keeps a running tally of your <b>engineering materials and
-        unlocked engineers</b>, and while you explore it flags the bodies actually <b>worth
-        mapping</b> — Earth-likes, water and ammonia worlds, terraformables — with an estimate of
-        the survey data riding in your hold.</p>
+        <ul>
+          <li>The checks the board never does: <b>"that won't fit your hold"</b>, <b>"no cabins for these VIPs"</b></li>
+          <li>Running tally of <b>engineering materials</b> and unlocked engineers</li>
+          <li>Flags bodies <b>worth mapping</b> — with the survey value riding in your hold</li>
+        </ul>
       </div></div>
       </div>
     </div>
@@ -344,64 +348,69 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
       <div class="manifest">
       <div class="mi"><div>
         <h4>Proactive heartbeat</h4>
-        <p>The operator notices when you stall: docked too long with hand-ins waiting, parked in a
-        kill system without engaging, a contract about to expire. It tells you — <b>out loud</b> —
-        and names the actual RES site or Nav Beacon it detected in-system. It keeps a miner
-        company too: a greeting when you drop onto a ring, <b>"that one's worth the limpets"</b>
-        on rich rocks, and tonnage milestones as the refinery fills — quietly, on strict
-        cooldowns.</p>
+        <ul>
+          <li>Notices when you stall: hand-ins waiting, a kill system unengaged, a contract about to expire — and <b>says so, out loud</b></li>
+          <li>Names the actual <b>RES site or Nav Beacon</b> it found in-system</li>
+          <li>Keeps a miner company: rich-rock callouts, tonnage milestones — on strict cooldowns</li>
+        </ul>
       </div></div>
       <div class="mi"><div>
         <h4>AI operator <span class="opt">(optional)</span></h4>
-        <p>Turn the AI on with <b>one button</b> — the app installs its own engine and model, with
-        nothing else to download or configure — then ask it anything. <i>"What should I do
-        first?"</i> gets an answer grounded in your real missions, system intel and expiry order,
-        and it can <b>read your live game data on the fly</b> rather than guess (see below).
-        Prefer to run your own? Point it at LM Studio instead, and a built-in advisor reads your
-        RAM and graphics card and tells you which models actually fit.</p>
+        <ul>
+          <li><b>One button</b> — the app installs its own engine and model, nothing else to configure</li>
+          <li>Answers grounded in your <b>real missions, market and system intel</b></li>
+          <li>A hardware advisor reads your RAM and graphics card and says which models fit</li>
+        </ul>
+      </div></div>
+      <div class="mi"><div>
+        <h4>A campaign that follows you <span class="opt">(new in 1.4.0)</span></h4>
+        <ul>
+          <li>The story that <b>survives the jump</b>: a <b>pursuer</b> and a <b>patron</b> — real minor factions <b>elected from your journal</b> (interdictions, crimes, contracts, standing), never invented</li>
+          <li>Six-segment <b>threat clocks</b> tick on real events; a filled clock pays off in all three voices</li>
+          <li>A standing <b>vow</b> read off what you actually fly: <i>"See the Sirius Corp work through — 3 contracts still open"</i></li>
+          <li>The voices share the threads: the traffic gossips it, the wire covers the gossip, the operator quotes the chatter — and states only what really happened</li>
+          <li>A compact <b>HUD strip</b>: ⚔ pursuer / 🤝 patron with clock pips, and the vow</li>
+          <li>Oracle commands, typed or spoken: <i>"reveal a detail"</i>, <i>"advance a threat"</i>, <i>"flashback"</i></li>
+        </ul>
       </div></div>
       <div class="mi"><div>
         <h4>Offline neural voices</h4>
-        <p>Two bundled Piper voices speak briefings, warnings and stories — <b>no cloud, ever</b>.
-        Six more voices are a one-click download away. Text never leaves your machine.</p>
+        <ul>
+          <li>Two bundled Piper voices — <b>no cloud, ever</b>; six more one click away</li>
+          <li>Text never leaves your machine</li>
+        </ul>
       </div></div>
       <div class="mi"><div>
         <h4>Ears <span class="opt">(optional, off by default)</span></h4>
-        <p><b>Talk to it.</b> Hold <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>Space</kbd> — even with
-        the game in focus — speak, release, and the operator answers out loud. Speech recognition
-        runs on a local Whisper model (a one-time download on your click); your voice never
-        leaves the machine. And it holds the thread: <i>"and how far is that?"</i> works, because
-        the operator remembers what it just told you — including its own stories and warnings.</p>
+        <ul>
+          <li>Hold <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>Space</kbd> — even mid-game — speak, release, it answers out loud</li>
+          <li>Local Whisper transcription; your voice <b>never leaves the machine</b></li>
+          <li>Holds the thread — <i>"and how far is that?"</i> works</li>
+        </ul>
       </div></div>
       <div class="mi"><div>
         <h4>Eyes &amp; a living copilot <span class="opt">(optional, off by default)</span></h4>
-        <p>With the AI turned on, the operator can <b>glance at your screen</b>
-        and understand what you're doing — even in situations the journal doesn't record. It never
-        reacts to a single frame in isolation: your undockings, jumps, interdictions, arrivals and
-        hand-ins all stream into <b>one running conversation</b> alongside what it sees, so it
-        <b>rides the whole session with you</b> and reacts in context — it knows the leg you just
-        flew and the job you just closed, like a crewmate who's been there the whole time. Each
-        screen is <b>read into a short description first</b>, so a remark lands on what's actually
-        there — the target name, the ETA, the pad number — instead of guessing, and stays grounded
-        even on <b>small local models</b>. Danger callouts stay instant; ambient beats are paced so
-        it never floods you. The screenshot travels only to your own machine's LM endpoint and is
-        never saved.</p>
+        <ul>
+          <li><b>Glances at your screen</b> and understands what you're doing — even what the journal doesn't record</li>
+          <li>Everything streams into <b>one running conversation</b> — it rides the whole session with you</li>
+          <li>Each screen is <b>read into a description first</b>, so remarks land on what's actually there</li>
+          <li>Danger callouts instant; ambient beats paced; screenshots never saved, never leave your machine</li>
+        </ul>
       </div></div>
       <div class="mi"><div>
         <h4>A memory</h4>
-        <p>The operator <b>remembers you across sessions</b>: your history with every faction,
-        every system you've visited (and where you lost a ship), personal records — richest
-        contract, biggest bounty, best session. It brings memories up at the right moment
-        ("that's your best session ever") and stays quiet the rest of the time — strict cooldowns
-        make chatter-flooding impossible. On its first run it reads your recent journals, so it
-        knows you from day one.</p>
+        <ul>
+          <li>Remembers you <b>across sessions</b>: factions, systems, lost ships, personal records</li>
+          <li>Brings memories up at the right moment, on strict cooldowns</li>
+          <li>First run reads your recent journals — it knows you from day one</li>
+        </ul>
       </div></div>
       <div class="mi"><div>
         <h4>The Saga</h4>
-        <p>When you log off, the operator narrates your session as a numbered <b>space-opera
-        episode</b> — real events, real credits, real names, with continuity from the previous
-        chapter and a cliffhanger for the next. Plus in-flight scuttlebutt about your passengers
-        and the places on your route.</p>
+        <ul>
+          <li>Log off and the session becomes a numbered <b>space-opera episode</b> — real events, real credits, real names</li>
+          <li>Continuity from the last chapter, a cliffhanger for the next</li>
+        </ul>
       </div></div>
       </div>
     </div>
@@ -411,222 +420,97 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
       <div class="manifest">
       <div class="mi"><div>
         <h4>Route plotter — ship &amp; fleet carrier <span class="opt">(opt-in)</span></h4>
-        <p>A plotter tab for the two routes the galaxy map won't give you. For your <b>ship</b>, the
-        <b>neutron highway</b> — every supercharge star between here and there, plotted against
-        your real jump range. For your <b>fleet carrier</b>, the thing the game refuses to do at
-        all: the <b>whole trip jump by jump</b>, since a carrier hop is one system name typed in by
-        hand and a run to Colonia is forty-six of them. Every stop has a <b>copy button</b>, and the
-        next one lands on your clipboard <b>automatically the moment you arrive</b> — jump, paste,
-        jump. And above the list, the number that decides whether the trip happens at all: the
-        <b>tritium</b>. It reads your carrier's depot and tonnage from the journal, adds what you
-        tell it is in the hold, and answers plainly — <i>"short 2,739 t — seven runs with your
-        400 t hold"</i> — flagging the stops with <b>icy rings</b> where you could mine it instead,
-        and warning you when the load won't physically fit aboard. The operator follows the same
-        route you do: it calls each waypoint out loud and knows about the shortfall before it
-        advises you on anything.</p>
+        <ul>
+          <li>For the ship: the <b>neutron highway</b>, plotted against your real jump range</li>
+          <li>For the carrier: the <b>whole trip jump by jump</b> — the thing the game refuses to do</li>
+          <li>The next stop lands on your clipboard <b>automatically on arrival</b> — jump, paste, jump</li>
+          <li>The <b>tritium math</b>: <i>"short 2,739 t — seven runs with your 400 t hold"</i>, icy-ring stops flagged</li>
+          <li>The operator follows the same route and calls each waypoint out loud</li>
+        </ul>
       </div></div>
       <div class="mi"><div>
         <h4>Orrery — where everything is, right now</h4>
-        <p>The system map, at the size of a HUD. Every scan you take carries the body's <b>whole
-        orbit</b> — semi-major axis, eccentricity, inclination, periapsis, ascending node, mean
-        anomaly and period — so the tab is not a picture of the system, it is the <b>arithmetic</b>:
-        it places each body where it actually is at this instant, and a <b>warp control</b> runs the
-        clock forward to show you where it will be. Nothing is simulated and nothing drifts, because
-        every frame solves the same equations at a different time. Stars, planets, barycentres and
-        <b>belt clusters as the bands they are</b>; the body you are standing on is ringed; tap
-        anything for its distance, its orbital period and how eccentric it is. <b>Planet distances
-        are to scale</b> — a leg of 1,900&nbsp;ls draws at just under half a cluster sitting at
-        4,000, because that is the proportion you actually fly — and only <b>within</b> a planet's
-        own satellite system are distances stretched, which is the only way a 1&nbsp;ls moon stays
-        visible at all. Bodies that would still land on top of each other are <b>nudged apart until
-        you can count them</b> — a map is read to answer <i>what is here</i>, and two worlds drawn
-        as one blob answer nothing; zooming in is what opens the knots. The card <b>always says
-        which mode it is in</b>, with a switch to exact distances — untouched, nothing nudged —
-        when you want to see the real thing.
-        <b>Every body is named</b> — stars, planets, moons and barycentres — because you cannot
-        look one up as "the green one". Each name takes the first free berth around its body, and
-        one with nowhere to go waits rather than being stacked on top of a neighbour, so the map
-        fills in with names as you <b>scroll to zoom</b>. <b>Drag to pan</b>, double-click to frame
-        the whole system again.</p>
-        <p>Bodies are <b>lit by the star that actually lights them</b> — the terminator faces the
-        real thing, so the day side on screen is the day side in the game — and their surfaces are
-        <b>generated, not downloaded</b>: no texture files, nothing fetched, just the class the
-        journal already told us. Ice reads as ice, gas giants get bands, metal-rich goes ochre,
-        and the grain appears as you zoom in far enough to have a surface worth looking at.
-        Landable worlds keep their green rim, because that is the one thing on the map you can
-        act on.</p>
-        <p><b>Every dock you have visited is marked</b> — stations, outposts, settlements and
-        construction depots, beside the world they belong to. Docks are not bodies and never get
-        scanned, so a surface port is placed on the world the journal names outright, and an orbital
-        one is matched to what it orbits by distance from the arrival star, which both report:
-        Anders City says 970.04&nbsp;ls, its world says 970.0. What cannot be matched is left
-        undrawn rather than parked beside the wrong planet.</p>
-        <p><b>Your ship is on the map too — as honestly as it can be.</b> Elite reports no in-system
-        position: the status file carries flags, fuel, cargo and your nav target, and nothing else.
-        So instead of inventing a dot, the tab draws <b>the leg you are flying</b> — from where you
-        dropped to supercruise toward whatever you have targeted — and shows your progress along it
-        as <b>a band rather than a point</b>. The width is not decoration: measured across this
-        commander's own journals the same 4,697&nbsp;ls run took <b>137, 162 and 304 seconds</b> on
-        different days, and a 0.8&nbsp;ls hop took as long as either, because a supercruise trip is
-        spool-up and deceleration far more than it is distance. The band slides as you fly, and the
-        moment you drop in it is replaced by fact. <b>Parked, you are drawn too</b> — docked or
-        dropped at a station, a filled chevron marks the exact dock, filled because an arrival is
-        a fact the journal stated where the in-flight marker is an estimate and says so. Flying
-        toward a station you have never visited, the card tells you the destination is not mapped
-        yet rather than showing nothing. And a <b>recenter chip</b> snaps the camera to your ship,
-        parked or mid-leg, and keeps following it — while following, zoom anchors on the ship, so
-        you can wheel in and out without the one marker you care about sliding off frame. In
-        supercruise the camera <b>flies the leg with you</b>: wide at departure, when the
-        destination is far and the frame holds most of the system, tightening continuously as you
-        close, easing back out when the target leaves the map. Touch the wheel and it is yours.
-        Grab the map and it lets go; the chip flips back to recenter, one tap from resuming.</p>
-        <p><b>The HUD switches tabs with the game.</b> Opening a station market while a
-        colonisation build is on the books brings up the architect's shopping list; undocking
-        brings back the system map. The moment a commander cannot click the HUD is precisely the
-        moment the game is being played, so the HUD stops waiting for the click — and a toggle in
-        Settings turns the whole behaviour off. It only ever moves between tabs a click could
-        reach: no build, or a system too bare to draw, switches nothing.</p>
-        <p><b>Tap a body and it opens its card.</b> Distance from arrival and from its parent, orbital
-        period, eccentricity, surface temperature, atmosphere, volcanism, whether it is tidally
-        locked — and <b>gravity in G</b>, which turns amber past 2 and red past 3, because that is
-        the number that writes off ships. If it is landable you also get <b>its surface materials,
-        richest first</b>, and each one annotated with <b>how many you already carry</b>, because
-        the app has been tracking your grid all along. Rarity does the shouting rather than the
-        percentage: iron at 21% stays grey when you are holding 300 of it, while <b>tellurium at
-        1% with none held</b> is the line that tells you to land. First footfall is flagged too. It draws <b>only what you have scanned</b>:
-        no third-party database, no bodies guessed into position. And it counts <b>every scan you
-        have ever taken</b>, not just tonight's — arrive in a system you surveyed a year ago and
-        the map is already complete, because the app reads your whole journal history for that
-        system rather than asking you to do the FSS twice. One real system: 126 scans spread across
-        510 journal files, found in under a second, drawn as 36 bodies and 12 ring bands.</p>
+        <ul>
+          <li>Not a picture — the <b>arithmetic</b>: real orbital elements place every body where it is <b>this instant</b>; a warp control runs the clock forward</li>
+          <li><b>Planet distances to scale</b>; moons spread only enough to be seen; every body named; drag to pan, scroll to zoom</li>
+          <li>Surfaces <b>generated, not downloaded</b>, and lit by the star that actually lights them — ice reads as ice, giants get bands</li>
+          <li><b>Every dock you've visited is marked</b> beside the world it belongs to</li>
+          <li>Your ship drawn <b>honestly</b>: the supercruise leg as a progress band (the game reports no position), a filled chevron when parked</li>
+          <li>A follow camera <b>flies the leg with you</b> — tightening as you close, yours the moment you touch the wheel</li>
+          <li>Tap a body for its card: gravity in G (amber past 2, red past 3), temperature, atmosphere — and <b>surface materials annotated with how many you already carry</b></li>
+          <li>Reads your <b>whole journal history</b>: one real system — 126 scans across 510 files, found in under a second, drawn as 36 bodies and 12 ring bands</li>
+          <li><b>Tabs switch with the game</b>: market up brings the shopping list, undocking brings back the map — off with one toggle</li>
+        </ul>
+      </div></div>
+      <div class="mi"><div>
+        <h4>Run it on the processor <span class="opt">(new in 1.3.0)</span></h4>
+        <ul>
+          <li><b>The graphics card is the thing the game needs</b> — so the AI can run on the CPU: one dropdown, no reinstall</li>
+          <li>Measured on a 9800X3D vs an RX 7800 XT: prompts read <b>2.7× faster</b>, answers <b>41% quicker</b>, <b>3.6 GB</b> of VRAM handed back to Elite</li>
+          <li>Gemma gets a tiny <b>multi-token prediction</b> helper: generation <b>8 → 15 tok/s</b>, identical output</li>
+          <li><b>Two models, both earned by measurement</b>: Gemma 4 E4B (default — fastest, vision, tools) and, new in 1.5.0, <b>Gemma 4 12B QAT</b> — the finer voice: sharper, better-disciplined radio scenes at about twice the time per line, with vision, and the fast-generation helper on the card. Four other candidates failed the same bench the week it passed</li>
+          <li>Your own GGUF model+projector pairs on disk are discovered and offered too</li>
+        </ul>
       </div></div>
       <div class="mi"><div>
         <h4>Comms traffic — the channel other people are on <span class="opt">(new in 1.1.0)</span></h4>
-        <p>Not the operator. <b>Other people</b>: traffic control working a queue, hauliers on the
-        open channel, a fleet carrier broadcasting at everyone, your own crew on the intercom.
-        Mostly they do not care that you exist, which is exactly what makes the ones who do land.
-        A transmission is a <b>scene, not a line</b> — a call and a response, because two voices
-        imply two people who exist whether or not you are listening.</p>
-        <p><b>It belongs to the system you are in.</b> Before each scene the AI is handed a
-        briefing built from your own journal — who runs this system and by how much, who is second
-        and climbing, the stations, the extraction sites and beacons the FSS found, how far out the
-        nearest port is, whether you are docked or in supercruise. Give a model a contested faction
-        board and a hazardous extraction site and it writes people who live there; a scene that
-        would work in any system is a scene that has failed.</p>
-        <p><b>It is overheard radio, and it is allowed to make things up.</b> The haulier who is
-        four hours late, the broker paying under the odds, the ship nobody can raise — none of that
-        is in your journal, and a channel where nobody can invent anything is a channel with
-        nothing to say. This is the one voice in the app that may. <b>The operator, the wire and
-        the copilot are all still fact-checked</b>, because those speak <i>to</i> you and you act
-        on them; the traffic is people talking to each other while you happen to be listening.
-        Treat it as atmosphere, not as intelligence. Old prices are still spoken as old —
-        <i>&ldquo;last I looked, three days back&rdquo;</i> — and anything past a week is not
-        mentioned at all.</p>
-        <p><b>Range is real.</b> Station traffic is gated on the actual distance to the port, taken
-        from the orrery, and <b>fades in as you close</b> — so a distant station sounds distant,
-        and a port the app cannot place stays silent rather than being invented. Deep space is not
-        a distance threshold; it is <b>what is left when nobody is in reach</b>: a carrier tone,
-        your own crew, and a great deal of nothing.</p>
-        <p><b>Voices come back.</b> A callsign heard in a system is remembered, keeps the same
-        voice, and turns up again next time you are there. Ships you <b>actually hear</b> on the
-        game's own comms can be enrolled into that cast, so the fiction has a spine of things that
-        genuinely happened. Threads run across sessions — something set up gets complicated, and
-        eventually turns.</p>
-        <p><b>It knows when to shut up.</b> Chatter thins as the pressure rises, which is the exact
-        opposite of what the operator does. In a firefight or a hull emergency <b>every ambient
-        channel goes silent</b> — the sudden absence of noise you had stopped noticing is the
-        cheapest tension in the app, and it costs nothing to generate. The operator keeps talking
-        through all of it; that contrast is the point.</p>
-        <p><b>And the model keeps writing.</b> A fixed set of lines eventually repeats itself —
-        however many are authored, the rotation is finite. So your local AI writes <b>fresh scenes
-        continuously</b>, for whichever channels are live, into the same slots the event triggers
-        use. The bundled templates become the <b>floor</b> rather than the ceiling: what you hear
-        when the model is busy or absent. How busy the
-        air is has its own setting — <b>sparse, normal, busy or bustling</b> — and the default works
-        out around <b>one transmission every forty seconds</b> in a system with ports in it.</p>
-        <p><b>And it cycles rather than shuffles.</b> Lines are chosen least-recently-used first,
-        never at random — random picking clusters, so with any finite set you hear some lines three
-        times before others get an airing once. Measured across an hour at the shipped density:
-        <b>88% of transmissions are distinct</b>, nothing plays more than twice, and nothing comes
-        back inside <b>nineteen minutes</b>. That ordering is remembered across restarts, so every
-        session does not open with the same three lines.</p>
-        <p>The <b>Comms tab</b> lists every channel, its signal strength, and — when one is shut —
-        <b>why</b>. Every transmission is logged with its speakers, so the whole thing works with
-        the sound off, and the panel says how many scenes reached the air, how many were dropped
-        and what dropped them. Repetitive? The <b>template file is plain text and yours to
-        extend</b> — declare your own ship names and lines and they join the rotation. Off by
-        default.</p>
+        <ul>
+          <li>Not the operator — <b>other people</b>: traffic control, hauliers, carriers, your own crew; a transmission is a <b>scene, not a line</b></li>
+          <li>Briefed from <b>your journal</b>: the faction board, the stations, the signals — a scene that would work in any system has failed</li>
+          <li><b>Allowed to invent</b> — the one voice that may; the operator, wire and copilot stay fact-checked because you act on them</li>
+          <li><b>Range is real</b>: station traffic fades in as you close; deep space is what's left when nobody is in reach</li>
+          <li><b>Voices come back</b> — callsigns keep their voice and turn up again; threads set up, complicate, and turn</li>
+          <li><b>Knows when to shut up</b>: every ambient channel goes silent in a firefight — the operator keeps talking; that contrast is the point</li>
+          <li>Your local AI writes <b>fresh scenes continuously</b>; bundled templates are the floor, not the ceiling</li>
+          <li><b>New in 1.5.0:</b> 234 authored situations across seven channels, crossed with 25 kinds of <b>moment</b> — the same situation played warm, suspicious or absurd is a different scene, and the pairing doesn't repeat for 3,575 scenes</li>
+          <li>Cycles, never shuffles: measured <b>88% distinct</b> over an hour, nothing back inside 19 minutes</li>
+          <li>The Comms tab shows every channel, why one is shut, and what dropped what; the template file is plain text and yours to extend</li>
+        </ul>
       </div></div>
       <div class="mi"><div>
         <h4>The radio <span class="opt">(new in 1.1.0)</span></h4>
-        <p>Every spoken word now runs through an actual radio channel — the operator, the wire, the
-        saga and the traffic alike. A bandpass into the <b>telephone band</b>, a little soft-clip
-        saturation, a noise bed that opens and closes with the transmission, the odd crackle, a
-        <b>squelch gap before speech and a roger beep after it</b>. Each channel has its own
-        character, and distance degrades it: the same voice from a station two thousand light
-        seconds out is narrower, hissier and breaking up.</p>
-        <p>Underneath there are <b>two buses</b>, and the split is the important part. The operator
-        is on <b>priority</b>; ambient traffic is on <b>ambient</b>, which ducks about 14&nbsp;dB
-        underneath it and <b>drops rather than queues</b> when it backs up. A dock worker's joke
-        can never come between you and a hull-breach callout, and a transmission that has gone
-        stale is discarded instead of arriving four minutes late.</p>
+        <ul>
+          <li>Every voice through a real channel: telephone-band EQ, noise bed, squelch gap, roger beep</li>
+          <li><b>Distance degrades it</b> — a station two thousand light-seconds out is narrower, hissier, breaking up</li>
+          <li>Two buses: the operator on <b>priority</b>, ambient ducked 14 dB under and <b>dropped rather than queued</b> — a joke never delays a hull-breach callout</li>
+        </ul>
       </div></div>
       <div class="mi"><div>
         <h4>System architect — the build, as a shopping list</h4>
-        <p>Dock at a <b>construction site</b> and the whole requirement comes across into its own
-        tab. The game states it once, on the contribution panel, as an alphabetical wall of
-        <i>required / provided</i> — and you cannot read it at all once you undock to go shopping.
-        Here it becomes an <b>ordered plan</b>: what is <b>already in your hold</b> that the site
-        wants (hand it over before you fly anywhere), then what is <b>on sale at this station</b>,
-        then <b>everything for sale in the build's own system</b> — no jump, just supercruise —
-        and only then the wider galaxy. Each line opens to show <b>where to buy it</b>, at what
-        price, how much they hold, and <b>how old that report is</b>, because a two-month-old
-        listing is a rumour and the panel says so in red. Lines are <b>grouped by seller</b>, so
-        the stop that clears the most of the build comes first — one real site wanted 6,703 t
-        across seventeen commodities, and <b>two stations in its own system covered 99% of it</b>.
-        Every docking teaches it more: read a market and that reading <b>replaces</b> anyone
-        else's report about the same station, and a shelf you found empty is never suggested
-        again. It also counts the <b>trips</b> against your actual hold — <i>"×6"</i> next to a
-        line is six full loads — and credits your deliveries the moment you make them.</p>
+        <ul>
+          <li>Dock at a construction site and the requirement becomes an <b>ordered plan</b>: your hold first, this station, this system, then the galaxy</li>
+          <li>Every line opens to <b>where to buy it</b> — price, stock, and how old the report is (a two-month listing shows red)</li>
+          <li><b>Grouped by seller</b>: one real 6,703 t build — two in-system stations covered 99% of it</li>
+          <li>Counts <b>trips against your hold</b> ("×6" = six full loads) and credits deliveries the moment you make them</li>
+          <li>Every docking teaches it; an empty shelf is never suggested again</li>
+        </ul>
       </div></div>
       <div class="mi"><div>
         <h4>The local wire — news for the system you are in <span class="opt">(new in 1.0.3)</span></h4>
-        <p>Galnet reports the galaxy. <b>Nothing reports the system you are standing in</b> — who runs
-        it, who is gaining on them, what the construction sites are short of, what steel did this
-        week. So your own AI writes the local paper, from a brief of things the journal says are
-        <b>true right now</b>: the faction board with real influence figures, the stations, the
-        signals, the markets you have read, the doors that have been shut in your face. Six desks
-        take turns — <b>civic, industry, economy, crime, sport and life</b> — so it is a paper and
-        not an almanac. The economy desk is a real market report: <i>&ldquo;Steel at Niinimäki is
-        3,905&nbsp;cr, up 13% since it was last read&rdquo;</i>, the spread between two stations,
-        who is paying and how badly. And it <b>remembers what it invented</b>: the dock-crew league
-        keeps the same two teams from one edition to the next, the same barman turns up in the same
-        bar. It may invent people, fixtures and gossip; it may <b>not</b> invent a faction, a station
-        or a price — anything it makes up that looks like a real place is thrown away unprinted.
-        Choose how often it files, from every ten minutes to hourly, or off with a button to run one
-        on demand.</p>
+        <ul>
+          <li>Galnet reports the galaxy; <b>your own AI writes the local paper</b> from what the journal says is true right now</li>
+          <li>Six desks take turns — civic, industry, economy, crime, sport, life</li>
+          <li>The economy desk is a real market report: <i>"Steel at Niinimäki is 3,905 cr, up 13%"</i></li>
+          <li><b>Remembers what it invented</b> — same teams, same barman, edition to edition; may never invent a faction, station or price</li>
+          <li>Since 1.3.0 it files <b>one story at a time, as prose</b> — a story that goes wrong costs that story, not the edition</li>
+          <li><b>New in 1.4.0:</b> the paper follows the campaign — the gossip the traffic started turns up as coverage</li>
+        </ul>
       </div></div>
       <div class="mi"><div>
         <h4>Trade leads &amp; profitable runs</h4>
-        <p>Every commodities market you open is remembered, and when a buy-low / sell-high spread
-        clears your threshold a dismissible <b>trade lead card</b> appears. Ask what's worth
-        hauling and it goes further: it searches community market data for the best
-        <b>buy-here, sell-there run</b> out of your system, sized to your hold and filtered to
-        <b>pads your ship can actually land on</b>. The answer arrives as a card with the numbers
-        you act on — credits a ton, credits a full hold, how far — and a <b>copy button on every
-        destination</b>, so the system name is on your clipboard ready for a Ctrl+V in the galaxy
-        map. A multi-hop Spansh loop is one question away when you want one.</p>
+        <ul>
+          <li>Every market you open is remembered; a spread past your threshold becomes a <b>trade lead card</b></li>
+          <li>Ask and it finds the best <b>buy-here, sell-there run</b> — sized to your hold, filtered to pads you can land on</li>
+          <li>Copy button on every destination; a multi-hop Spansh loop is one question away</li>
+        </ul>
       </div></div>
       <div class="mi"><div>
         <h4>Exobiology, worked out for you</h4>
-        <p>Odyssey makes you take three samples of a species, each one far enough from the last —
-        and never tells you how far. The operator does: <b>500 m for Bacterium, 800 m for
-        Osseus</b>, called out the moment you take a sample, and then a single "far enough" when
-        you've walked it. Before you commit to a landing it tells you what's down there, roughly
-        <b>what a full set is worth</b>, and how much walking it will cost. If nobody has logged
-        that body before, it says so — <b>a first sample pays five times as much</b>. And when you
-        cash it all in at Vista Genomics, the payout goes into your session ledger and your
-        records, bonuses included.</p>
+        <ul>
+          <li>The sample distances the game never states — <b>500 m for Bacterium, 800 m for Osseus</b> — called out as you walk them</li>
+          <li>Before you land: what's down there, what a full set is worth, how much walking it costs</li>
+          <li>Untouched body? It says so — <b>a first sample pays five times as much</b></li>
+        </ul>
       </div></div>
       </div>
     </div>
@@ -636,26 +520,20 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
       <div class="manifest">
       <div class="mi"><div>
         <h4>Reads your live data on the fly</h4>
-        <p>Ask <i>"what's worth buying here?"</i> and the operator doesn't guess — it <b>reads the
-        live commodities market</b> in front of you before it answers. With a tool-calling model it
-        can reach for exactly what a question needs: the current market, where to buy or sell a
-        commodity across the stations you've visited, <b>a profitable run out of here</b>, a
-        multi-hop Spansh loop, whether cargo fits your hold, your missions, materials or system
-        intel. No more being sent to buy
-        something that <b>sold out hours ago</b> — and if your model can't call tools, it still
-        answers grounded in the market it can see. All local; nothing leaves your machine.</p>
+        <ul>
+          <li><i>"What's worth buying here?"</i> — it <b>reads the live market</b> before answering, never guesses</li>
+          <li>Tool-calling models reach for what the question needs: markets, runs, cargo fit, missions, materials, intel</li>
+          <li>No tools on your model? Still answers grounded in what it can see. All local</li>
+        </ul>
       </div></div>
       <div class="mi"><div>
         <h4>The wider galaxy, on request <span class="opt">(opt-in)</span></h4>
-        <p>Three community sources the operator touches <b>only when you ask it to</b>. <i>"Any
-        news?"</i> reads the <b>Galnet wire</b> and passes the stories on as news — not as
-        something you were there for. <i>"Where can I sell this?"</i> searches markets
-        <b>across the galaxy</b> (Ardent Insight, built from shared EDDN data), not only the
-        stations you have visited. And <i>"is that system worth the detour?"</i> checks the
-        <b>exploration catalogue</b> for what other commanders have already found there, down to
-        which species are logged on which body — and when it comes back empty it says that means
-        nobody has been yet, not that there is nothing to find. Each is off until you switch it
-        on, and each sends the bare minimum: a system name, a commodity, or nothing at all.</p>
+        <ul>
+          <li><i>"Any news?"</i> reads the <b>Galnet wire</b> and passes it on as news</li>
+          <li><i>"Where can I sell this?"</i> searches markets <b>across the galaxy</b> (Ardent Insight / EDDN)</li>
+          <li><i>"Worth the detour?"</i> checks the <b>exploration catalogue</b> — an empty answer means nobody's been, and it says so</li>
+          <li>Each source off until you switch it on; each sends the bare minimum</li>
+        </ul>
       </div></div>
       </div>
     </div>
@@ -674,15 +552,21 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
       </figure>
       <figure class="shot">
         <a href="img/hud-architect.png" target="_blank" rel="noopener">
-          <img src="img/hud-architect.png" alt="The system architect tab during a real colonisation build: 6,703 tons wanted across seventeen commodities, grouped under 'In HIP 71120 — no jump'. Liquid oxygen is expanded to show five sellers with prices, stock and how old each report is — three in-system ones giving their landing pad and supercruise distance, and two marked 'you saw it' from the commander's own dockings" loading="lazy">
+          <img src="img/hud-architect.png" alt="The system architect tab during the Blanco Vision colonisation build: 7,129 tons still wanted of 9,923, 28.2% built. The plan is ordered into buckets — 1,090 t of Steel already in the hold marked 'hand it over now', Aluminium and Surface Stabilisers on sale in the build's own system with no jump needed, Emergency Power Cells found nearby, and H.E. Suits honestly marked 'no source found'. Twelve commodity lines already delivered in full" loading="lazy">
         </a>
-        <figcaption><b>System architect</b> — 6,703 t of build, sorted into a shopping run</figcaption>
+        <figcaption><b>System architect</b> — 7,129 t of build, sorted into a shopping run</figcaption>
       </figure>
       <figure class="shot">
         <a href="img/hud-news.png" target="_blank" rel="noopener">
-          <img src="img/hud-news.png" alt="The local wire for HIP 71120: three stories tagged Civic, Industry and Economy, reporting the faction influence board, extraction activity and commodity prices, every figure read from the player journal" loading="lazy">
+          <img src="img/hud-news.png" alt="The HIP 71120 Local Wire: four stories tagged Gossip, Celebrity and Sport — dockside rumours about the Explorer on Tour's 46.3% influence share, a station manager's forty-five minute speech, and the Dock-crew League final tied by a statistical fluke — every underlying figure read from the player journal" loading="lazy">
         </a>
         <figcaption><b>Local wire</b> — fictional news, real numbers</figcaption>
+      </figure>
+      <figure class="shot">
+        <a href="img/hud-comms.png" target="_blank" rel="noopener">
+          <img src="img/hud-comms.png" alt="The comms tab with two station scenes on the air in HIP 71120: traffic control and a hauler named Ines Sarkis arguing about a 3,121-ton steel shortfall at the Blanco Vision construction site, the Explorer on Tour's expansion, and GR Virginis Dominion auditors — invented radio drama grounded in the system's real faction board and the commander's own cargo" loading="lazy">
+        </a>
+        <figcaption><b>Comms traffic</b> — invented radio, grounded in your real system</figcaption>
       </figure>
       <figure class="shot">
         <a href="img/hud-copilot.png" target="_blank" rel="noopener">
@@ -698,7 +582,7 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
       </figure>
       <figure class="shot">
         <a href="img/hud-settings.png" target="_blank" rel="noopener">
-          <img src="img/hud-settings.png" alt="Settings panel showing detected machine specs and an AI model recommendation" loading="lazy">
+          <img src="img/hud-settings.png" alt="Settings panel with the local AI engine running, detected machine specs (Ryzen 7 9800X3D, 32 GB RAM, RX 7800 XT) with a model recommendation, the offline Piper voice catalog, and the radio-processing and comms-traffic controls" loading="lazy">
         </a>
         <figcaption><b>Settings</b> — model advisor &amp; the offline voice catalog</figcaption>
       </figure>
@@ -731,7 +615,7 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
       <div><dt>System</dt><dd>Windows 10 / 11, 64-bit<small>installs per-user — no admin rights · Linux beta: Ubuntu/Debian-family .deb, X11 recommended</small></dd></div>
       <div><dt>Game</dt><dd>Elite Dangerous (any edition)<small>run in Borderless window mode</small></dd></div>
       <div><dt>Disk</dt><dd>≈ 400 MB<small>app + two offline voices</small></dd></div>
-      <div><dt>For the AI (optional)</dt><dd>Nothing to install<small>the app fetches its own engine + model (~4–6 GB, one time, resumable) and sizes it to your graphics card — or point it at LM Studio instead</small></dd></div>
+      <div><dt>For the AI (optional)</dt><dd>Nothing to install<small>the app fetches its own engine + model (~4–6 GB, one time, resumable) and sizes it to your graphics card</small></dd></div>
     </dl>
   </div>
 </section>
@@ -744,7 +628,7 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
       <div class="step"><div>
         <h3>Download the installer</h3>
         <p>Click the download button above — you get a single file,
-        <span class="mono">ED-Mission-Operator-1.2.0-setup.exe</span> (about 132&nbsp;MB — it
+        <span class="mono">ED-Mission-Operator-1.5.0-setup.exe</span> (about 132&nbsp;MB — it
         carries the offline voices). Your browser may ask where to save it; Downloads is fine.</p>
       </div></div>
 
@@ -789,10 +673,10 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
         and it <b>resumes</b> if you cancel or lose connection. Progress shows in Settings; the HUD
         says <b>"Local AI engine ready"</b> when it's serving.</p>
         <div class="aside">
-          <span class="t">Already run LM Studio?</span>
-          Keep it. Pick <b>"LM Studio (run it yourself)"</b> in the same dropdown and point the
-          endpoint at it as before — no second copy of a model needed. It's also the fallback if a
-          graphics driver ever argues with the built-in engine.
+          <span class="t">Already have models on disk?</span>
+          GGUF model + projector pairs the app finds on your machine are offered alongside the
+          bundled catalogue and run in the same engine — no second copy of a multi-gigabyte
+          download needed.
         </div>
         <p><b>The model choice is made for you</b>, and it's a Gemma: a vision model that grounds
         its talk in your <b>real game data</b> — the job, the payout, the deadline. In testing,
@@ -845,7 +729,7 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
       <div class="priv">
         <h3>● What it will never do</h3>
         <ul>
-          <li><b>No cloud, no account, no telemetry.</b> The AI runs on your own machine — all inference traffic is to 127.0.0.1, whether that is the built-in engine or your own LM Studio. The only downloads are ones you click: the AI engine and its model (from their official sources), extra voices, and four opt-in community lookups &mdash; all off by default. Spansh routes and Ardent market searches send just a system name (and the commodity you asked about); the exploration catalogue sends only the system name; Galnet sends nothing at all.</li>
+          <li><b>No cloud, no account, no telemetry.</b> The AI runs on your own machine — all inference traffic is to the built-in engine on 127.0.0.1. The only downloads are ones you click: the AI engine and its model (from their official sources), extra voices, and four opt-in community lookups &mdash; all off by default. Spansh routes and Ardent market searches send just a system name (and the commodity you asked about); the exploration catalogue sends only the system name; Galnet sends nothing at all.</li>
           <li><b>Memory stays home.</b> The operator's long-term memory is one local JSON file you can open, inspect, or wipe with one click ("Forget everything"). Screen glances are off by default; when enabled, screenshots go only to your local LM endpoint and are never written to disk.</li>
           <li><b>Your voice stays home.</b> Push-to-talk is off by default; when enabled, speech is transcribed by a local Whisper model on your own CPU. No cloud speech service, ever — the microphone is only live while you hold the key.</li>
           <li><b>Open source.</b> Don't take any of this on faith — the full source is on
@@ -862,7 +746,7 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
         <div class="qa">
           <h3>Does it need the internet?</h3>
           <p>No. Missions, voices, leads and stories all work offline. Internet is only touched
-          for the one-time AI engine + model download (or LM Studio models if you use that instead), extra
+          for the one-time AI engine + model download, extra
           voices, or the optional community lookups — Spansh routes, galaxy-wide markets, the
           exploration catalogue, Galnet news — each on your explicit click, all off by default.</p>
         </div>

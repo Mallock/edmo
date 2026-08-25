@@ -1,6 +1,8 @@
 /**
- * Minimal LM Studio client (OpenAI-compatible API). SPEC.md §3.2, §6.1.
- * Uses the global fetch (Node 18+). All calls fail soft with a timeout so the
+ * Minimal OpenAI-compatible chat client for the bundled llama.cpp engine.
+ * (The filename is a fossil: this began life as an LM Studio client, and the
+ * wire format is identical, so the module survived the engine it was named
+ * for.) Uses the global fetch. All calls fail soft with a timeout so the
  * mission engine keeps working when the LLM is unavailable.
  */
 /** One tool/function call the model asked us to run (OpenAI shape). */

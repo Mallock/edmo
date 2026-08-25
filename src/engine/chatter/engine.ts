@@ -130,6 +130,13 @@ export class ChatterEngine {
   private grammar: Grammar;
   private rand: () => number;
   private source: ChatterSource;
+  /**
+   * Consecutive guard refusals per channel, for the starvation breaker.
+   *
+   * Not persisted: it describes the current standoff, not the paper's history,
+   * and a fresh session should start by trusting the guard again.
+   */
+  private starved = new Map<ChannelId, number>();
   private lastAnyAt: number | null = null;
   private lastPerChannel: Partial<Record<ChannelId, number>> = {};
   private seq = 0;
@@ -305,11 +312,39 @@ export class ChatterEngine {
     // letting it repeat itself worse, not better. Rejected, it falls through
     // to the grammar tier rather than costing the tick.
     let sawReady = false;
+    let lastReject: Scene | null = null;
     for (;;) {
       const ready = this.slots.take(`channel:${channel}`, input.nowMs);
       if (!ready) break;
       sawReady = true;
-      if (!this.guard.check(ready)) return { scene: ready, exhausted: false };
+      if (!this.guard.check(ready)) {
+        this.starved.delete(channel);
+        return { scene: ready, exhausted: false };
+      }
+      lastReject = ready;
+    }
+
+    // Starvation breaker.
+    //
+    // The guard only learns from scenes that were actually TRANSMITTED —
+    // `remember` runs on the way out, not on rejection. So a channel whose
+    // every scene is refused never updates the thing doing the refusing, and
+    // the same verdict repeats for ever: written, taken, rejected, written
+    // again. Observed live as a panel reading "0 on the air · 1 writing" with
+    // "repetition filtered" underneath, for a whole session, while the writer
+    // worked perfectly and produced a scene every time.
+    //
+    // The block is worth having, but not at the price of a channel that can
+    // never speak again. After two consecutive refusals the third is let
+    // through: hearing a subject twice is a smaller failure than silence, and
+    // transmitting is what finally teaches the guard something new.
+    if (lastReject) {
+      const misses = (this.starved.get(channel) ?? 0) + 1;
+      if (misses >= 3) {
+        this.starved.delete(channel);
+        return { scene: lastReject, exhausted: false };
+      }
+      this.starved.set(channel, misses);
     }
 
     // LLM-only: if nothing was written ahead, the channel is silent. That is

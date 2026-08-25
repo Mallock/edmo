@@ -48,7 +48,7 @@ test('the per-path map is what decides, not the mechanism', () => {
   // A family that wants reasoning only for plans must be expressible.
   const askOnly = {
     ...profileFor('gemma-4-e4b'),
-    thinkingFor: { chatter: false, ask: true, json: false, comms: false },
+    thinkingFor: { chatter: false, ask: true, json: false, comms: false, news: false },
   };
   assert.equal(suppressThinkingFor(askOnly, 'chatter'), true);
   assert.equal(suppressThinkingFor(askOnly, 'ask'), false);
@@ -152,4 +152,58 @@ test('the gate optimises for speed, not for what the beats want', () => {
   assert.equal(suppressThinkingForGate(gemma), true); // the gate does not
   // ...but never at the cost of safety: GLM must not see this flag anywhere.
   assert.equal(suppressThinkingForGate(profileFor('glm-4.6v-flash')), false);
+});
+
+test('a family that cannot drive the tool loop is not offered it', () => {
+  // Llama 3.1 8B answered the word "hello" by calling get_current_market({})
+  // and returning empty prose, then recited the market row as its reply. The
+  // same model with tools withheld answered like a person. This is tuning, not
+  // preference — the commander's setting still applies on top.
+  assert.equal(profileFor('llama-3-1-8b').tools, false);
+  assert.equal(profileFor('Meta-Llama-3.1-8B-Instruct').tools, false);
+  // Everything the app ships as a default keeps the loop.
+  assert.equal(profileFor('gemma-4-e4b').tools, true);
+  assert.equal(profileFor('glm-4-6v-flash-9b').tools, true);
+  // An unknown model inherits the gemma-shaped default rather than losing it.
+  assert.equal(profileFor('something-brand-new').tools, true);
+});
+
+test('Llama needs no thinking kwarg — there is no reasoning pass to stop', () => {
+  const p = profileFor('llama-3-1-8b');
+  assert.equal(p.thinking, 'keep');
+  for (const kind of ['chatter', 'ask', 'json', 'comms'] as const) {
+    assert.equal(suppressThinkingFor(p, kind), false, kind);
+  }
+});
+
+test('every shipped family is trusted with the beat gate', () => {
+  // This was briefly false for Llama, on a test that asked the gate about
+  // docking, undocking and a cargo tick — the very examples its prompt names as
+  // things to skip. The model was right and the test was wrong. Re-run on
+  // events the gate is meant to accept, Gemma 4 12B answered SPEAK 4/4.
+  for (const id of ['llama-3-1-8b', 'gemma-4-e4b', 'gemma-4-12b', 'unknown-model']) {
+    assert.equal(profileFor(id).beatGate, true, id);
+  }
+});
+
+test('withholding the gate never silences — it only stops asking', () => {
+  // The guard rail that matters: no profile may set beatGate false in a way
+  // that also removes the fallback. Every shipped profile answers the question.
+  for (const id of ['gemma-4-e2b', 'gemma-4-e4b', 'GLM-4.6V', 'Qwen3.5-4B', 'llama-3-1-8b', 'new']) {
+    assert.equal(typeof profileFor(id).beatGate, 'boolean', id);
+  }
+});
+
+test('the wire thinks on Gemma and never on Qwen 3.5', () => {
+  // The news call used to hardcode "let it think", which is measured right for
+  // Gemma and catastrophic for Qwen 3.5: one story call generated its full
+  // 1,420-token cap in 113 seconds of hidden reasoning with nothing usable in
+  // content, and three comms scenes timed out behind it on the single slot.
+  // No news AND no comms, from one hardcoded flag. The profile decides now.
+  assert.equal(suppressThinkingFor(profileFor('gemma-4-e4b'), 'news'), false);
+  assert.equal(suppressThinkingFor(profileFor('qwen3-5-4b'), 'news'), true);
+  // Every family answers the question, so a new model cannot fall through.
+  for (const id of ['gemma-4-e2b', 'GLM-4.6V', 'llama-3-1-8b', 'Qwen3-VL', 'brand-new']) {
+    assert.equal(typeof profileFor(id).thinkingFor.news, 'boolean', id);
+  }
 });

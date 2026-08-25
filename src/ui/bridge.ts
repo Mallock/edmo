@@ -225,12 +225,6 @@ export async function llmModels(endpoint: string, apiKey?: string | null): Promi
   return invoke<string[]>('llm_models', { endpoint, apiKey: apiKey ?? null });
 }
 
-/** Model id → type ("vlm" | "llm" | "embeddings") from LM Studio's REST API.
- *  Empty when the endpoint doesn't expose it (older LM Studio). */
-export async function llmModelTypes(endpoint: string): Promise<Record<string, string>> {
-  return invoke<Record<string, string>>('llm_model_types', { endpoint });
-}
-
 export async function llmChat(opts: {
   id: string;
   endpoint: string;
@@ -246,7 +240,7 @@ export async function llmChat(opts: {
    *  Set on the conversational paths, where it is ~10x latency for no gain; left
    *  off for tool calls and schema-constrained JSON. */
   noThinking?: boolean;
-  apiKey?: string | null; // bundled engine's per-session key; null for LM Studio
+  apiKey?: string | null; // the bundled engine's per-session key
 }): Promise<void> {
   await invoke('llm_chat', {
     id: opts.id,
@@ -310,7 +304,7 @@ export async function llmQuick(opts: {
 }
 
 // ------------------------------------------------------------ bundled engine
-// The app can fetch its own llama.cpp runtime + model so LM Studio is optional
+// The app fetches its own llama.cpp runtime + model — the only engine
 // (TASKS-1.0.md). Everything still speaks the OpenAI API on 127.0.0.1, so the
 // chat path above is unchanged — only the endpoint and key differ.
 
@@ -321,10 +315,20 @@ export interface EngineModelInfo {
   installed: boolean;
   /** Bytes already fetched into a `.part` — >0 means a download can resume. */
   partial_bytes: number;
-  /** Set for models found outside our own dir (e.g. an LM Studio download). */
+  /** Set for GGUF pairs found outside our own dir and reused in place. */
   external_path: string | null;
   needs_gb: number;
   licence: string;
+  /**
+   * Whether this model can actually see, from the projector file on disk.
+   *
+   * The app used to take vision for granted on the bundled engine because every
+   * shipped model had one. Making the projector optional broke that silently:
+   * the screen glance kept firing at a text-only model, the server answered
+   * every attempt with `image input is not supported`, and the copilot appeared
+   * to have simply stopped talking.
+   */
+  vision: boolean;
 }
 
 export interface EngineStatus {
@@ -354,7 +358,7 @@ export async function engineStatus(gpus: string[]): Promise<EngineStatus> {
   return invoke<EngineStatus>('engine_status', { gpus });
 }
 
-/** GGUF+mmproj pairs already on disk (LM Studio), reusable without a big pull. */
+/** GGUF+mmproj pairs already on disk from other tools, reusable without a big pull. */
 export async function engineScanLocalModels(): Promise<EngineModelInfo[]> {
   return invoke<EngineModelInfo[]>('engine_scan_local_models');
 }
@@ -365,6 +369,20 @@ export async function engineDownloadRuntime(backend: string): Promise<void> {
 
 export async function engineDownloadModel(modelId: string): Promise<void> {
   await invoke('engine_download_model', { modelId });
+}
+
+/**
+ * Top up the MTP drafter for an already-installed model.
+ *
+ * Never throws: a missing drafter costs generation speed, not correctness, and
+ * the engine start must not fail because a 99 MB optional file did not arrive.
+ */
+export async function engineEnsureDrafter(modelId: string): Promise<boolean> {
+  try {
+    return await invoke<boolean>('engine_ensure_drafter', { modelId });
+  } catch {
+    return false;
+  }
 }
 
 export async function engineRemoveModel(modelId: string): Promise<void> {
