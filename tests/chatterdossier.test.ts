@@ -65,6 +65,27 @@ test('plain nav beacons are left out of the comms briefing entirely', () => {
   assert.match(out, /Resource Extraction Site \[Hazardous\] \(ring mining/);
 });
 
+test('happiness, pending states and faction government reach the briefing', () => {
+  // All three were captured by state.ts from day one and dropped on the
+  // floor — and a despondent populace or a war that has not landed yet is
+  // better scene material than any influence figure.
+  const out = buildDossier({
+    system: 'X',
+    intel: intel({
+      factions: [
+        { name: 'HIP 71462 Council', influence: 0.306, government: 'Democracy', happiness: 'Despondent' },
+        { name: 'Explorer on Tour', influence: 0.427, state: 'Expansion', government: 'Corporate', pending: ['War'] },
+        { name: 'Husband Sanctuary', influence: 0.112, recovering: ['Outbreak'] },
+      ],
+    }),
+    docked: false,
+  });
+  assert.match(out, /Mood on the ground: .*despondent/);
+  assert.match(out, /Coming and going: /);
+  assert.match(out, /Explorer on Tour is heading into War|Husband Sanctuary is just out of Outbreak/);
+  assert.match(out, /Explorer on Tour \(42\.7%, Expansion, Corporate\)/);
+});
+
 test('the dossier explains the state words on its own board', () => {
   const out = buildDossier({ system: 'HIP 71120', intel: intel(), docked: false });
   // Explorer on Tour is in Expansion — the board's states get their meanings.
@@ -191,6 +212,36 @@ test('brief summaries ride along as extra background', () => {
   });
   assert.match(out, /Bertrandite at Hurston Ring down 380/);
   assert.doesNotMatch(out, /^atmosphere$/m, 'the texture placeholder is not a fact');
+});
+
+test('a place that has ridden the air sits the next briefing out', () => {
+  // The 40-scene audit measured one station in HALF the air: scenes echo the
+  // rolling transcript, so a name the prompt keeps seconding snowballs. Hot
+  // names (3 of the last 6 scenes, counting clip forms like "the Gateway")
+  // drop out of the briefing until the air clears.
+  const sigs = [station('Benyovszky Gateway'), station('Crick Terminal'), site('Distress Call')];
+  const aired = (n: number) =>
+    Array.from({ length: 6 }, (_, i) =>
+      i < n ? 'Traffic is stacking up near the Gateway again tonight.' : 'A quiet stretch of lane.',
+    );
+  const hotOut = buildDossier({
+    system: 'X', intel: intel({ signals: sigs }), docked: false, recentAir: aired(3),
+  });
+  assert.doesNotMatch(hotOut, /Benyovszky/);
+  assert.match(hotOut, /Crick Terminal/);
+  // Two mentions is conversation, not a snowball — it stays.
+  const warmOut = buildDossier({
+    system: 'X', intel: intel({ signals: sigs }), docked: false, recentAir: aired(2),
+  });
+  assert.match(warmOut, /Benyovszky Gateway/);
+  // Cooling never empties a list: if EVERY station is hot, they all stay.
+  const allHot = buildDossier({
+    system: 'X',
+    intel: intel({ signals: [station('Benyovszky Gateway')] }),
+    docked: false,
+    recentAir: aired(6),
+  });
+  assert.match(allHot, /Benyovszky Gateway/);
 });
 
 test('one extra sits each call out, so no brief rides every prompt', () => {

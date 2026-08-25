@@ -39,7 +39,9 @@ import type { Act, ChannelId, DramaticFunction } from './types.ts';
 const CHANNEL_STYLE: Readonly<Record<ChannelId, string>> = {
   STATION:
     'station traffic control talking to a ship. Formal, clipped, procedural. They are busy and ' +
-    'the commander is not important to them.',
+    'the commander is not important to them. Real radio protocol is the poetry of this channel: ' +
+    'callsign address, clearances, read-backs, a brisk acknowledgment to close — the furniture ' +
+    'of working radio, worn smooth by use.',
   LOCAL:
     'two working pilots on the open channel. Off duty, unguarded, mildly fed up. Nobody is ' +
     'performing for anyone.',
@@ -100,6 +102,14 @@ export interface SceneRequest {
    * pulls hardest toward the answer the model gave last time.
    */
   rotate?: number;
+  /**
+   * How many lines to ask for (default: one per speaker). Real radio calls
+   * run past two — request, answer, read-back, close — and the reference
+   * corpus of the genre (EDCoPilot's chatter files) runs three to five turns.
+   * Positional assignment wraps the roster, so line 3 is the caller again;
+   * capped by MAX_TURNS regardless.
+   */
+  lines?: number;
 }
 
 /**
@@ -141,7 +151,7 @@ export function buildSceneChat(req: SceneRequest, history: ChatMessage[] = []): 
         `Frame it as something the speaker last heard — for example "${hedge}".`
       : '';
 
-  const n = req.speakers.length;
+  const n = Math.max(1, Math.min(MAX_TURNS, req.lines ?? req.speakers.length));
 
   return [
       {
@@ -191,6 +201,13 @@ export function buildSceneChat(req: SceneRequest, history: ChatMessage[] = []): 
         'line’s phrasing. ' +
         'People sound like their jobs: control is brief and procedural, pilots grumble, crew talk ' +
         'like family, a PA reads notices. Two voices in one exchange never sound like one person. ' +
+        // NOTE — a "liveliness paragraph" was A/B tested here (appetite,
+        // pettiness, human-scale details, phrased abstractly) and REMOVED on
+        // the evidence: zero visible effect on the prose, worse noun
+        // clustering, and one second-person-narration regression. For this
+        // model size, style lives in the rotating pools (tone.ts) and the
+        // situations — concrete, one at a time — never in standing prose
+        // instructions, which only dilute the ones that matter.
         'Speakers keep their own character across the whole session; write them consistently. ' +
         // Loosened from a hard "UNDER TWELVE WORDS". That cap was armour
         // against small-model rambling, but it also flattened every exchange
@@ -403,7 +420,10 @@ export function parseSceneReply(
   const lines = reply
     .replace(/\r\n?/g, '\n')
     // Emphasis markers carry no meaning here and only confuse the strippers.
+    // Single-asterisk pairs too: a 40-scene run italicised its invented ship
+    // names (*Wanderlust*) and the stars would have reached the air.
     .replace(/\*\*|__/g, '')
+    .replace(/\*([^*\n]+)\*/g, '$1')
     .split('\n')
     .flatMap((l) => l.split(splitter))
     .map(stripOrnament)
@@ -419,7 +439,12 @@ export function parseSceneReply(
     // own turn during prompt tuning, spoken aloud as dialogue and shunting
     // every later line onto the wrong speaker. Colon required: "Line 3." can
     // be an actual utterance; "Line 3:" cannot.
-    .filter((l) => !/^(line|scene|turn|exchange)\s*\d*\s*:$/i.test(l));
+    .filter((l) => !/^(line|scene|turn|exchange)\s*\d*\s*:$/i.test(l))
+    // And so is second-person narration — "You hear a faint beep under the
+    // chatter" is the model describing the scene TO the listener, not a
+    // person speaking on it. Observed once during style testing; nobody on
+    // a radio tells you what you hear.
+    .filter((l) => !/^you (hear|see|notice|feel|smell)\b/i.test(l));
 
   /** Every label that could mean "this speaker": ref, tail, full display
    *  name, and its first and last words ("Ines Sarkis" is addressed as either). */
@@ -683,7 +708,14 @@ export class ChatterConversation {
   private turns: ChatMessage[] = [];
   private readonly tokenBudget: number;
 
-  constructor(tokenBudget = 3_000) {
+  // 1,200, down from 3,000 — measured, not guessed. The transcript is how the
+  // model avoids repeating itself, but it is ALSO how one noun snowballs: at
+  // 3,000 tokens (fifteen-plus scenes) a 40-scene audit put the same station
+  // in half the air, because every early mention kept arguing for the next
+  // one. Six-ish scenes of history is plenty of "used territory" to steer
+  // clear of, and it lets a hot noun actually FALL OUT of sight once the
+  // accept-time gate stops admitting it.
+  constructor(tokenBudget = 1_200) {
     this.tokenBudget = tokenBudget;
   }
 
@@ -801,6 +833,7 @@ export const SITUATIONS: Readonly<Record<ChannelId, readonly string[]>> = {
     'a temporary exclusion zone appearing without explanation',
     'a maintenance crew asking traffic control to buy them five more minutes',
     'an outbound commander discovering their cargo clearance has expired',
+    'a pilot reporting something odd seen on approach, tactfully',
   ],
   LOCAL: [
     'a complaint about what a run pays',
@@ -843,6 +876,10 @@ export const SITUATIONS: Readonly<Record<ChannelId, readonly string[]>> = {
     'somebody asking who keeps leaving cargo canisters near the beacon',
     'a pilot with an expensive ship admitting they have no idea what they are doing',
     'an old feud resurfacing over something embarrassingly minor',
+    'somebody describing a ship they could not identify, badly',
+    'a light on the scanner where nothing is charted',
+    'wreckage spotted today that was not there yesterday',
+    'a manoeuvre witnessed so bad it has to be retold immediately',
   ],
   CREW: [
     'a maintenance niggle that will not resolve',
@@ -881,6 +918,7 @@ export const SITUATIONS: Readonly<Record<ChannelId, readonly string[]>> = {
     'the commander making a surprisingly good landing and nobody wanting to say so',
     'a routine systems test producing one deeply non-routine result',
     'someone realising they loaded the wrong supplies several jumps ago',
+    'something seen out the viewport that nobody can explain and nobody will log',
   ],
   DEEP: [
     'the sheer absence of traffic',
@@ -1011,5 +1049,6 @@ export const SITUATIONS: Readonly<Record<ChannelId, readonly string[]>> = {
     'someone realising their departure was yesterday',
     'a passenger discovering their ship has departed without them',
     'a maintenance announcement accidentally broadcasting an internal conversation',
+    'a traveller retelling something they saw on the way in, embellishing freely',
   ],
 };

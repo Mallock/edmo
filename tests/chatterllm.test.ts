@@ -261,6 +261,22 @@ test('every channel has situations to draw on', () => {
 // Parsing
 // ---------------------------------------------------------------------------
 
+test('a scene can ask for more lines than speakers — radio runs past two turns', () => {
+  const chat = buildSceneChat({
+    channel: 'STATION',
+    func: 'texture',
+    act: 'QUIET',
+    brief: textureBrief('t'),
+    speakers: ['control', 'ship'],
+    speakerNames: { control: 'Traffic Control', ship: 'Inbound Traffic' },
+    lines: 4,
+  });
+  const user = chat.at(-1)!.content;
+  assert.match(user, /Write the 4 lines now/);
+  const system = chat[0].content;
+  assert.match(system, /exactly 4 lines/);
+});
+
 test('plain lines parse, one turn each', () => {
   const turns = parseSceneReply(
     'They have taken 380 off Bertrandite.\nThird time this month.',
@@ -300,6 +316,25 @@ test('speech-verb narration is stripped, the quoted dialogue kept', () => {
 test('curly wrapping quotes come off like straight ones', () => {
   const turns = parseSceneReply('“Fiore, we’re holding departure clearance.”', ['carrier']);
   assert.equal(turns[0].text, 'Fiore, we’re holding departure clearance.');
+});
+
+test('single-asterisk emphasis comes off invented ship names', () => {
+  const turns = parseSceneReply('Copy that, *Wanderlust*; hold pattern three.', ['control']);
+  assert.equal(turns[0].text, 'Copy that, Wanderlust; hold pattern three.');
+});
+
+test('second-person narration is not a turn', () => {
+  // "You hear a faint beep under the chatter" is scene description aimed at
+  // the listener, not speech on a channel — observed once in style testing.
+  const turns = parseSceneReply(
+    'You hear a faint, repetitive beep under the comms chatter.\nCycle the proximity alerts before the thoroughfare.',
+    ['pa', 'traveller'],
+  );
+  assert.equal(turns.length, 1);
+  assert.match(turns[0].text, /proximity alerts/);
+  // Speech ABOUT what somebody heard is still speech.
+  const fine = parseSceneReply('Did you hear that beep on the lower deck?', ['crew:ops']);
+  assert.equal(fine.length, 1);
 });
 
 test('a bare script label is not a turn', () => {

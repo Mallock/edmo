@@ -62,6 +62,14 @@ export interface PlayOptions {
    * that the cancellation breaks down and the line audibly rushes.
    */
   timbre?: number;
+  /**
+   * Stereo seat, -1 (hard left) .. 1 (hard right). A two-voice scene reads
+   * as two PEOPLE when caller and reply sit either side of the listener —
+   * the store pans a scene's speakers apart. Voice, hiss, beeps and crackle
+   * all ride the same panner so the whole transmission moves as one signal.
+   * Omitted or 0 = centre (the operator always speaks from the centre).
+   */
+  pan?: number;
   /** Resolves when playback finishes; rejects if it could not start. */
   signal?: AbortSignal;
 }
@@ -171,6 +179,17 @@ export class RadioBus {
     const p = opts.profile;
     const degrade = Math.max(0, Math.min(1, opts.degrade ?? 0));
 
+    // The transmission's stereo seat (PlayOptions.pan). One panner for the
+    // whole signal; skipped entirely at centre so the untouched path stays
+    // byte-identical to what shipped before stereo existed.
+    let out: AudioNode = bus;
+    if (opts.pan && typeof ctx.createStereoPanner === 'function') {
+      const panner = ctx.createStereoPanner();
+      panner.pan.value = Math.max(-1, Math.min(1, opts.pan));
+      panner.connect(bus);
+      out = panner;
+    }
+
     // Squelch: the channel opens, then speech starts. Everything below is
     // scheduled relative to this instant so the beeps land either side.
     const t0 = ctx.currentTime + 0.02;
@@ -221,7 +240,7 @@ export class RadioBus {
     // Drive raises perceived loudness; pull back so hot profiles do not jump.
     trim.gain.value = dbToGain(p.gainDb) * (1 - 0.35 * p.drive);
     node.connect(trim);
-    trim.connect(bus);
+    trim.connect(out);
 
     // ---- hiss bed, gated to the transmission -----------------------------
     let hissSrc: AudioBufferSourceNode | null = null;
@@ -238,7 +257,7 @@ export class RadioBus {
       hissGain.gain.setValueAtTime(level, endAt);
       hissGain.gain.linearRampToValueAtTime(0, endAt + 0.12);
       hissSrc.connect(hissGain);
-      hissGain.connect(bus);
+      hissGain.connect(out);
       hissSrc.start(t0);
       hissSrc.stop(endAt + 0.2);
     }
@@ -249,13 +268,13 @@ export class RadioBus {
       const count = poisson(expected);
       for (let i = 0; i < count; i++) {
         const at = t0 + Math.random() * (squelch + dur);
-        this.pop(ctx, bus, at, 0.06 + 0.06 * degrade);
+        this.pop(ctx, out, at, 0.06 + 0.06 * degrade);
       }
     }
 
     // ---- beeps -----------------------------------------------------------
-    if (p.beep === 'open' || p.beep === 'both') this.beep(ctx, bus, t0, 1180, 0.07);
-    if (p.beep === 'roger' || p.beep === 'both') this.beep(ctx, bus, endAt + 0.06, 1560, 0.09);
+    if (p.beep === 'open' || p.beep === 'both') this.beep(ctx, out, t0, 1180, 0.07);
+    if (p.beep === 'roger' || p.beep === 'both') this.beep(ctx, out, endAt + 0.06, 1560, 0.09);
 
     if (opts.bus === 'PRIORITY') {
       this.priorityDepth += 1;

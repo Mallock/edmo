@@ -40,7 +40,14 @@ export const LORE_PRIMER = lorePrimer();
  * who says "no worries mate" or quotes a film is still wrong for the universe.
  */
 export const UNIVERSE_REGISTER =
-  'Use correct Elite Dangerous terminology; no modern-Earth idioms or pop-culture references.';
+  'Use correct Elite Dangerous terminology; no modern-Earth idioms or pop-culture references. ' +
+  // Era anchors, verified against GalNet Aug 2026: the in-game year advances
+  // one per real year. Facts only — no example dialogue (quotables leak).
+  'The year is 3312. Money is credits. Ships jump between stars on frame shift drives and ' +
+  'cross a system in supercruise; docking is by numbered pad under a station’s traffic ' +
+  'control, and System Authority vessels police the lanes. Household names can drift into ' +
+  'talk where they fit: Apex Interstellar shuttles, Vista Genomics, Universal Cartographics, ' +
+  'Inter Astra, Pioneer Supplies. The o7 salute is how pilots greet and part.';
 
 /**
  * Never make anything up.

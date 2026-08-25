@@ -62,6 +62,9 @@ export interface SpeakOptions {
   timbre?: number;
   /** Signal degradation 0..1 — comms range makes a distant station sound it. */
   degrade?: number;
+  /** Stereo seat -1..1 (radio.ts PlayOptions.pan): a scene's caller and reply
+   *  sit either side of the listener. Omit for centre — the operator's seat. */
+  pan?: number;
   /** How long this stays worth saying. AMBIENT only. */
   ttlMs?: number;
   /** Which channel it belongs to, for per-channel squelch. AMBIENT only. */
@@ -85,6 +88,7 @@ interface Utterance {
   profile: RadioProfile;
   timbre?: number;
   degrade?: number;
+  pan?: number;
   onDrop?: (reason: DropReason) => void;
 }
 
@@ -128,7 +132,11 @@ export class Speaker {
   speak(text: string, voice?: string | null, opts: SpeakOptions = {}): void {
     const s = this.getSettings();
     if (!s.voice.enabled) return;
-    const clean = text.replace(/\s+/g, ' ').trim();
+    // Asterisks are markdown the models sometimes emit and Piper PRONOUNCES
+    // them — a scene shipped "*Wanderlust*" and the voice said "asterisk".
+    // The comms parser strips its own, but every path ends here, so the last
+    // door does it unconditionally: an asterisk has no spoken value, ever.
+    const clean = text.replace(/\*/g, '').replace(/\s+/g, ' ').trim();
     if (!clean) return;
 
     const bus: BusId = opts.bus ?? 'PRIORITY';
@@ -143,6 +151,7 @@ export class Speaker {
       profile: radioProfile(wanted),
       timbre: opts.timbre,
       degrade: opts.degrade,
+      pan: opts.pan,
       onDrop: opts.onDrop,
     };
 
@@ -363,6 +372,7 @@ export class Speaker {
           volume,
           degrade: utt.degrade,
           timbre: utt.timbre,
+          pan: utt.pan,
           signal,
         });
         return;

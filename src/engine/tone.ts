@@ -84,6 +84,10 @@ const COMMS_ANCHOR: readonly string[] = [
   'This time, prefer the POPULATION as the driver — crowds, or emptiness.',
   'This time, prefer a RUMOUR about any of it as the driver, stated as hearsay.',
   'This time, prefer MAINTENANCE as the driver — something worn, overdue or jury-rigged.',
+  'This time, prefer something somebody SAW as the driver — a ship, a light, debris — told ' +
+    'like an eyewitness: one specific detail, uncertain edges.',
+  'This time, prefer an UNDERDOG from the faction board as the driver — one of the small ' +
+    'shares, not the front-runner.',
 ];
 
 /**

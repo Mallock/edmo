@@ -37,6 +37,18 @@ export interface DossierInput {
   /** Summaries from the fact briefs — construction depots, markets, events. */
   extra?: readonly string[];
   /**
+   * The last few ACCEPTED scenes, as plain text, for the noun-cooling pass.
+   *
+   * Rotation alone could not stop a 40-scene audit putting one station in
+   * half the air: every scene that names a place enters the writer's rolling
+   * transcript, the transcript teaches the next scene, and the token
+   * snowballs — 21% over the first fourteen scenes, 65% over the rest. The
+   * brake is on the DATA side: a place named in 3 of the last 6 scenes drops
+   * out of the briefing until the air clears. The model may still echo its
+   * history, but the prompt stops seconding the motion.
+   */
+  recentAir?: readonly string[];
+  /**
    * Which slice of each capped list to show, so the briefing is not identical
    * on every call.
    *
@@ -51,6 +63,43 @@ export interface DossierInput {
 const plus = (more: number): string => (more ? ` (+${more} more)` : '');
 
 const pct = (influence: number): string => `${(influence * 100).toFixed(1)}%`;
+
+/** A name is "on the air" in a text if any listener-recognisable form of it
+ *  appears: the full name, its first word, or its last word — the clip forms
+ *  the name-shrinking rule deliberately produces ("the Gateway"). */
+const escRe = (x: string): string => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const GENERIC_WORD =
+  /^(the|new|old|los|las|san|port|nav|deep|point|site|zone|city|base|camp|ring|star|world|beacon)$/i;
+
+function airPattern(name: string): RegExp {
+  const words = name.split(/\s+/);
+  const alts = [escRe(name)];
+  const first = words[0];
+  if (words.length > 1 && first.length >= 4 && !GENERIC_WORD.test(first)) alts.push(escRe(first));
+  const last = words[words.length - 1];
+  if (words.length > 1 && last.length >= 4 && !GENERIC_WORD.test(last) && last !== first) {
+    alts.push(escRe(last));
+  }
+  return new RegExp(`\\b(?:${alts.join('|')})\\b`, 'i');
+}
+
+/** Does a listener-recognisable form of `name` appear in `text`? */
+export const airedIn = (text: string, name: string): boolean => airPattern(name).test(text);
+
+/** Names hot enough to sit the next briefing out: aired in 3+ of the recent
+ *  scene texts. Exported for the accept-time gate, the audit harness and the
+ *  tests. */
+export function hotNouns(recentAir: readonly string[], names: readonly string[]): Set<string> {
+  const hot = new Set<string>();
+  if (recentAir.length < 3) return hot;
+  for (const name of names) {
+    const re = airPattern(name);
+    let hits = 0;
+    for (const text of recentAir) if (re.test(text)) hits++;
+    if (hits >= 3) hot.add(name);
+  }
+  return hot;
+}
 
 export function buildDossier(input: DossierInput): string {
   const s = input.intel;
@@ -76,6 +125,8 @@ export function buildDossier(input: DossierInput): string {
   }
 
   // The influence board, minus whoever already appeared as the controller.
+  // A faction's government rides along — Anarchy, Corporate, Theocracy is an
+  // AGENDA, captured by the journal all along and never briefed until now.
   const others = (s?.factions ?? [])
     .filter((f) => f.name !== s?.controllingFaction)
     .slice()
@@ -83,6 +134,7 @@ export function buildDossier(input: DossierInput): string {
     .map((f) => {
       const bits = [pct(f.influence)];
       if (f.state && f.state !== 'None') bits.push(f.state);
+      if (f.government) bits.push(f.government);
       return `${f.name} (${bits.join(', ')})`;
     });
   if (others.length) {
@@ -105,10 +157,42 @@ export function buildDossier(input: DossierInput): string {
   ]);
   if (glossary) lines.push(glossary);
 
+  // Mood on the ground. The journal reports every faction's happiness and the
+  // briefing dropped it on the floor — and a despondent populace is worth
+  // more to a radio scene than any influence figure. Rotated pair.
+  const moods = (s?.factions ?? [])
+    .filter((f) => f.happiness)
+    .map((f) => `${f.name}'s people are ${f.happiness!.toLowerCase()}`);
+  if (moods.length) {
+    const { shown } = trim(moods, 2);
+    lines.push(`Mood on the ground: ${shown.join(' · ')}`);
+  }
+
+  // The town's forward gossip: states that have not LANDED yet, and ones just
+  // climbed out of — also captured all along, also never briefed. What is
+  // about to happen is better conversation than what already did.
+  const turning: string[] = [];
+  for (const f of s?.factions ?? []) {
+    for (const p of f.pending ?? []) turning.push(`${f.name} is heading into ${p}`);
+    for (const r of f.recovering ?? []) turning.push(`${f.name} is just out of ${r}`);
+  }
+  if (turning.length) {
+    const { shown } = trim(turning, 2);
+    lines.push(`Coming and going: ${shown.join(' · ')}`);
+  }
+
   // Places. Carriers are COUNTED, never named — a hub system carries a dozen
   // XXX-XXX registrations and they crowd out the names that mean something.
+  // And a place that has RIDDEN the air lately sits this briefing out (see
+  // recentAir above) — unless cooling would empty the list, because a
+  // briefing with no places at all is worse than a warm one.
+  const hot = hotNouns(input.recentAir ?? [], (s?.signals ?? []).map((x) => x.name));
+  const cool = (names: string[]): string[] => {
+    const kept = names.filter((n) => !hot.has(n));
+    return kept.length ? kept : names;
+  };
   const stationSignals = (s?.signals ?? []).filter((x) => x.isStation);
-  const stations = stationSignals.filter((x) => !isFleetCarrier(x)).map((x) => x.name);
+  const stations = cool(stationSignals.filter((x) => !isFleetCarrier(x)).map((x) => x.name));
   const carriers = stationSignals.filter(isFleetCarrier).length;
   if (stations.length) {
     const { shown, more } = trim([...new Set(stations)], 5);
@@ -123,9 +207,9 @@ export function buildDossier(input: DossierInput): string {
   // rather than a prop. Compromised and tourist beacons are situations and stay.
   const isPlainBeacon = (x: { name: string; type?: string }): boolean =>
     (x.type === 'NavBeacon' || /\bbeacon\b/i.test(x.name)) && !/compromised|tourist/i.test(x.name);
-  const sites = (s?.signals ?? [])
-    .filter((x) => !x.isStation && !isPlainBeacon(x))
-    .map(describeSignal);
+  const siteSignals = (s?.signals ?? []).filter((x) => !x.isStation && !isPlainBeacon(x));
+  const keptSites = new Set(cool(siteSignals.map((x) => x.name)));
+  const sites = siteSignals.filter((x) => keptSites.has(x.name)).map(describeSignal);
   if (sites.length) {
     const { shown, more } = trim([...new Set(sites)], 6);
     lines.push(`Signals detected: ${shown.join(' · ')}${plus(more)}`);

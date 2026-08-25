@@ -180,7 +180,7 @@ import { textureBrief, type Brief, type FactSource } from '../engine/chatter/bri
 import { chooseFunction, nextBeatFor, pickBrief } from '../engine/chatter/director.ts';
 import type { ChannelState } from '../engine/chatter/channels.ts';
 import { sceneTranscript } from '../engine/chatter/scenes.ts';
-import { buildDossier } from '../engine/chatter/dossier.ts';
+import { airedIn, buildDossier, hotNouns } from '../engine/chatter/dossier.ts';
 import {
   SITUATIONS,
   ChatterConversation,
@@ -1114,6 +1114,14 @@ export class AppCore {
     }
     return convo;
   })();
+  /** The last few accepted scenes as plain text, for the dossier's noun
+   *  cooling (a place aired in 3 of these 6 sits the next briefing out).
+   *  Session-only on purpose: the snowball this brakes builds within a
+   *  session, and a restart already cools everything. */
+  private recentCommsAir: string[] = [];
+  /** Consecutive hot-noun rejections — capped at 2 so the brake cannot
+   *  starve the channel (the scene engine's own starvation idiom). */
+  private commsHotStreak = 0;
   private commsChannels: ChannelState[] = [];
   private commsLastPerChannel: Partial<Record<ChannelId, number>> = {};
   private commsLog: CommsView['log'] = (() => {
@@ -3797,6 +3805,7 @@ export class AppCore {
       onFoot: !!st?.onFoot,
       supercruise: !!st?.supercruise,
       portSeparationLs: this.commsContext().portSeparationLs,
+      recentAir: this.recentCommsAir,
       // The campaign spine rides in as MORE dossier data — same idiom, no new
       // prompt shape. The writer sees the running threads beside the system
       // facts and grounds its invention in both.
@@ -4020,6 +4029,18 @@ export class AppCore {
         situation: plan.situation,
         dossier: plan.dossier,
         rotate: plan.rotate,
+        // Real radio calls run past two turns — request, answer, read-back,
+        // close (the genre's reference corpus runs three to five). Every
+        // third scene asks for three lines, every seventh for four; the rest
+        // stay call-and-response. Positional assignment wraps the roster.
+        lines:
+          plan.speakers.length >= 2
+            ? plan.rotate % 7 === 0
+              ? 4
+              : plan.rotate % 3 === 0
+                ? 3
+                : 2
+            : undefined,
       };
 
       const raw = await llmQuick({
@@ -4073,6 +4094,25 @@ export class AppCore {
         return;
       }
 
+      // The snowball brake. Cooling the briefing was measured NOT enough —
+      // the writer echoes its own transcript, so one station still rode 25
+      // of 40 audited scenes with the dossier already cooled. A scene that
+      // names a place the recent air is saturated with (3 of the last 6
+      // scenes) is dropped as repetition — but never more than twice in a
+      // row, the same starvation guard the scene engine uses, so the brake
+      // cannot silence a channel.
+      const sceneText = accepted.scene.turns.map((t) => t.text).join(' ');
+      const hot = hotNouns(this.recentCommsAir, (this.sm.getState().system?.signals ?? []).map((x) => x.name));
+      const hotHit = [...hot].find((n) => airedIn(sceneText, n));
+      if (hotHit && this.commsHotStreak < 2) {
+        this.commsHotStreak += 1;
+        this.noteCommsDrop('repetition');
+        this.commsDiag.lastGenOutcome = `dropped ${plan.channel.toLowerCase()} — the air is full of ${hotHit}`;
+        this.comms.sceneSlots.fulfil(plan.key, null, Date.now());
+        return;
+      }
+      this.commsHotStreak = 0;
+
       const kept = this.comms.sceneSlots.fulfil(plan.key, accepted.scene, Date.now());
       if (!kept) {
         this.noteCommsDrop('late');
@@ -4081,6 +4121,9 @@ export class AppCore {
       }
 
       this.commsConversation.record(plan.channel, plan.situation, sceneTranscript(accepted.scene));
+      // Feed the noun-cooling window (dossier.ts recentAir) — six scenes deep.
+      this.recentCommsAir.push(accepted.scene.turns.map((t) => t.text).join(' '));
+      if (this.recentCommsAir.length > 6) this.recentCommsAir.splice(0, this.recentCommsAir.length - 6);
       this.commsDiag.lastGenAt = Date.now();
       this.commsDiag.lastGenOutcome = `wrote a ${plan.channel.toLowerCase()} scene`;
       // A success clears the sticky last-error line: it describes a CURRENT
@@ -4151,6 +4194,11 @@ export class AppCore {
         timbre: cast?.persona?.timbre,
         degrade: t.degrade,
         ttlMs: t.ttlMs,
+        // The stereo seat: caller on the left, reply on the right, and back
+        // and forth for longer scenes. Two voices either side of the listener
+        // read as two PEOPLE in a way one centred stream never does. The
+        // operator keeps the centre — that seat means "talking to YOU".
+        pan: turn.speakerRef === t.scene.turns[0].speakerRef ? -0.4 : 0.4,
       });
     }
 
