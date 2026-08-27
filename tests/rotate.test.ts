@@ -123,12 +123,20 @@ test('rotation changes which facts are shown, never whether they are true', () =
   }
 });
 
-test('the controlling faction never rotates away', () => {
-  // Who runs the place is a standing fact, not one of a list — it must be in
-  // front of the writer every time, or half the scenes lose their politics.
-  for (let r = 0; r < 8; r++) {
-    assert.match(dossier(r), /Runs this system: Explorer on Tour/, `rotation ${r}`);
+test('the controlling faction returns on the faction phase, never for ever', () => {
+  // REVERSED from "never rotates away". Who runs the place was a standing
+  // fact in every prompt — and a live session showed the standing fact in
+  // nearly every SCENE, because a line present every time is an instruction
+  // to use it. Factions now ride a three-phase rotation: the controller
+  // leads on phase 0, the board's tail carries phase 1, and phase 2 has no
+  // politics at all. The controller must still return regularly — absence
+  // for ever would lose the system's politics entirely.
+  let seen = 0;
+  for (let r = 0; r < 9; r++) {
+    if (/Runs this system: Explorer on Tour/.test(dossier(r))) seen += 1;
+    assert.doesNotMatch(dossier(3 * r + 2), /Runs this system|Also here/);
   }
+  assert.equal(seen, 3, 'the controller leads exactly the phase-0 rotations');
 });
 
 test('every station is eventually mentioned', () => {

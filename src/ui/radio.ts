@@ -30,6 +30,7 @@ import {
   DUCK_RESTORE_MS,
   ambientGainDb,
   duckRampMs,
+  musicGainDb,
   type BusId,
 } from '../engine/chatter/bus.ts';
 import {
@@ -88,6 +89,24 @@ export class RadioBus {
   private buses = new Map<BusId, GainNode>();
   private noise: AudioBuffer | null = null;
   private priorityDepth = 0;
+  /** Comms transmissions currently sounding — MUSIC thins under these. */
+  private ambientDepth = 0;
+  /** The routed music element, so it is only ever wired into the graph once
+   *  (a second MediaElementAudioSourceNode for one element throws). */
+  private musicSrc: MediaElementAudioSourceNode | null = null;
+  /** True while a station is playing: the idle timer must not suspend the
+   *  context out from under it. */
+  private musicPlaying = false;
+  /**
+   * A tap on the MUSIC bus for the visualiser.
+   *
+   * Hung off the bus gain rather than the source, so the bars show what is
+   * actually HEARD: when the operator cuts in and the music ducks, the
+   * display dips with it. An analyser with nothing connected onward is a
+   * pure tap — it observes the signal without adding a second path to the
+   * speakers.
+   */
+  private musicTap: AnalyserNode | null = null;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private configuredDb = new Map<BusId, number>();
   private failed = false;
@@ -110,7 +129,7 @@ export class RadioBus {
       const master = ctx.createGain();
       master.gain.value = 1;
       master.connect(ctx.destination);
-      for (const id of ['PRIORITY', 'AMBIENT'] as BusId[]) {
+      for (const id of ['PRIORITY', 'AMBIENT', 'MUSIC'] as BusId[]) {
         const g = ctx.createGain();
         g.gain.value = 1;
         g.connect(master);
@@ -133,6 +152,9 @@ export class RadioBus {
     if (ctx.state === 'suspended') void ctx.resume();
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.idleTimer = setTimeout(() => {
+      // Never suspend out from under a playing station: the idle timer exists
+      // to stop burning CPU between utterances, and music IS the exception.
+      if (this.musicPlaying) return;
       if (this.priorityDepth === 0 && this.ctx?.state === 'running') void this.ctx.suspend();
     }, IDLE_SUSPEND_MS);
   }
@@ -143,23 +165,129 @@ export class RadioBus {
     if (!ctx) return;
     const db = volume0to1 <= 0 ? -120 : 20 * Math.log10(Math.min(1, volume0to1));
     this.configuredDb.set(bus, db);
-    if (bus === 'AMBIENT') this.applyDuck();
+    if (bus === 'AMBIENT' || bus === 'MUSIC') this.applyDuck();
     else {
       const g = this.buses.get(bus);
       if (g) g.gain.setTargetAtTime(dbToGain(db), ctx.currentTime, 0.02);
     }
   }
 
-  /** Push the ambient bus to its current target, ducked or not. */
+  /** Push the ducked buses to their current targets. */
   private applyDuck(): void {
     const ctx = this.ctx;
-    const g = this.buses.get('AMBIENT');
-    if (!ctx || !g) return;
-    const active = this.priorityDepth > 0;
-    const target = dbToGain(ambientGainDb(this.configuredDb.get('AMBIENT') ?? 0, active));
-    const ms = duckRampMs(active);
-    g.gain.cancelScheduledValues(ctx.currentTime);
-    g.gain.setTargetAtTime(target, ctx.currentTime, ms / 3000);
+    if (!ctx) return;
+    const speaking = this.priorityDepth > 0;
+    const chattering = this.ambientDepth > 0;
+    const ms = duckRampMs(speaking);
+
+    const ambient = this.buses.get('AMBIENT');
+    if (ambient) {
+      const target = dbToGain(ambientGainDb(this.configuredDb.get('AMBIENT') ?? 0, speaking));
+      ambient.gain.cancelScheduledValues(ctx.currentTime);
+      ambient.gain.setTargetAtTime(target, ctx.currentTime, ms / 3000);
+    }
+
+    // Music ducks under both, and by different amounts — see musicGainDb.
+    const music = this.buses.get('MUSIC');
+    if (music) {
+      const target = dbToGain(
+        musicGainDb(this.configuredDb.get('MUSIC') ?? 0, speaking, chattering),
+      );
+      music.gain.cancelScheduledValues(ctx.currentTime);
+      music.gain.setTargetAtTime(target, ctx.currentTime, duckRampMs(speaking || chattering) / 3000);
+    }
+  }
+
+  /**
+   * How loud an UNROUTED station should be right now, 0..1.
+   *
+   * A stream without CORS cannot be wired into this graph, so its player ducks
+   * by setting element volume instead. Same arithmetic, cruder instrument.
+   */
+  musicDuckFactor(): number {
+    const db = musicGainDb(0, this.priorityDepth > 0, this.ambientDepth > 0);
+    return dbToGain(db);
+  }
+
+  /**
+   * Route a playing audio element through the MUSIC bus.
+   *
+   * Only possible when the stream sends permissive CORS and the element was
+   * created with `crossOrigin = 'anonymous'`; otherwise the browser hands the
+   * graph silence. Returns false when the graph is unavailable, so the caller
+   * can fall back to direct playback.
+   */
+  attachMusic(el: HTMLMediaElement): boolean {
+    const ctx = this.ensure();
+    const bus = this.buses.get('MUSIC');
+    if (!ctx || !bus) return false;
+    this.touch(ctx);
+    if (this.musicSrc) return true; // already wired — one source per element
+    try {
+      this.musicSrc = ctx.createMediaElementSource(el);
+      this.musicSrc.connect(bus);
+      this.applyDuck();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Wake the context now, without waiting for an utterance.
+   *
+   * A Web Audio context starts suspended and only a user gesture may resume
+   * it — and a routed station whose context is suspended is simply silent,
+   * with no error anywhere to explain why. Deliberately NOT awaited by the
+   * caller: awaiting would spend the gesture that authorises playback.
+   */
+  wake(): void {
+    const ctx = this.ensure();
+    if (ctx) this.touch(ctx);
+  }
+
+  /**
+   * Fill `out` with the music bus spectrum, 0..255 per bin.
+   *
+   * Returns false when there is nothing to look at — no graph, or no station
+   * routed through it — so the caller can draw an idle display rather than a
+   * flat line that looks like a bug.
+   */
+  musicSpectrum(out: Uint8Array): boolean {
+    const ctx = this.ctx;
+    const bus = this.buses.get('MUSIC');
+    if (!ctx || !bus) return false;
+    if (!this.musicTap) {
+      const tap = ctx.createAnalyser();
+      // 512 gives 256 bins — plenty for two dozen bars, and cheap enough to
+      // run beside a game at 30 fps.
+      tap.fftSize = 512;
+      // Some smoothing, or the bars strobe; too much and they turn to soup.
+      tap.smoothingTimeConstant = 0.7;
+      // The window the bytes are mapped across. The default floor of -100 dB
+      // wastes a third of the display on a range no stream ever visits, and
+      // the default ceiling is set for a signal running hotter than a radio
+      // station ducked under an operator ever does.
+      tap.minDecibels = -92;
+      tap.maxDecibels = -22;
+      bus.connect(tap);
+      this.musicTap = tap;
+    }
+    if (out.length < this.musicTap.frequencyBinCount) return false;
+    this.musicTap.getByteFrequencyData(out);
+    return true;
+  }
+
+  /** Bins the visualiser should size its buffer to. */
+  get musicBins(): number {
+    return this.musicTap?.frequencyBinCount ?? 256;
+  }
+
+  /** Tell the graph whether a station is sounding (keeps it awake, ducks). */
+  setMusicPlaying(playing: boolean): void {
+    this.musicPlaying = playing;
+    const ctx = this.ctx;
+    if (playing && ctx) this.touch(ctx);
   }
 
   /**
@@ -276,10 +404,9 @@ export class RadioBus {
     if (p.beep === 'open' || p.beep === 'both') this.beep(ctx, out, t0, 1180, 0.07);
     if (p.beep === 'roger' || p.beep === 'both') this.beep(ctx, out, endAt + 0.06, 1560, 0.09);
 
-    if (opts.bus === 'PRIORITY') {
-      this.priorityDepth += 1;
-      this.applyDuck();
-    }
+    if (opts.bus === 'PRIORITY') this.priorityDepth += 1;
+    else if (opts.bus === 'AMBIENT') this.ambientDepth += 1;
+    if (opts.bus !== 'MUSIC') this.applyDuck();
 
     src.start(speechAt);
 
@@ -290,6 +417,9 @@ export class RadioBus {
         settled = true;
         if (opts.bus === 'PRIORITY') {
           this.priorityDepth = Math.max(0, this.priorityDepth - 1);
+          this.applyDuck();
+        } else if (opts.bus === 'AMBIENT') {
+          this.ambientDepth = Math.max(0, this.ambientDepth - 1);
           this.applyDuck();
         }
         try {

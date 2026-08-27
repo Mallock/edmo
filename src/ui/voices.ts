@@ -64,4 +64,64 @@ export const PIPER_VOICE_CATALOG: PiperVoiceInfo[] = [
     repoPath: 'en/en_GB/jenny_dioco/medium/en_GB-jenny_dioco-medium',
     sizeMb: 63,
   },
+  // The 2026-08 expansion: nine more single-speaker voices from the same
+  // official repo. Multi-speaker models (vctk, semaine, libritts) are left
+  // out — the integration addresses a voice by file, not by speaker index.
+  // Every download is also a new PERSON on the comms: the cast system
+  // multiplies each voice by timbre shifts, so the radio's population grows
+  // faster than the voice list does.
+  {
+    name: 'en_GB-alan-medium',
+    label: 'Alan — British English, male',
+    repoPath: 'en/en_GB/alan/medium/en_GB-alan-medium',
+    sizeMb: 63,
+  },
+  {
+    name: 'en_GB-aru-medium',
+    label: 'Aru — British English, male',
+    repoPath: 'en/en_GB/aru/medium/en_GB-aru-medium',
+    sizeMb: 63,
+  },
+  {
+    name: 'en_US-hfc_female-medium',
+    label: 'HFC — US English, female (studio clean)',
+    repoPath: 'en/en_US/hfc_female/medium/en_US-hfc_female-medium',
+    sizeMb: 63,
+  },
+  {
+    name: 'en_US-hfc_male-medium',
+    label: 'HFC — US English, male (studio clean)',
+    repoPath: 'en/en_US/hfc_male/medium/en_US-hfc_male-medium',
+    sizeMb: 63,
+  },
+  {
+    name: 'en_US-bryce-medium',
+    label: 'Bryce — US English, male',
+    repoPath: 'en/en_US/bryce/medium/en_US-bryce-medium',
+    sizeMb: 63,
+  },
+  {
+    name: 'en_US-john-medium',
+    label: 'John — US English, male',
+    repoPath: 'en/en_US/john/medium/en_US-john-medium',
+    sizeMb: 63,
+  },
+  {
+    name: 'en_US-norman-medium',
+    label: 'Norman — US English, male',
+    repoPath: 'en/en_US/norman/medium/en_US-norman-medium',
+    sizeMb: 63,
+  },
+  {
+    name: 'en_US-kristin-medium',
+    label: 'Kristin — US English, female',
+    repoPath: 'en/en_US/kristin/medium/en_US-kristin-medium',
+    sizeMb: 63,
+  },
+  {
+    name: 'en_US-kusal-medium',
+    label: 'Kusal — US English, male (South Asian accent)',
+    repoPath: 'en/en_US/kusal/medium/en_US-kusal-medium',
+    sizeMb: 63,
+  },
 ];

@@ -112,6 +112,12 @@ export class Speaker {
   private ambientChannel: string | null = null;
 
   private radio = new RadioBus();
+
+  /** The shared audio graph, so the music player can route a station into the
+   *  same buses the voices use — that is what makes ducking real. */
+  radioBus(): RadioBus {
+    return this.radio;
+  }
   private wavCache = new LruCache<ArrayBuffer>(WAV_CACHE_MAX);
 
   /** Written out rather than a parameter property: Node's type-stripping (how

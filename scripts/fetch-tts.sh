@@ -15,10 +15,21 @@ mkdir -p "$voice_dir"
 piper_url="https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_x86_64.tar.gz"
 voice_base="https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB"
 
+# One transient stream error should not cost a ten-minute container build.
+# HuggingFace occasionally drops an HTTP/2 stream mid-file (curl exit 92) and
+# `set -e` turns that into a failed build after everything else has compiled.
+# -f so an error page is never mistaken for a payload; the retries cover the
+# rest. Downloads land on a .part and are moved into place only when complete,
+# so a truncated file can never satisfy the "already fetched" check next time.
+dl() {
+  curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors "$1" -o "$2.part"
+  mv "$2.part" "$2"
+}
+
 if [ ! -x "$piper_dir/piper" ]; then
   echo "Downloading Piper engine (Linux x86_64)..."
   tmp="$(mktemp -d)"
-  curl -sL "$piper_url" -o "$tmp/piper.tar.gz"
+  dl "$piper_url" "$tmp/piper.tar.gz"
   tar -xzf "$tmp/piper.tar.gz" -C "$tmp"
   mkdir -p "$root"
   rm -rf "$piper_dir"
@@ -36,8 +47,8 @@ fetch_voice() {
   local name="$1" sub="$2"
   if [ ! -f "$voice_dir/$name.onnx" ]; then
     echo "Downloading voice $name (~63 MB)..."
-    curl -sL "$voice_base/$sub/$name.onnx" -o "$voice_dir/$name.onnx"
-    curl -sL "$voice_base/$sub/$name.onnx.json" -o "$voice_dir/$name.onnx.json"
+    dl "$voice_base/$sub/$name.onnx" "$voice_dir/$name.onnx"
+    dl "$voice_base/$sub/$name.onnx.json" "$voice_dir/$name.onnx.json"
   fi
 }
 

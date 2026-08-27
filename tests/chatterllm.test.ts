@@ -146,6 +146,16 @@ test('the prompt asks for bare lines and never demonstrates a tag', () => {
   assert.doesNotMatch(system, /\[control\]|\[hauler\]/i);
 });
 
+test('the prompt asks for live conversational back-and-forth', () => {
+  const system = buildSceneChat(req())[0].content;
+  assert.match(system, /react in real time/i);
+  assert.match(system, /contractions/i);
+
+  const user = buildSceneChat(req())[1].content;
+  assert.match(user, /live back-and-forth/i);
+  assert.match(user, /not read like separate mini-monologues/i);
+});
+
 test('the line count asked for follows the roster', () => {
   assert.match(buildSceneChat(req({ speakers: ['hauler'] }))[0].content, /exactly 1 line\b/);
   assert.match(buildSceneChat(req())[0].content, /exactly 2 lines\b/);

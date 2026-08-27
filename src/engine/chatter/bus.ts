@@ -21,10 +21,22 @@
  * and applies these numbers to them.
  */
 
-export type BusId = 'PRIORITY' | 'AMBIENT';
+export type BusId = 'PRIORITY' | 'AMBIENT' | 'MUSIC';
 
 /** How far AMBIENT drops while PRIORITY is sounding. */
 export const DUCK_DB = -14;
+
+/**
+ * MUSIC is the third bus: internet radio the commander chose to have on.
+ *
+ * It ducks under BOTH speaking buses, and by different amounts, because the
+ * two mean different things. The operator talking is the one thing the
+ * commander must not miss, so music drops hard and gets out of the way.
+ * Comms traffic is atmosphere talking to atmosphere — the radio only thins,
+ * the way a cab radio does when someone speaks over it, and both are heard.
+ */
+export const MUSIC_DUCK_PRIORITY_DB = -20;
+export const MUSIC_DUCK_AMBIENT_DB = -9;
 
 /** How long the ambient bus takes to come back up. A step reads as a glitch;
  *  a ramp reads as someone turning a dial. */
@@ -55,6 +67,22 @@ export function ambientGainDb(configuredDb: number, priorityActive: boolean): nu
 /** Ramp time for a duck transition, in milliseconds. */
 export function duckRampMs(priorityActive: boolean): number {
   return priorityActive ? DUCK_ATTACK_MS : DUCK_RESTORE_MS;
+}
+
+/**
+ * The music bus gain, in dB, for a given state.
+ *
+ * The deeper duck wins when both are sounding — an operator callout over
+ * comms traffic must not leave the radio sitting at the shallower level.
+ */
+export function musicGainDb(
+  configuredDb: number,
+  priorityActive: boolean,
+  ambientActive: boolean,
+): number {
+  if (priorityActive) return configuredDb + MUSIC_DUCK_PRIORITY_DB;
+  if (ambientActive) return configuredDb + MUSIC_DUCK_AMBIENT_DB;
+  return configuredDb;
 }
 
 /** One thing waiting to be heard on the ambient bus. */

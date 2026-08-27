@@ -38,6 +38,13 @@ const INTEL: SystemIntel = {
 /** The real builder, so `allowedNames` sees the shape it actually parses. */
 const brief = (): string[] => buildNewsBrief('HIP 71120', INTEL);
 
+test('the scenery beat: scanned worlds reach the news brief', () => {
+  const lines = buildNewsBrief('HIP 71120', INTEL, {
+    worlds: ['5 a — an icy moon, 0.08 G, nobody has ever set foot there'],
+  });
+  assert.ok(lines.some((l) => l.startsWith('WORLD: 5 a — an icy moon')));
+});
+
 test('the news brief explains a beacon as the navigation stop', () => {
   const withBeacon: SystemIntel = {
     ...INTEL,

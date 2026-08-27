@@ -9,6 +9,8 @@ import { ArchitectCard } from './Architect.tsx';
 import { NewsCard } from './News.tsx';
 import { CommsPanel } from './CommsPanel.tsx';
 import { OrreryCard } from './Orrery.tsx';
+import { BoozeCard } from './Booze.tsx';
+import { RadioCard, MiniRadio } from './Radio.tsx';
 import { fmtDur, phaseOf } from '../engine/deathclock.ts';
 import { remaining as plotRemaining } from '../engine/plotter.ts';
 import { fmtClock, phaseOf as jumpPhaseOf } from '../engine/carrierjump.ts';
@@ -148,6 +150,8 @@ export function App() {
   const newsOpen = snap.view === 'news' && snap.news != null;
   const orreryOpen = snap.view === 'orrery' && snap.orrery != null;
   const commsOpen = snap.view === 'comms';
+  const boozeOpen = snap.view === 'booze' && snap.booze != null;
+  const radioOpen = snap.view === 'radio';
   const plotLeft = snap.plotter.route ? plotRemaining(snap.plotter.route, snap.plotter.idx) : null;
   // The carrier clock outranks the jump count on the tab: while a jump is
   // locked down or cooling, that countdown is the number being waited on.
@@ -268,6 +272,21 @@ export function App() {
                   }
                 : undefined
             }
+            radio={{
+              active: radioOpen,
+              playing: !!snap.music?.playing,
+              onSelect: () => core.setView(radioOpen ? 'missions' : 'radio'),
+            }}
+            booze={
+              snap.booze
+                ? {
+                    active: boozeOpen,
+                    count: snap.booze.tally.runs,
+                    party: snap.booze.state === 'holiday',
+                    onSelect: () => core.setView(boozeOpen ? 'missions' : 'booze'),
+                  }
+                : undefined
+            }
             comms={
               s.comms.enabled
                 ? {
@@ -280,7 +299,11 @@ export function App() {
                 : undefined
             }
           />
-          {commsOpen ? (
+          {radioOpen ? (
+            <RadioCard music={snap.music} settings={s} />
+          ) : boozeOpen && snap.booze ? (
+            <BoozeCard view={snap.booze} nowMs={nowMs} />
+          ) : commsOpen ? (
             <CommsPanel
               view={snap.comms}
               nowMs={nowMs}
@@ -630,6 +653,9 @@ export function App() {
           </div>
         </>
       )}
+
+      {/* The radio outlives the view it was tuned from — see MiniRadio. */}
+      {s.music.enabled && !radioOpen && <MiniRadio music={snap.music} />}
 
       <footer className="foot">
         <span>{snap.missions.length} mission{snap.missions.length === 1 ? '' : 's'}</span>

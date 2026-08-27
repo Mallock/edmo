@@ -1,6 +1,6 @@
 [package]
 name = "ed-mission-operator"
-version = "1.5.0"
+version = "1.8.0"
 description = "Elite Dangerous Mission Operator — always-on-top HUD with journal ingestion, LM Studio AI operator, and local Piper TTS"
 authors = ["Mika Leiman"]
 edition = "2021"
@@ -16,7 +16,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", features = ["json", "stream"] }
 futures-util = "0.3"
-tokio = { version = "1", features = ["time"] }
+# net/io-util carry the loopback station relay in radio.rs.
+tokio = { version = "1", features = ["time", "net", "io-util"] }
 cpal = "0.15"
 hound = "3"
 # Integrity checking for the large bundled-engine downloads (runtime + model).

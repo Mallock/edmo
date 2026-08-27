@@ -59,7 +59,9 @@ const COMMS_LEAN: readonly string[] = [
   'Keep both speakers half-focused on their own work.',
   'Let one speaker mishear or half-hear the other.',
   'Make the second line change the subject without acknowledging the first.',
-  'Let neither line name the thing they are both talking about.',
+  // Replaced 'let neither line name the thing' — it was TEACHING crypticness
+  // one scene in eleven, and the live air had gone telegraphic everywhere.
+  'Let one speaker actually explain something, patiently, in plain words.',
 ];
 
 /**

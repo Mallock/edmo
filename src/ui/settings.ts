@@ -109,6 +109,20 @@ export interface AppSettings {
     /** Master mute for the radio bus output. */
     muted: boolean;
   };
+  /**
+   * Internet radio on the MUSIC bus. OFF by default and deliberately so: it is
+   * the app's only CONTINUOUS outbound connection, where every other network
+   * feature is a one-shot the commander clicked. See the privacy section.
+   */
+  music: {
+    enabled: boolean;
+    /** Station id from engine/stations.ts. */
+    station: string;
+    volume: number;
+    /** Let the session's chapter pick the station — the rings get drone, the
+     *  long hauls get rock. Off means the commander's pick stands. */
+    followActivity: boolean;
+  };
   /** Ambient channel traffic heard in the Comms panel. */
   comms: {
     enabled: boolean;
@@ -228,6 +242,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
     enabled: true,
     operatorProfile: 'clean',
     muted: false,
+  },
+  music: {
+    enabled: false,
+    station: 'groovesalad',
+    volume: 45,
+    followActivity: true,
   },
   comms: {
     enabled: false,

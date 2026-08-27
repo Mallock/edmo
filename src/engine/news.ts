@@ -168,6 +168,9 @@ export interface NewsExtras {
   /** What the commander has actually done here this session — the paper's
    *  "local trader" angle, and the only place they appear at all. */
   commanderDid?: string[];
+  /** Scanned worlds, pre-composed (dossier.ts worldNotes) — the life and
+   *  science desks' scenery beat: an icy moon nobody has stood on is a story. */
+  worlds?: readonly string[];
 }
 
 const pct = (n: number): string => `${(n * 100).toFixed(1)}%`;
@@ -224,6 +227,7 @@ export function buildNewsBrief(
     .filter((s) => !s.isStation && s.type)
     .map(describeSignal);
   for (const s of rotateWindow([...new Set(sites)], 6, rotate).shown) out.push(`SIGNAL: ${s}.`);
+  for (const w of rotateWindow(extras.worlds ?? [], 2, rotate).shown) out.push(`WORLD: ${w}.`);
 
   for (const c of extras.construction ?? []) {
     out.push(

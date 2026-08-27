@@ -214,6 +214,62 @@ test('brief summaries ride along as extra background', () => {
   assert.doesNotMatch(out, /^atmosphere$/m, 'the texture placeholder is not a fact');
 });
 
+test('scanned worlds reach the briefing as scenery, rotated and factual', () => {
+  const worlds = [
+    { label: '5 a', planetClass: 'Icy body', moon: true, landable: true, gravityG: 0.08, virgin: true },
+    { label: '2', planetClass: 'Sudarsky class III gas giant', ringed: true },
+    { label: '3', planetClass: 'High metal content body', volcanism: 'minor silicate vapour geysers volcanism', tempK: 90 },
+  ];
+  const out = buildDossier({ system: 'X', intel: intel(), docked: false, worlds });
+  assert.match(out, /Out the window: /);
+  assert.match(out, /5 a — an icy moon, 0\.08 G, nobody has ever set foot there/);
+  assert.match(out, /2 — a ringed gas giant/);
+  // Rotation brings the third world in on a later scene.
+  const later = buildDossier({ system: 'X', intel: intel(), docked: false, worlds, rotate: 2 });
+  assert.match(later, /3 — a high-metal world, silicate vapour geysers, 90 K/);
+  // No scans, no line.
+  const bare = buildDossier({ system: 'X', intel: intel(), docked: false, worlds: [] });
+  assert.doesNotMatch(bare, /Out the window/);
+});
+
+test('factions ride some scenes, not all — the board is phased by rotation', () => {
+  // Live: with every station brake working, one faction still rode nearly
+  // every scene, because the board sat in every prompt. Phase 2 carries no
+  // faction lines at all; the anchors fall back to places and moods.
+  const at = (rotate: number) =>
+    buildDossier({ system: 'X', intel: intel(), docked: false, rotate });
+  assert.match(at(0), /Runs this system/);
+  assert.match(at(0), /Also here/);
+  assert.doesNotMatch(at(1), /Runs this system/);
+  assert.match(at(1), /Also here/);
+  assert.doesNotMatch(at(2), /Runs this system|Also here|Explorer on Tour|Husband Sanctuary/);
+});
+
+test('a hot faction cools out of the board like a hot station', () => {
+  const aired = Array.from({ length: 6 }, () => 'Explorer on Tour is pushing the expansion again.');
+  const out = buildDossier({ system: 'X', intel: intel(), docked: false, rotate: 0, recentAir: aired });
+  assert.doesNotMatch(out, /Explorer on Tour/);
+  assert.match(out, /Husband Sanctuary/); // the rest of the board survives
+});
+
+test('a hot noun also cools matching extras — the spine cannot re-seed it', () => {
+  const aired = Array.from({ length: 6 }, () => 'Explorer on Tour again tonight.');
+  const out = buildDossier({
+    system: 'X', intel: intel(), docked: false, rotate: 0, recentAir: aired,
+    extra: ['ONGOING (patron): Explorer on Tour counts the commander a friend', 'Steel is moving'],
+  });
+  assert.doesNotMatch(out, /counts the commander a friend/);
+  assert.match(out, /Steel is moving/);
+});
+
+test('the place override tells the scene where the commander really is', () => {
+  const out = buildDossier({
+    system: 'X', intel: intel(), docked: false,
+    place: "on approach to Gcobani's Medicines, the construction site — closer to the build than to any port",
+  });
+  assert.match(out, /The commander: on approach to Gcobani's Medicines, the construction site/);
+});
+
 test('a place that has ridden the air sits the next briefing out', () => {
   // The 40-scene audit measured one station in HALF the air: scenes echo the
   // rolling transcript, so a name the prompt keeps seconding snowballs. Hot

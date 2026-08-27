@@ -46,8 +46,9 @@ const CHANNEL_STYLE: Readonly<Record<ChannelId, string>> = {
     'two working pilots on the open channel. Off duty, unguarded, mildly fed up. Nobody is ' +
     'performing for anyone.',
   CREW:
-    "the commander's own crew on the intercom, three metres apart. Familiar, elliptical, the " +
-    'shorthand of people who work together every day.',
+    "the commander's own crew on the intercom, three metres apart. Familiar and easy — plain " +
+    'words about the work from people who explain things to each other all day, tease each ' +
+    'other, and never reach for a technical term when an ordinary one does the job.',
   DEEP:
     'a long-range channel with almost nothing on it. Short, spaced-out, slightly flattened by ' +
     'distance. Say less than feels comfortable.',
@@ -216,10 +217,22 @@ export function buildSceneChat(req: SceneRequest, history: ChatMessage[] = []): 
         // failure the cap guarded against is now caught downstream instead
         // (asides stripped, MAX_TURNS, the register rotation), so the style
         // can breathe. Radio-plausible is the bar, not a word count.
-        'Radio length, not prose length: most lines are short, and a line may run to a sentence ' +
-        'or two when the moment carries it — a complaint, an explanation, a story half-told. ' +
-        'Never padding. "Understood. Just point the way." is still a fine line. Use decisive ' +
-        'speech with concrete wording and direct intent. ' +
+        // De-crypted, on live evidence: a compression stack ("decisive speech",
+        // clipped moods, elliptical crew) turned every line into telegraphic
+        // command-fragments — dense orders full of unexplained references that
+        // read as code, not talk. The model IS a chat model; let it chat.
+        'This is CONVERSATION, not telegraphy. People speak in complete, ordinary sentences most ' +
+        'of the time — they ask real questions, give real answers, and sometimes explain things, ' +
+        'because explaining is half of what working radio is for. Let turns react in real time: ' +
+        'acknowledge, push back, clarify, correct or ask a follow-up that depends on what was just ' +
+        'said. Use spoken rhythm with contractions and short acknowledgements, kept sparse and ' +
+        'role-appropriate. Clipped fragments belong to busy ' +
+        'moments, not to every line. A stranger overhearing the exchange should be able to follow ' +
+        'what is actually being discussed. ' +
+        'When the ship or the station comes up, say what a thing is DOING in plain words — a ' +
+        'component’s technical name is noise on a radio, and nobody aboard uses one. ' +
+        'Radio length, not prose length: lines may run to a sentence or two when the moment ' +
+        'carries it — a complaint, an explanation, a story half-told. Never padding. ' +
         `Write exactly ${n} line${n === 1 ? '' : 's'}, one spoken utterance per line. ` +
         'Output only the spoken words. Each line stands alone as intercepted radio dialogue. ' +
         'The order of the lines is the ONLY attribution: never begin a line with the name of the ' +
@@ -257,7 +270,9 @@ export function buildSceneChat(req: SceneRequest, history: ChatMessage[] = []): 
         staleness +
 
         `\nBuild a ${n}-line radio scene from these conditions. ` +
-        `Invent the concrete details needed to make the moment feel already underway.\n\n` +
+        `Invent the concrete details needed to make the moment feel already underway. ` +
+        `Keep it as one live back-and-forth: each line should directly respond to what was just said, ` +
+        `not read like separate mini-monologues.\n\n` +
 
         `GROUND THE SCENE IN THIS SYSTEM: choose one concrete fact from the briefing above and make ` +
         `it the cause, obstacle, opportunity or shared concern driving the exchange. It might be a ` +

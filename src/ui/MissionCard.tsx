@@ -170,6 +170,23 @@ export interface CommsTab {
   onSelect: () => void;
 }
 
+/** The radio tab: lit while a station is actually sounding. */
+export interface RadioTab {
+  active: boolean;
+  playing: boolean;
+  onSelect: () => void;
+}
+
+/** The cruise tab: lit when the peak is paying holiday rates. */
+export interface BoozeTab {
+  active: boolean;
+  /** Loads delivered so far this cruise. */
+  count: number;
+  /** The peak is on holiday — the whole point of the tab. */
+  party: boolean;
+  onSelect: () => void;
+}
+
 export function MissionTabs({
   missions,
   selectedId,
@@ -181,6 +198,8 @@ export function MissionTabs({
   news,
   orrery,
   comms,
+  booze,
+  radio,
 }: {
   missions: Mission[];
   selectedId: number | null;
@@ -192,8 +211,13 @@ export function MissionTabs({
   news?: NewsTab;
   orrery?: OrreryTab;
   comms?: CommsTab;
+  booze?: BoozeTab;
+  radio?: RadioTab;
 }) {
-  if (missions.length <= 1 && !clock && !plot && !architect && !news && !orrery && !comms)
+  if (
+    missions.length <= 1 && !clock && !plot && !architect && !news && !orrery && !comms &&
+    !booze && !radio
+  )
     return null;
   const otherActive =
     clock?.active ||
@@ -201,7 +225,9 @@ export function MissionTabs({
     architect?.active ||
     news?.active ||
     orrery?.active ||
-    comms?.active;
+    comms?.active ||
+    booze?.active ||
+    radio?.active;
   return (
     <div className="tabs" role="tablist" aria-label="Active missions">
       {missions.map((m, i) => (
@@ -300,6 +326,39 @@ export function MissionTabs({
           />
           📡
           {comms.count > 0 && <span className="tab-timer mono">{comms.count}</span>}
+        </button>
+      )}
+      {radio && (
+        <button
+          role="tab"
+          aria-selected={radio.active}
+          className={radio.active ? 'tab active' : 'tab'}
+          style={{ borderColor: radio.playing ? 'var(--green)' : 'var(--dim)' }}
+          title="Radio — stations, volume and the analyser"
+          onClick={radio.onSelect}
+        >
+          <span
+            className="tab-dot"
+            style={{ background: radio.playing ? 'var(--green)' : 'var(--dim)' }}
+          />
+          📻
+        </button>
+      )}
+      {booze && (
+        <button
+          role="tab"
+          aria-selected={booze.active}
+          className={booze.active ? 'tab active' : 'tab'}
+          style={{ borderColor: booze.party ? 'var(--green)' : 'var(--dim)' }}
+          title="Booze Cruise — the run to Rackham's Peak"
+          onClick={booze.onSelect}
+        >
+          <span
+            className="tab-dot"
+            style={{ background: booze.party ? 'var(--green)' : 'var(--dim)' }}
+          />
+          🍷
+          {booze.count > 0 && <span className="tab-timer mono">{booze.count}</span>}
         </button>
       )}
       {orrery && (

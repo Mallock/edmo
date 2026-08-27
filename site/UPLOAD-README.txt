@@ -7,9 +7,9 @@ WHAT THIS IS
   index.html                              the page
   img/                                    screenshots + icons
   fonts/                                  the two webfonts, self-hosted
-  ED-Mission-Operator-1.5.0-setup.exe       the Windows installer (~132 MB)
-  ED-Mission-Operator-1.5.0-amd64.deb       Linux beta, Ubuntu/Debian (~147 MB)
-  ED-Mission-Operator-1.5.0-x86_64.AppImage Linux beta, any distro (~231 MB)
+  ED-Mission-Operator-1.8.0-setup.exe       the Windows installer (~132 MB)
+  ED-Mission-Operator-1.8.0-amd64.deb       Linux beta, Ubuntu/Debian (~147 MB)
+  ED-Mission-Operator-1.8.0-x86_64.AppImage Linux beta, any distro (~231 MB)
 
 HOW TO PUT IT ON YOUR WEB HOTEL
   1. Open your web hotel's File Manager (or connect with FTP, e.g. FileZilla).
@@ -22,8 +22,124 @@ NOTES
   * The installer is ~132 MB. Browser-based file managers sometimes limit
     uploads (often to 100 MB) — if the .exe upload fails, use FTP instead,
     or upload it to a file service and change the download link in
-    index.html (search for "ED-Mission-Operator-1.5.0-setup.exe").
-  * 1.5.0 overhauls the COMMS WRITING and adds a second model.
+    index.html (search for "ED-Mission-Operator-1.8.0-setup.exe").
+  * 1.8.0 adds the RADIO tab.
+
+    THE DIAL, OUT OF THE SETTINGS DRAWER. Every station is one click away on
+    its own tab, with the volume, the on/off and the follow-the-work toggle
+    beside it. Changing the record mid-haul no longer means opening Settings
+    and scrolling past the AI engine to get there.
+
+    AN OLD-SCHOOL ANALYSER. Twenty-four segmented bars, green through amber to
+    red, with white peak caps that hang where the bar last reached and then
+    fall. Blocks and a falling cap say more at a glance than a smooth curve,
+    which is why every hi-fi on earth drew them that way for thirty years.
+
+    TEN MORE STATIONS, AND NOT MORE OF THE SAME. The dial went from thirteen
+    to twenty-three, deliberately widening past ambient and rock: instrumental
+    hip-hop and liquid trap (Fluid), vintage soul off the 45s (Seven Inch
+    Soul), dark industrial (Doomed), vaporwave, IDM, and DEF CON Radio's
+    music-for-hacking channel — plus four from NIGHTRIDE FM, which is the
+    synthwave/darksynth/EBM end: Nightride, Darksynth, Datawave and EBSM.
+
+    Nightride publishes metadata differently from SomaFM — one event stream
+    carrying every channel rather than a JSON document per channel — so the
+    player now subscribes and the track name arrives when it CHANGES instead
+    of up to thirty seconds later. Every stream and every metadata endpoint
+    was checked live from a real browser origin, which matters: curl sends no
+    Origin header, so a host can answer curl happily and still refuse the app.
+
+    AND IT STAYS ON SCREEN. The HUD switches its own view as the session moves
+    — the orrery takes the panel on arrival, the commodities take it at a
+    market — and each of those used to take the radio off the screen with it.
+    So a strip sits at the bottom under every other tab: the bars, and what is
+    playing. One click on it opens the full set.
+
+    IT IS FED FROM THE BUS, NOT THE STREAM. The tap hangs off the music bus
+    gain — the last point before the speakers — so when the operator cuts in
+    and the radio ducks, the bars dip with it. The display explains the
+    quiet instead of contradicting it.
+
+    TUNED BY MEASUREMENT, NOT BY EYE. The first version pinned its bass bars
+    at the ceiling and left the top four dead: bins are linear in frequency
+    and hearing is not, and a 128 kbps stream is low-passed near 16 kHz, so
+    bars fed from above that can never move. A browser harness plays real
+    station bytes through the real graph and reads the canvas back, which is
+    how the log spacing, the tilt and the decibel window were chosen. It also
+    checks the picture CHANGES between frames — a frozen analyser and a broken
+    one look identical in a screenshot.
+
+    New screenshot: img/hud-radio.png, captured from the real UI with a real
+    stream playing.
+
+  * 1.7.0 adds the BOOZE CRUISE tab.
+
+    THE RUN TO RACKHAM'S PEAK. The annual wine haul, tracked the way the
+    construction architect tracks a build: is the party on, what a load is
+    worth with YOUR ship at the prices YOU saw, how much wine is left on the
+    carrier, and how many trips that is.
+
+    THE HOLIDAY IS READ FROM THE PRICE, NEVER FROM A DATE. Wine sells at the
+    peak for about 33,000 cr/t normally and north of 270,000 during the public
+    holiday — a gap nothing crosses by accident. So the tab works the year the
+    event moves, and a market nobody has read says "nobody has looked" rather
+    than "the party is off". The panel also says how old the price is: a stale
+    270,000 is exactly the number that would send somebody 5,000 ly to a party
+    that already ended.
+
+    THE LAP IS MEASURED. The ETA comes from the median gap between your own
+    deliveries, not from a guide — with anything over three hours treated as a
+    night's sleep rather than a lap. Credits per hour over a rolling window,
+    and a tally of loads, tons and credits that survives a relog.
+
+    IT DOES NOT PREDICT THE HOLIDAY. The community says plainly that the cruise
+    is a bet, and a made-up countdown would send people across the galaxy on a
+    number this app invented. It reports; it does not forecast.
+
+    Also: the peak has no large pad, and the tab says so while you are still in
+    the bubble. And a pasted Loadout now registers on the manual-import path,
+    which it never did — every panel doing hold arithmetic was working without
+    a hold.
+
+    New screenshot: img/hud-booze.png. It is captured from the real UI with
+    demonstration data, because the holiday runs about once a year; the caption
+    on the page says so.
+
+  * 1.6.0 puts MUSIC on the radio and widens the voice catalogue.
+
+    THE THIRD BUS. Internet radio you can have on while you work — thirteen
+    curated stations, from deep space ambient and real NASA mission audio to
+    seventies album rock, frontier americana, and Galaxy News Radio. It is not
+    a second player bolted on: the stream routes through the app's own audio
+    graph, so it DUCKS properly — hard (-20 dB) under the operator, only
+    thinned (-9 dB) under comms traffic, the way a cab radio behaves when
+    someone talks over it. Stations that do not permit routing still play and
+    duck by volume, using the same arithmetic.
+
+    THE DIAL FOLLOWS THE WORK. The session arc already knows whether this is a
+    mining shift or a passenger run, so the station follows: the rings get
+    drone, long hauls get rock, the black gets ambient. Pick a station by hand
+    and the follow switch turns itself off — a deliberate choice is not
+    overruled. The current track shows on the HUD.
+
+    OFF BY DEFAULT, AND SAID SO. This is the app's only CONTINUOUS internet
+    connection; everything else is a one-shot you clicked. It ships off, the
+    privacy section names it, and Settings carries SomaFM's donate link —
+    they are listener-supported and advert-free, and this is exactly what
+    their public channel directory is for.
+
+    NINE MORE VOICES. The Piper catalogue goes from eight to seventeen (Alan,
+    Aru, HFC female/male, Bryce, John, Norman, Kristin, Kusal). Every one is
+    also new PEOPLE on the comms: the cast multiplies each voice by timbre
+    shifts, so a busy channel finally sounds like a crowd.
+
+    TALK, NOT TELEGRAPHY. The comms prompt had accumulated a stack of
+    compression rules until every line came out as coded command-fragments.
+    They are replaced by a conversation contract — complete sentences, real
+    questions and answers, explaining as half of what radio is for, and a
+    testable bar: a stranger overhearing should be able to follow it.
+
+  * 1.5.0 overhauled the COMMS WRITING and added a second model.
 
     RADIO THAT SOUNDS LIKE PEOPLE. A week of live sessions and simulated
     batteries taught one law: a small model imitates what is vivid in front
@@ -386,7 +502,7 @@ NOTES
     ranges and payout estimates; and four opt-in community lookups the operator
     calls only when asked (Spansh routes, galaxy-wide markets via Ardent
     Insight, the EDAstro exploration catalogue, and the Galnet news wire).
-  * All three installers are 1.5.0.
+  * All three installers are 1.8.0.
 
     Windows:  npm run tauri build
               -> src-tauri/target/release/bundle/nsis/

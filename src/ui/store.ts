@@ -180,7 +180,7 @@ import { textureBrief, type Brief, type FactSource } from '../engine/chatter/bri
 import { chooseFunction, nextBeatFor, pickBrief } from '../engine/chatter/director.ts';
 import type { ChannelState } from '../engine/chatter/channels.ts';
 import { sceneTranscript } from '../engine/chatter/scenes.ts';
-import { airedIn, buildDossier, hotNouns } from '../engine/chatter/dossier.ts';
+import { airedIn, buildDossier, hotNouns, worldNotes, type WorldFact } from '../engine/chatter/dossier.ts';
 import {
   SITUATIONS,
   ChatterConversation,
@@ -305,6 +305,22 @@ import {
 const MODEL_LAYERS_ESTIMATE = 40;
 import { loadSettings, saveSettings, type AppSettings } from './settings.ts';
 import { Speaker } from './tts.ts';
+import { MusicPlayer, type MusicState } from './music.ts';
+import { stationForChapter } from '../engine/stations.ts';
+import {
+  WINE,
+  creditsPerHour as boozeCreditsPerHour,
+  etaMs as boozeEtaMs,
+  isPeak,
+  medianRoundTripMs,
+  peakStateFromPrice,
+  runEconomics,
+  runsRemaining,
+  tally as boozeTally,
+  type Delivery,
+  type PeakState,
+  type RunEconomics,
+} from '../engine/booze.ts';
 
 export type FeedKind =
   | 'briefing'
@@ -426,6 +442,32 @@ export interface NewsView {
   enabled: boolean;
 }
 
+/**
+ * Everything the Booze Cruise tab renders.
+ *
+ * Every figure traces to something the commander did: a market they opened,
+ * a load they sold, a hold the game reported. `state` is read from the peak's
+ * price and is `unknown` — never `quiet` — when nobody has looked.
+ */
+export interface BoozeView {
+  state: PeakState;
+  sellPerT: number | null;
+  /** When that price was read, so the panel can say how stale it is. */
+  priceSeenAt: number | null;
+  atPeak: boolean;
+  inSystem: boolean;
+  capacityT: number | null;
+  wineAboard: number;
+  padWarning: string | null;
+  source: { station: string; system: string; stock: number; buyPerT: number; seenAt: number } | null;
+  economics: RunEconomics | null;
+  runsLeft: number | null;
+  roundTripMs: number | null;
+  etaMs: number | null;
+  perHour: number | null;
+  tally: { tons: number; credits: number; runs: number };
+}
+
 /** Everything the Architect tab renders — data only; actions live on core. */
 export interface ArchitectView {
   depot: DepotState;
@@ -518,6 +560,8 @@ export interface AppSnapshot {
   shipStatus: HudShipStatus | null;
   /** The campaign spine readout — null until anything is elected or vowed. */
   campaign: CampaignHudView | null;
+  /** What is on the radio, or null when the dial is off. */
+  music: MusicState | null;
   /** Highest-value unmapped body known this session, or null. */
   exploreLead: ExploreLead | null;
   route: TradeRoute | null;
@@ -529,6 +573,8 @@ export interface AppSnapshot {
   plotter: PlotterView;
   /** The construction shopping list — null until a depot has been seen. */
   architect: ArchitectView | null;
+  /** The run to Rackham's Peak — null until wine or the peak is seen. */
+  booze: BoozeView | null;
   /** The local wire, or null when the feature is switched off. */
   news: NewsView | null;
   /** Ambient world traffic heard on nearby channels. */
@@ -537,7 +583,7 @@ export interface AppSnapshot {
   orrery: OrreryView | null;
   /** Which panel fills the card area: missions (default), clock, plotter,
    *  the system architect's shopping list, the local news wire, comms, or the orrery. */
-  view: 'missions' | 'deathclock' | 'plotter' | 'architect' | 'news' | 'comms' | 'orrery';
+  view: 'missions' | 'deathclock' | 'plotter' | 'architect' | 'news' | 'comms' | 'orrery' | 'booze' | 'radio';
   shipPanel: ShipPanel;
   routeBusy: boolean;
   routeIdx: number;
@@ -663,6 +709,12 @@ export class AppCore {
   private sm = new MissionStateManager();
   private hb: Heartbeat;
   private speaker = new Speaker(() => this.settings);
+  /** Internet radio on the MUSIC bus — off unless the commander turns it on. */
+  private music = new MusicPlayer(
+    () => this.speaker.radioBus(),
+    () => this.settings,
+    () => this.emit(),
+  );
   private settings = loadSettings();
 
   private feed: FeedEntry[] = [];
@@ -902,6 +954,21 @@ export class AppCore {
   /** Commodity key → tons in the hold, from Cargo.json's Inventory. */
   private cargoManifest = new Map<string, number>();
   /**
+   * Wine sold at Rackham's Peak, one entry per load.
+   *
+   * Persisted because the cruise runs for days and a relog must not reset the
+   * tally — and folded from LIVE events only, so a bootstrap replay of the
+   * same journals cannot count a run twice.
+   */
+  private boozeRuns: Delivery[] = (() => {
+    try {
+      const raw = localStorage.getItem('edmo.booze.v1');
+      return raw ? (JSON.parse(raw) as Delivery[]) : [];
+    } catch {
+      return [];
+    }
+  })();
+  /**
    * The local wire. Persisted per system, because a paper the commander opens
    * after a relog should not be blank while it waits for the next edition.
    */
@@ -955,7 +1022,7 @@ export class AppCore {
   private newsBusy = false;
   private newsError: string | null = null;
   /** Which panel fills the card area; the clock and plotter are offered as tabs. */
-  private view: 'missions' | 'deathclock' | 'plotter' | 'architect' | 'news' | 'comms' | 'orrery' = 'missions';
+  private view: 'missions' | 'deathclock' | 'plotter' | 'architect' | 'news' | 'comms' | 'orrery' | 'booze' | 'radio' = 'missions';
 
   // ------------------------------------------------------------- the plotter
   /**
@@ -1322,6 +1389,7 @@ export class AppCore {
       bio: this.bioLead,
       shipStatus: this.hudShipStatus(),
       campaign: this.campaignHud(),
+      music: this.settings.music?.enabled ? this.music.snapshot() : null,
       exploreLead: this.explore.leads()[0] ?? null,
       route: this.route,
       tradeRun: this.tradeRun,
@@ -1337,6 +1405,7 @@ export class AppCore {
       orrery: this.orreryView(),
       plotter: this.plotterView(),
       architect: this.architectView(),
+      booze: this.boozeView(),
       news: this.settings.news.enabled ? this.newsView() : null,
       comms: this.commsView(),
       view: this.view,
@@ -1745,6 +1814,14 @@ export class AppCore {
       setInterval(() => void this.pollLm(), 20_000);
     }
 
+    // Open the station relay before anything asks for a stream (see radio.rs
+    // — stations refuse browser User-Agents), then put the dial back where it
+    // was left. Autoplay policy may still refuse until the commander clicks
+    // something, which the player reports rather than throws.
+    void this.music.init().then(() => {
+      if (this.settings.music?.enabled) this.music.play(this.settings.music.station);
+    });
+
     // Restore any remembered trade lead silently (no re-announcement).
     this.tradeOpp = findOpportunities(this.marketMemory, {
       minProfitPerTon: this.settings.trade.minProfitPerTon,
@@ -1930,6 +2007,7 @@ export class AppCore {
         this.announce(changes, ev.timestamp);
         this.tactical(ev);
         this.noteMoment(ev);
+        this.noteWineSale(ev);
         // Session over → distill it into long-term memory once the
         // chronicler (saga, scheduled below) has had its turn.
         if (ev.event === 'Shutdown' && this.settings.memory.enabled) {
@@ -3322,6 +3400,8 @@ export class AppCore {
         .filter((d) => (d.system ?? '').toLowerCase() === system.toLowerCase())
         .slice(0, 3)
         .map((d) => d.station),
+      // The scenery beat: scanned worlds, two per edition, rotated.
+      worlds: worldNotes(this.worldFacts(), this.newsEdition),
       // The paper's own continuity.
       cast: this.newsCast,
       previously: this.news
@@ -3793,10 +3873,47 @@ export class AppCore {
   }
 
   /** Live state, shaped for the comms writer's briefing. See dossier.ts. */
+  /** Scanned worlds from the orrery, reduced to what a person would notice
+   *  (dossier.ts WorldFact) — the scan data finally reaching the voices. */
+  private worldFacts(): WorldFact[] {
+    const sys = this.orrery.current();
+    if (!sys) return [];
+    return [...sys.bodies.values()]
+      .filter((b) => b.scanned && b.kind === 'planet' && b.planetClass)
+      .map((b) => ({
+        label: b.label,
+        planetClass: b.planetClass,
+        moon: b.parentId != null && sys.bodies.get(b.parentId)?.kind === 'planet',
+        landable: b.landable,
+        ringed: b.ringed,
+        gravityG: b.gravity != null ? b.gravity / 9.80665 : undefined,
+        tempK: b.temperature,
+        volcanism: b.volcanism,
+        tidalLock: b.tidalLock,
+        terraformable: /terraformable/i.test(b.terraform ?? ''),
+        virgin: b.landable === true && b.wasFootfalled === false,
+      }));
+  }
+
   private commsDossier(briefs: readonly Brief[]): string {
     const st = this.statusTracker.current;
     this.briefSeq += 1;
+    // The commander's REAL whereabouts, when the generic state undersells it.
+    // A construction-site approach is its own airspace: scenes written for
+    // the orbital lanes while the ship hangs 47 km over the build read wrong.
+    const depot = this.construction.depot;
+    const dest = st?.destination?.name;
+    let place: string | undefined;
+    if (depot && (depot.system ?? '').toLowerCase() === this.sm.location.system.toLowerCase()) {
+      if (this.sm.docked && this.sm.location.station === depot.station) {
+        place = `docked at ${depot.station}, the construction site — the build IS the local airspace`;
+      } else if (dest && (dest === depot.station || /construction/i.test(dest))) {
+        place = `on approach to ${depot.station}, the construction site — closer to the build than to any port`;
+      }
+    }
     return buildDossier({
+      place,
+      worlds: this.worldFacts(),
       rotate: this.briefSeq,
       system: this.sm.location.system,
       intel: this.sm.getState().system,
@@ -4102,7 +4219,15 @@ export class AppCore {
       // row, the same starvation guard the scene engine uses, so the brake
       // cannot silence a channel.
       const sceneText = accepted.scene.turns.map((t) => t.text).join(' ');
-      const hot = hotNouns(this.recentCommsAir, (this.sm.getState().system?.signals ?? []).map((x) => x.name));
+      // Factions gate exactly like places — a live session with every station
+      // brake working still had one faction in nearly every scene, because
+      // faction names could neither cool nor gate.
+      const sys = this.sm.getState().system;
+      const hot = hotNouns(this.recentCommsAir, [
+        ...(sys?.signals ?? []).map((x) => x.name),
+        ...(sys?.factions ?? []).map((f) => f.name),
+        ...(sys?.controllingFaction ? [sys.controllingFaction] : []),
+      ]);
       const hotHit = [...hot].find((n) => airedIn(sceneText, n));
       if (hotHit && this.commsHotStreak < 2) {
         this.commsHotStreak += 1;
@@ -4264,6 +4389,107 @@ export class AppCore {
     }
   }
 
+  /**
+   * A load of wine sold at the peak — the only event the cruise tab needs.
+   *
+   * Keyed on the commodity and the place, not on a date: if Frontier moves
+   * the event, or the commander hauls wine there in an ordinary week, the
+   * arithmetic still describes what actually happened.
+   */
+  private noteWineSale(ev: JournalEvent): void {
+    if (ev.event !== 'MarketSell') return;
+    const type = String(ev.Type_Localised ?? ev.Type ?? '');
+    if (commodityKey(type) !== commodityKey(WINE)) return;
+    if (!isPeak(this.sm.location.station, this.sm.location.system)) return;
+    const tons = Number(ev.Count) || 0;
+    const credits = Number(ev.TotalSale) || 0;
+    if (tons <= 0) return;
+    this.boozeRuns.push({
+      at: Date.parse(ev.timestamp) || Date.now(),
+      tons,
+      credits,
+    });
+    // A cruise is days, not years — keep it bounded.
+    if (this.boozeRuns.length > 400) this.boozeRuns.splice(0, this.boozeRuns.length - 400);
+    try {
+      localStorage.setItem('edmo.booze.v1', JSON.stringify(this.boozeRuns));
+    } catch {
+      /* the tally is a nicety; never let storage break a run */
+    }
+    // Selling wine at the peak is the moment the tab is worth looking at —
+    // gated on the same switch as every other automatic tab change.
+    if (this.settings.hud.autoView) this.view = 'booze';
+  }
+
+  /**
+   * The cruise, as the tab shows it — or null when there is nothing to say.
+   *
+   * Everything here comes from markets the commander actually opened and
+   * sales they actually made. Nothing is forecast: the holiday is read off
+   * the price, and when no price has been seen the state is `unknown` rather
+   * than a cheerful guess.
+   */
+  private boozeView(): BoozeView | null {
+    const wineKey = commodityKey(WINE);
+    const markets = this.marketMemory.all();
+
+    // The peak's own board, whenever it was last read.
+    const peakMarket = markets
+      .filter((m) => isPeak(m.station, m.system))
+      .sort((a, b) => Date.parse(b.at) - Date.parse(a.at))[0];
+    const peakWine = peakMarket?.items.find((i) => commodityKey(i.name) === wineKey);
+    const sellPerT = peakWine?.sell && peakWine.sell > 0 ? peakWine.sell : null;
+
+    // Where wine can be bought: any remembered board with stock, freshest and
+    // cheapest first. A carrier parked at the peak and one in the bubble both
+    // qualify — the commander decides which is nearer.
+    const sources = markets
+      .flatMap((m) => {
+        const w = m.items.find((i) => commodityKey(i.name) === wineKey);
+        return w && w.buy > 0 && w.stock > 0
+          ? [{ station: m.station, system: m.system, stock: w.stock, buyPerT: w.buy, seenAt: Date.parse(m.at) || 0 }]
+          : [];
+      })
+      .sort((a, b) => b.stock - a.stock);
+    const source = sources[0] ?? null;
+
+    const runs = this.boozeRuns;
+    const t = boozeTally(runs);
+    const state = peakStateFromPrice(sellPerT);
+    // Nothing seen, nothing hauled, no wine aboard: the tab has no business
+    // existing yet.
+    const aboard = this.cargoManifest.get(wineKey) ?? 0;
+    if (state === 'unknown' && !t.runs && !aboard && !source) return null;
+
+    const capacity = this.ship.current?.cargoCapacity ?? null;
+    const economics: RunEconomics | null =
+      sellPerT != null && capacity ? runEconomics(capacity, sellPerT, source?.buyPerT ?? null) : null;
+    const left = runsRemaining(source?.stock ?? null, capacity ?? 0);
+    const pace = medianRoundTripMs(runs);
+
+    return {
+      state,
+      sellPerT,
+      priceSeenAt: peakMarket ? Date.parse(peakMarket.at) || null : null,
+      atPeak: this.sm.docked && isPeak(this.sm.location.station, this.sm.location.system),
+      inSystem: isPeak(null, this.sm.location.system) || this.sm.location.system === 'HIP 58832',
+      capacityT: capacity,
+      wineAboard: aboard,
+      // The peak has M and S pads only. Better to say so in the bubble than
+      // to let somebody haul 5,000 ly and discover it on approach.
+      padWarning: shipRequiresLargePad(this.ship.current?.ship)
+        ? `${this.ship.current?.ship ?? 'This ship'} needs a large pad — Rackham's Peak has none`
+        : null,
+      source,
+      economics,
+      runsLeft: left,
+      roundTripMs: pace,
+      etaMs: boozeEtaMs(left, pace),
+      perHour: boozeCreditsPerHour(runs, Date.now()),
+      tally: t,
+    };
+  }
+
   private campaignHud(): CampaignHudView | null {
     const v = this.campaign.view();
     if (!v.pursuer && !v.patron && !v.vow) return null;
@@ -4272,6 +4498,65 @@ export class AppCore {
       patron: v.patron ? { faction: v.patron.faction, clock: v.patron.clock } : null,
       vow: v.vow,
     };
+  }
+
+  /**
+   * Put the station the current work calls for on the dial.
+   *
+   * Only when the commander asked the radio to follow the job — a manual pick
+   * is a decision, and the app does not overrule those. Writes the choice back
+   * to settings so the picker shows what is actually playing.
+   */
+  private retuneForChapter(): void {
+    const s = this.settings.music;
+    if (!s?.enabled || !s.followActivity) return;
+    const want = stationForChapter(this.sessionArc.chapterKind());
+    if (want === this.music.snapshot().stationId) return;
+    this.settings = { ...this.settings, music: { ...s, station: want } };
+    saveSettings(this.settings);
+    this.music.play(want);
+  }
+
+  /** Spectrum for the radio tab's visualiser. False when there is no signal. */
+  musicSpectrum(out: Uint8Array): boolean {
+    return this.speaker.radioBus().musicSpectrum(out);
+  }
+
+  /** Radio tab: switch the set on or off without a trip to Settings. */
+  setMusicEnabled(on: boolean): void {
+    this.settings = { ...this.settings, music: { ...this.settings.music, enabled: on } };
+    saveSettings(this.settings);
+    if (on) this.music.play(this.settings.music.station);
+    else this.music.stop();
+    this.emit();
+  }
+
+  /** Radio tab: the volume knob. */
+  setMusicVolume(v: number): void {
+    const volume = Math.max(0, Math.min(100, Math.round(v)));
+    this.settings = { ...this.settings, music: { ...this.settings.music, volume } };
+    saveSettings(this.settings);
+    this.music.applyVolume();
+    this.emit();
+  }
+
+  /** Radio tab: let the dial follow the work again, and retune at once. */
+  setMusicFollow(on: boolean): void {
+    this.settings = { ...this.settings, music: { ...this.settings.music, followActivity: on } };
+    saveSettings(this.settings);
+    if (on) this.retuneForChapter();
+    this.emit();
+  }
+
+  /** Picker action: tune the radio by hand (and stop following the work). */
+  setMusicStation(id: string): void {
+    this.settings = {
+      ...this.settings,
+      music: { ...this.settings.music, station: id, enabled: true, followActivity: false },
+    };
+    saveSettings(this.settings);
+    this.music.play(id);
+    this.emit();
   }
 
   /** Settings action: wipe the campaign but KEEP the watermark — a reset must
@@ -5232,6 +5517,10 @@ export class AppCore {
       if (this.campaign.updateVow(this.sm.activeMissions(), this.sessionArc.chapterKind())) {
         this.persistCampaign();
       }
+      // …and it can retune the radio. The session arc already knows whether
+      // this is a mining shift or a passenger run; the dial simply follows,
+      // unless the commander has chosen a station themselves.
+      this.retuneForChapter();
     }
     // The fight folds silently; it is told ONCE, after it ends. Kills also
     // arm the ambient combat-quiet gate, same as the tactical layer.
@@ -7543,6 +7832,14 @@ ${missionContext(mission, state)}`);
     const prev = this.settings;
     this.settings = next;
     saveSettings(next);
+    // The dial: switched off, switched on, retuned, or just turned down.
+    if (!next.music.enabled) {
+      if (prev.music.enabled) this.music.stop();
+    } else if (!prev.music.enabled || prev.music.station !== next.music.station) {
+      this.music.play(next.music.station);
+    } else if (prev.music.volume !== next.music.volume) {
+      this.music.applyVolume();
+    }
     if (prev.radio.muted !== next.radio.muted) {
       this.speaker.setMuted(next.radio.muted);
     }
@@ -7608,6 +7905,10 @@ ${missionContext(mission, state)}`);
       // and the orrery draws the leg to whatever is targeted. Alerts are
       // dropped: an import is not a live event and must not announce itself.
       if (ev.event === 'Status') this.statusTracker.apply(ev);
+      // The ship, too. A pasted Loadout that did not register left every
+      // panel doing hold arithmetic — the architect's trip counts, the
+      // cruise's run economics — with no hold to reason about.
+      this.ship.apply(ev);
     }
     this.persistOrrery();
     const n = this.sm.activeMissions().length;

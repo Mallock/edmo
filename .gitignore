@@ -10,3 +10,10 @@ site/*.deb
 linux-dist/
 # spike output — regenerate with `node scripts/pitch-spike.mjs`
 scratch-pitch-spike/
+
+# analyser tuning sample and readings
+scripts/.radio-sample.mp3
+scripts/.radio-shot.json
+scripts/.radio-strip.png
+scripts/.nightride-sample.mp3
+scripts/.nightride.png

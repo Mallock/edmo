@@ -12,6 +12,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod engine;
+mod radio;
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -2741,6 +2742,7 @@ fn main() {
         .manage(LlmCtl { cancels: Mutex::new(HashMap::new()) })
         .manage(SttCtl { rec: Mutex::new(None) })
         .manage(engine::EngineCtl::default())
+        .manage(radio::RadioCtl::default())
         .manage(ClickThrough(AtomicBool::new(false)))
         .manage(GeomState {
             cur: Mutex::new(None),
@@ -2756,6 +2758,7 @@ fn main() {
             piper_available,
             piper_voices,
             piper_download_voice,
+            radio::radio_relay_port,
             piper_speak,
             llm_models,
             llm_chat,

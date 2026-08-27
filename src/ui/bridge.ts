@@ -151,6 +151,17 @@ export async function piperDownloadVoice(repoPath: string): Promise<string> {
   return invoke<string>('piper_download_voice', { repoPath });
 }
 
+/**
+ * Port of the loopback station relay, starting it if needed.
+ *
+ * Stations are fetched by the app rather than the page: SomaFM answers 403 to
+ * browser User-Agents and 200 to one that names the application, and a page
+ * cannot set its own. See src-tauri/src/radio.rs.
+ */
+export async function radioRelayPort(): Promise<number> {
+  return invoke<number>('radio_relay_port');
+}
+
 /** Opt-in Spansh trade-route query; resolves to the raw results JSON. */
 export async function spanshTradeRoute(opts: {
   system: string;

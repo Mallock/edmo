@@ -1054,6 +1054,146 @@ body {
   background: #e06060;
 }
 
+/* ---- the radio set ---- */
+.radio-vis {
+  width: 100%;
+  display: block;
+  margin: 6px 0 8px;
+  background: #05070c;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  image-rendering: pixelated;
+}
+/* The strip under every other tab. Its height comes from the component, so
+   the canvas box and the drawing can never disagree. */
+.radio-vis.mini {
+  margin: 0;
+  border-radius: 2px;
+}
+.radio-mini {
+  display: block;
+  width: 100%;
+  font: inherit;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--line);
+  padding: 5px 8px 3px;
+  cursor: pointer;
+}
+.radio-mini:hover .radio-vis.mini {
+  border-color: var(--amber);
+}
+.radio-mini-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-top: 3px;
+  font-size: var(--fs-meta);
+  min-width: 0;
+}
+.radio-now {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0 6px;
+  min-width: 0;
+}
+.radio-led {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: rgba(122, 138, 160, 0.35);
+}
+.radio-led.on {
+  background: #33dd66;
+  box-shadow: 0 0 6px #33dd66;
+}
+.radio-track {
+  color: var(--text);
+  font-size: var(--fs-body);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.radio-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 4px;
+}
+.radio-controls input[type='range'] {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--amber);
+}
+.radio-vol {
+  flex: none;
+  width: 28px;
+  text-align: right;
+  color: var(--dim);
+}
+.radio-follow {
+  font-size: var(--fs-meta);
+  padding-bottom: 6px;
+}
+/* The dial: every station one click away, which is the whole point of the
+   tab — nobody should open Settings to change the record. */
+.radio-dial {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding-bottom: 6px;
+}
+.radio-station {
+  font: inherit;
+  font-size: var(--fs-meta);
+  color: var(--dim);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 3px 7px;
+  cursor: pointer;
+}
+.radio-station:hover {
+  color: var(--text);
+  border-color: var(--cyan);
+}
+.radio-station.on {
+  color: var(--ink);
+  background: var(--green);
+  border-color: var(--green);
+}
+
+/* The cruise card's rows. The ship panel's .sp-label is a fixed 46px column
+   built for words like "FUEL"; these labels are short sentences, so they get
+   a layout that lets them breathe and keeps the number hard right. */
+.booze-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 3px 0;
+  font-size: var(--fs-body);
+}
+.booze-row .k {
+  color: var(--dim);
+  flex: 1;
+  min-width: 0;
+}
+.booze-row .v {
+  flex: none;
+  color: var(--text);
+}
+.booze-row.party .k,
+.booze-row.party .v {
+  color: var(--green);
+}
+.booze-row.party .k {
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+
 .sp-val {
   flex: none;
   color: var(--text);

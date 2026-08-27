@@ -7,6 +7,7 @@ import { core } from './store.ts';
 import { NEWS_INTERVALS, newsIntervalLabel } from '../engine/news.ts';
 import { recommendationLabel, specsLabel } from './modelfit.ts';
 import { PIPER_VOICE_CATALOG } from './voices.ts';
+import { STATIONS } from '../engine/stations.ts';
 import { RADIO_PROFILE_NAMES } from '../engine/chatter/profiles.ts';
 
 /** Screen glances are GDI-based; on Linux the section shows as unavailable. */
@@ -395,6 +396,83 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
             />
             Mute radio output
           </label>
+        </section>
+
+        <section>
+          <h3>
+            Music{' '}
+            <span style={{ color: 'var(--dim)', fontSize: '0.8em' }}>
+              (internet radio, off by default)
+            </span>
+          </h3>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={s.music.enabled}
+              onChange={(e) => set({ ...s, music: { ...s.music, enabled: e.target.checked } })}
+            />
+            Play internet radio under the operator
+          </label>
+          <label>
+            Station
+            <select
+              value={s.music.station}
+              onChange={(e) => core.setMusicStation(e.target.value)}
+              disabled={!s.music.enabled}
+            >
+              {STATIONS.map((st) => (
+                <option key={st.id} value={st.id}>
+                  {st.label} — {st.blurb}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={s.music.followActivity}
+              onChange={(e) =>
+                set({ ...s, music: { ...s.music, followActivity: e.target.checked } })
+              }
+              disabled={!s.music.enabled}
+            />
+            Let the station follow the work (the rings get drone, hauls get rock)
+          </label>
+          <div className="row">
+            <label>
+              Volume {s.music.volume}
+              <input
+                type="range"
+                min={0}
+                max={100}
+                value={s.music.volume}
+                onChange={(e) =>
+                  set({ ...s, music: { ...s.music, volume: Number(e.target.value) } })
+                }
+                disabled={!s.music.enabled}
+              />
+            </label>
+          </div>
+          {snap.music?.nowPlaying && (
+            <div className="hint">♫ {snap.music.nowPlaying}</div>
+          )}
+          {snap.music?.error && <div className="hint">{snap.music.error}</div>}
+          <div className="hint">
+            The radio ducks under the operator and thins under comms traffic. Streams come from{' '}
+            <a href="https://somafm.com" target="_blank" rel="noopener">
+              SomaFM
+            </a>
+            , which is listener-supported and free of adverts —{' '}
+            <a href="https://somafm.com/support/" target="_blank" rel="noopener">
+              consider donating
+            </a>{' '}
+            if you leave it on. The synthwave and industrial channels come from{' '}
+            <a href="https://nightride.fm" target="_blank" rel="noopener">
+              Nightride FM
+            </a>
+            , also listener-supported, and Galaxy News Radio from Fallout.FM. This is the app's only
+            continuous internet connection; everything else stays on this machine.
+          </div>
         </section>
 
         <section>
