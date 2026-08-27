@@ -17,6 +17,27 @@
   --text: #d8e4f0;
   --dim: #7a8aa0;
 
+  /* THE PHOSPHOR — what colour the instrument itself is.
+
+     Amber by default, which is why the HUD looked amber before this token
+     existed: the title, the panel edges, the gauge fills and the focus rings
+     were all reaching for --amber directly. They now reach for --phos, and
+     the commander can pick it.
+
+     What did NOT move: --amber as money and the standing job, --cyan as a
+     destination, --green as delivered, --red as expiry. Those four are facts,
+     not decoration, and a theme that repainted them would make the panel lie.
+
+     Each alternative phosphor is held at lower chroma than the signal hue it
+     might sit beside — furniture dim, readout bright, the way a real cockpit
+     reads. That is also what keeps a green instrument from swallowing a green
+     'delivered'. */
+  --phos: var(--amber);
+  /* The same hue as a triplet, so the frame's many alpha washes — the window
+     edge, the header bar, the footer rule, the scrollbar thumb — move with it
+     instead of staying amber around a green instrument. */
+  --phos-rgb: 240, 160, 48;
+
   /* Five steps, and the panel wants no more. The ratio is tight at the bottom
      (~1.13) because that is where the uppercase keys and unit labels live and a
      wider gap would cost a line of the build list; it opens up at the top so a
@@ -29,7 +50,34 @@
   --fs-clock: 2em; /* the two countdowns that own their panel */
 
   /* Overlay, so the ring cannot rely on contrast with anything behind it. */
-  --focus: 0 0 0 2px rgba(10, 22, 40, 0.9), 0 0 0 3px var(--amber);
+  --focus: 0 0 0 2px rgba(10, 22, 40, 0.9), 0 0 0 3px var(--phos);
+}
+
+/* ---------------------------------------------------------- the phosphors
+   Four instruments, one panel. Amber is the standing default and the reason
+   nothing moves for a commander who never opens this setting.
+
+   The three alternatives are all held BELOW the chroma of the signal hue they
+   sit nearest, which is the whole trick: a green instrument whose furniture is
+   as saturated as --green would swallow every "delivered" on the panel. Dim
+   furniture, bright readout — the arrangement every real cockpit already uses,
+   and the reason these read as instruments rather than as skins. */
+.hud[data-tint='green'] {
+  --phos: #5cbf82;
+  --phos-rgb: 92, 191, 130;
+}
+.hud[data-tint='red'] {
+  /* The night-flying instrument. Red furniture is not decoration here — it is
+     the one colour that leaves dark adaptation intact, which is why cockpits
+     have offered it since long before anyone called it a theme. */
+  --phos: #cf6257;
+  --phos-rgb: 207, 98, 87;
+}
+.hud[data-tint='grey'] {
+  /* Tinted toward the panel's own navy rather than neutral: a true grey on a
+     blue ground reads faintly brown, and the HUD would look dirty. */
+  --phos: #9aabc2;
+  --phos-rgb: 154, 171, 194;
 }
 
 html,
@@ -60,7 +108,7 @@ body {
    .hud and .feed-jump, and zero-specificity :where() so any rule below still
    wins on colour. */
 :where(button, input, select, textarea, a, [tabindex]):focus-visible {
-  outline: 2px solid var(--amber);
+  outline: 2px solid var(--phos);
   outline-offset: 1px;
 }
 
@@ -77,10 +125,10 @@ body {
   flex-direction: column;
   height: 100vh;
   background: rgba(var(--bg), var(--hud-alpha, 0.95));
-  border: 1px solid rgba(240, 160, 48, 0.45);
+  border: 1px solid rgba(var(--phos-rgb), 0.45);
   border-radius: 10px;
   box-shadow:
-    0 0 14px rgba(240, 160, 48, 0.12) inset,
+    0 0 14px rgba(var(--phos-rgb), 0.12) inset,
     0 4px 24px rgba(0, 0, 0, 0.55);
   overflow: hidden;
 }
@@ -96,8 +144,8 @@ body {
   align-items: center;
   gap: 4px;
   padding: 7px 8px 6px 12px;
-  border-bottom: 1px solid rgba(240, 160, 48, 0.3);
-  background: rgba(240, 160, 48, 0.07);
+  border-bottom: 1px solid rgba(var(--phos-rgb), 0.3);
+  background: rgba(var(--phos-rgb), 0.07);
   cursor: grab;
 }
 
@@ -105,7 +153,7 @@ body {
   font-size: var(--fs-body);
   font-weight: 700;
   letter-spacing: 0.14em;
-  color: var(--amber);
+  color: var(--phos);
 }
 
 .head-spacer {
@@ -182,7 +230,7 @@ body {
 
 .tab.active {
   color: var(--text);
-  background: rgba(240, 160, 48, 0.12);
+  background: rgba(var(--phos-rgb), 0.12);
 }
 
 .tab-dot {
@@ -368,8 +416,8 @@ body {
 }
 
 .empty-actions button {
-  background: rgba(240, 160, 48, 0.1);
-  border: 1px solid rgba(240, 160, 48, 0.35);
+  background: rgba(var(--phos-rgb), 0.1);
+  border: 1px solid rgba(var(--phos-rgb), 0.35);
   color: var(--text);
   border-radius: 6px;
   padding: 4px 10px;
@@ -378,7 +426,7 @@ body {
 }
 
 .empty-actions button:hover {
-  background: rgba(240, 160, 48, 0.22);
+  background: rgba(var(--phos-rgb), 0.22);
 }
 
 .empty-actions button:disabled {
@@ -537,7 +585,7 @@ body {
   right: 12px;
   bottom: 8px;
   background: rgba(10, 22, 40, 0.92);
-  border: 1px solid rgba(240, 160, 48, 0.5);
+  border: 1px solid rgba(var(--phos-rgb), 0.5);
   color: var(--amber);
   border-radius: 12px;
   padding: 3px 10px;
@@ -547,7 +595,7 @@ body {
 }
 
 .feed-jump:hover {
-  background: rgba(240, 160, 48, 0.2);
+  background: rgba(var(--phos-rgb), 0.2);
 }
 
 .feed::-webkit-scrollbar {
@@ -555,7 +603,7 @@ body {
 }
 
 .feed::-webkit-scrollbar-thumb {
-  background: rgba(240, 160, 48, 0.3);
+  background: rgba(var(--phos-rgb), 0.3);
   border-radius: 4px;
 }
 
@@ -613,7 +661,7 @@ body {
 .k-saga {
   margin: 9px 0 5px;
   padding: 8px 0 2px 10px;
-  border-top: 1px solid rgba(240, 160, 48, 0.28);
+  border-top: 1px solid rgba(var(--phos-rgb), 0.28);
 }
 
 .k-saga .feed-text {
@@ -655,7 +703,7 @@ body {
 
 .cursor {
   animation: blink 1s step-end infinite;
-  color: var(--amber);
+  color: var(--phos);
 }
 
 /* ------------------------------------------------------------- chat bar */
@@ -663,7 +711,7 @@ body {
   display: flex;
   gap: 6px;
   padding: 8px 10px;
-  border-top: 1px solid rgba(240, 160, 48, 0.25);
+  border-top: 1px solid rgba(var(--phos-rgb), 0.25);
 }
 
 .chatbar input {
@@ -677,13 +725,13 @@ body {
 }
 
 .chatbar input:focus {
-  border-color: var(--amber);
+  border-color: var(--phos);
 }
 
 .btn {
-  background: rgba(240, 160, 48, 0.15);
-  border: 1px solid rgba(240, 160, 48, 0.5);
-  color: var(--amber);
+  background: rgba(var(--phos-rgb), 0.15);
+  border: 1px solid rgba(var(--phos-rgb), 0.5);
+  color: var(--phos);
   border-radius: 6px;
   padding: 5px 11px;
   font-size: var(--fs-body);
@@ -691,7 +739,7 @@ body {
 }
 
 .btn:hover {
-  background: rgba(240, 160, 48, 0.28);
+  background: rgba(var(--phos-rgb), 0.28);
 }
 
 .btn.voice {
@@ -736,8 +784,8 @@ body {
   align-items: center;
   gap: 10px;
   padding: 5px 12px 6px;
-  border-top: 1px solid rgba(240, 160, 48, 0.3);
-  background: rgba(240, 160, 48, 0.06);
+  border-top: 1px solid rgba(var(--phos-rgb), 0.3);
+  background: rgba(var(--phos-rgb), 0.06);
   font-size: var(--fs-meta);
   color: var(--dim);
   letter-spacing: 0.05em;
@@ -790,16 +838,124 @@ body {
   justify-content: space-between;
   align-items: center;
   padding: 8px 10px 6px 12px;
-  color: var(--amber);
+  color: var(--phos);
   font-size: var(--fs-meta);
   font-weight: 700;
   letter-spacing: 0.12em;
 }
 
+/* The category rail. It sits OUTSIDE the scrolling body on purpose: the whole
+   complaint was having to scroll to reach anything, and a nav that scrolls
+   away with the content solves nothing. */
+.settings-nav {
+  display: flex;
+  gap: 2px;
+  padding: 0 10px 8px;
+  border-bottom: 1px solid rgba(var(--phos-rgb), 0.22);
+}
+
+.settings-cat {
+  flex: 1;
+  font: inherit;
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--dim);
+  background: transparent;
+  border: 0;
+  /* The underline is the selected state, so the resting state keeps the same
+     3px below the text — otherwise the row shifts by three pixels every time
+     the commander changes category. */
+  border-bottom: 2px solid transparent;
+  padding: 5px 2px 4px;
+  cursor: pointer;
+}
+
+.settings-cat:hover {
+  color: var(--text);
+}
+
+.settings-cat.on {
+  color: var(--phos);
+  border-bottom-color: var(--phos);
+}
+
 .settings-body {
   flex: 1;
   overflow-y: auto;
-  padding: 0 12px 12px;
+  padding: 12px 12px 12px;
+}
+
+/* One category at a time. Enumerated rather than clever: CSS cannot compare an
+   ancestor's attribute value to a descendant's, and five lines beat a wrapper
+   component around every section. */
+.settings-body[data-cat] > section {
+  display: none;
+}
+.settings-body[data-cat='ai'] > section[data-cat='ai'],
+.settings-body[data-cat='audio'] > section[data-cat='audio'],
+.settings-body[data-cat='feeds'] > section[data-cat='feeds'],
+.settings-body[data-cat='hud'] > section[data-cat='hud'],
+.settings-body[data-cat='data'] > section[data-cat='data'] {
+  display: block;
+}
+
+/* The last section in a category has nothing under it to be divided from.
+   :last-of-type cannot do this job — it picks the last section in the DOM,
+   not the last one on screen, and a category's sections are not contiguous.
+   So the five that end a category say so, and the rule is exact. */
+.settings-body > section[data-last] {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+/* ---- the phosphor picker ---- */
+.tint-label {
+  margin-top: 14px;
+  font-size: var(--fs-micro);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.tint-row {
+  display: flex;
+  gap: 4px;
+  margin-top: 5px;
+}
+
+.tint {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  font: inherit;
+  font-size: var(--fs-meta);
+  color: var(--dim);
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 4px;
+  padding: 4px 2px;
+  cursor: pointer;
+}
+
+.tint i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.tint:hover {
+  color: var(--text);
+}
+
+.tint.on {
+  color: var(--text);
+  border-color: var(--phos);
+  background: rgba(var(--phos-rgb), 0.12);
 }
 
 .settings-body::-webkit-scrollbar {
@@ -807,7 +963,7 @@ body {
 }
 
 .settings-body::-webkit-scrollbar-thumb {
-  background: rgba(240, 160, 48, 0.3);
+  background: rgba(var(--phos-rgb), 0.3);
   border-radius: 4px;
 }
 
@@ -817,10 +973,14 @@ body {
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
+/* Section headings are furniture, not readout. They were cyan, which spent a
+   signal colour — the one that means "destination" everywhere else on this
+   HUD — on a label. On the phosphor they read as part of the instrument, and
+   cyan goes back to meaning something. */
 .settings h3 {
   font-size: var(--fs-meta);
   letter-spacing: 0.1em;
-  color: var(--cyan);
+  color: var(--phos);
   text-transform: uppercase;
   margin-bottom: 8px;
 }
@@ -857,7 +1017,7 @@ body {
 .settings input[type='range'] {
   width: 100%;
   margin-top: 4px;
-  accent-color: var(--amber);
+  accent-color: var(--phos);
 }
 
 .settings select option {
@@ -891,6 +1051,34 @@ body {
 
 .voice-catalog {
   margin: 6px 0 8px;
+}
+
+/* The shelf, folded. The marker is the native disclosure triangle rather than
+   a drawn chevron — it already rotates, it already announces itself to a
+   screen reader, and it is one of the few native controls that needs no help. */
+.voice-catalog > summary {
+  font-size: var(--fs-body);
+  color: var(--text);
+  cursor: pointer;
+  padding: 3px 0;
+  /* Inside, not outside: the drawer's own left padding is the panel edge, and
+     an outside marker gets clipped against it — a half-triangle bleeding off
+     the window. */
+  list-style-position: inside;
+}
+
+.voice-catalog > summary::marker {
+  color: var(--phos);
+}
+
+.voice-catalog > summary span {
+  color: var(--dim);
+  font-size: var(--fs-meta);
+  margin-left: 6px;
+}
+
+.voice-catalog > summary:hover {
+  color: var(--phos);
 }
 
 .voice-row {
@@ -1015,7 +1203,7 @@ body {
 }
 
 .sp-title {
-  color: var(--amber);
+  color: var(--phos);
   font-size: var(--fs-lead);
   padding-bottom: 6px;
 }
@@ -1047,7 +1235,7 @@ body {
 .sp-bar i {
   display: block;
   height: 100%;
-  background: var(--amber);
+  background: var(--phos);
 }
 
 .sp-gauge.warn .sp-bar i {
@@ -1082,7 +1270,7 @@ body {
   cursor: pointer;
 }
 .radio-mini:hover .radio-vis.mini {
-  border-color: var(--amber);
+  border-color: var(--phos);
 }
 .radio-mini-line {
   display: flex;
@@ -1126,7 +1314,7 @@ body {
 .radio-controls input[type='range'] {
   flex: 1;
   min-width: 0;
-  accent-color: var(--amber);
+  accent-color: var(--phos);
 }
 .radio-vol {
   flex: none;
@@ -1362,8 +1550,8 @@ body {
 }
 
 .wod-btns button:hover {
-  border-color: var(--amber);
-  color: var(--amber);
+  border-color: var(--phos);
+  color: var(--phos);
 }
 
 .wod-hint {
@@ -1711,7 +1899,7 @@ body {
    commodities and the panel is 420 px wide, so every row is one line until
    the commander opens it. Amber, because the build is the standing job. */
 .arc-card {
-  border-color: var(--amber);
+  border-color: var(--phos);
   overflow-y: auto;
 }
 
@@ -1764,7 +1952,7 @@ body {
 .arc-progress-bar span {
   display: block;
   height: 100%;
-  background: var(--amber);
+  background: var(--phos);
 }
 
 .arc-progress-line {
@@ -2191,7 +2379,7 @@ body {
 }
 
 .orr-body:focus-visible {
-  outline: 2px solid var(--amber);
+  outline: 2px solid var(--phos);
   outline-offset: 2px;
 }
 
@@ -2510,7 +2698,7 @@ body {
   background: var(--dim);
   opacity: 0.35;
 }
-.comms-bars i.on { background: var(--amber); opacity: 1; }
+.comms-bars i.on { background: var(--phos); opacity: 1; }
 
 .comms-empty,
 .comms-log {

@@ -13,12 +13,56 @@ import { RADIO_PROFILE_NAMES } from '../engine/chatter/profiles.ts';
 /** Screen glances are GDI-based; on Linux the section shows as unavailable. */
 const IS_LINUX = typeof navigator !== 'undefined' && navigator.userAgent.includes('Linux');
 
+/**
+ * The drawer used to be one column of fifteen sections — about two thousand
+ * pixels of scroll between the AI engine at the top and the shortcuts at the
+ * bottom. Turning the radio down meant scrolling past model downloads,
+ * long-term memory and trade thresholds to get there.
+ *
+ * Five groups, named for what a commander is trying to CHANGE rather than for
+ * which subsystem owns the code. Words, not icons: at 420 px five emoji would
+ * be a guessing game, and these five words are short enough to sit on one row
+ * at every font scale the HUD offers.
+ */
+const CATEGORIES = [
+  { id: 'ai', label: 'AI', hint: 'The engine, the operator, its memory' },
+  { id: 'audio', label: 'Audio', hint: 'Voice, radio processing, music, comms' },
+  { id: 'feeds', label: 'Feeds', hint: 'Local wire, community data, trade leads' },
+  { id: 'hud', label: 'HUD', hint: 'Size, colour, behaviour, shortcuts' },
+  { id: 'data', label: 'Data', hint: 'Journal directory and manual import' },
+] as const;
+
+type Category = (typeof CATEGORIES)[number]['id'];
+
+/**
+ * Where the drawer was left, for as long as the app is running.
+ *
+ * Module-level rather than component state, because the panel unmounts every
+ * time it closes — and someone nudging the radio between jumps should not be
+ * put back on the AI engine each time. Deliberately NOT persisted to disk: a
+ * fresh launch starting anywhere but the top would be its own small mystery.
+ */
+let lastCategory: Category = 'ai';
+
+/** The phosphors, in the order the picker offers them. */
+const TINTS = [
+  { id: 'amber', label: 'Amber', swatch: '#f0a030' },
+  { id: 'green', label: 'Green', swatch: '#5cbf82' },
+  { id: 'red', label: 'Red', swatch: '#cf6257' },
+  { id: 'grey', label: 'Grey', swatch: '#9aabc2' },
+] as const;
+
 export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
   const s = snap.settings;
   const [voicesTick, setVoicesTick] = useState(0);
   const [importText, setImportText] = useState('');
   const [forgetArmed, setForgetArmed] = useState(false);
   const [campaignArmed, setCampaignArmed] = useState(false);
+  const [cat, setCatState] = useState<Category>(lastCategory);
+  const setCat = (next: Category) => {
+    lastCategory = next;
+    setCatState(next);
+  };
 
   useEffect(() => {
     // System voices load asynchronously (T4.1).
@@ -42,8 +86,22 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
           ✕
         </button>
       </div>
-      <div className="settings-body">
-        <section>
+      <div className="settings-nav" role="tablist" aria-label="Settings categories">
+        {CATEGORIES.map((c) => (
+          <button
+            key={c.id}
+            role="tab"
+            aria-selected={cat === c.id}
+            className={cat === c.id ? 'settings-cat on' : 'settings-cat'}
+            title={c.hint}
+            onClick={() => setCat(c.id)}
+          >
+            {c.label}
+          </button>
+        ))}
+      </div>
+      <div className="settings-body" data-cat={cat}>
+        <section data-cat="ai">
           <h3>AI engine</h3>
               {snap.engineProgress ? (
                 <>
@@ -141,7 +199,7 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
               )}
         </section>
 
-        <section>
+        <section data-cat="ai">
           <h3>AI operator</h3>
           {snap.specs && (
             <div className="hint">
@@ -204,7 +262,7 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
           </div>
         </section>
 
-        <section>
+        <section data-cat="audio">
           <h3>Voice</h3>
           <label className="check">
             <input
@@ -250,8 +308,17 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
                 </select>
               </label>
               {PIPER_VOICE_CATALOG.filter((v) => !snap.piperVoices.includes(v.name)).length > 0 && (
-                <div className="voice-catalog">
-                  <div className="hint">More offline voices (one-time download, then fully local):</div>
+                /* Seventeen voices are a shelf you visit once and a wall you
+                   scroll past forever. Folded shut by default, and the count
+                   is on the summary so it still advertises itself. */
+                <details className="voice-catalog">
+                  <summary>
+                    More offline voices
+                    <span className="mono">
+                      {PIPER_VOICE_CATALOG.filter((v) => !snap.piperVoices.includes(v.name)).length}
+                    </span>
+                  </summary>
+                  <div className="hint">One-time download, then fully local.</div>
                   {PIPER_VOICE_CATALOG.filter((v) => !snap.piperVoices.includes(v.name)).map((v) => (
                     <div key={v.name} className="voice-row">
                       <span className="voice-label">{v.label}</span>
@@ -265,7 +332,7 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
                       </button>
                     </div>
                   ))}
-                </div>
+                </details>
               )}
             </>
           )}
@@ -362,7 +429,7 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
           </button>
         </section>
 
-        <section>
+        <section data-cat="audio">
           <h3>Radio processing</h3>
           <label className="check">
             <input
@@ -398,7 +465,7 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
           </label>
         </section>
 
-        <section>
+        <section data-cat="audio">
           <h3>
             Music{' '}
             <span style={{ color: 'var(--dim)', fontSize: '0.8em' }}>
@@ -475,7 +542,7 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
           </div>
         </section>
 
-        <section>
+        <section data-cat="audio" data-last>
           <h3>Comms traffic</h3>
           <label className="check">
             <input
@@ -546,7 +613,7 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
           </label>
         </section>
 
-        <section>
+        <section data-cat="feeds">
           <h3>Local wire</h3>
           <label className="check">
             <input
@@ -651,7 +718,7 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
           </p>
         </section>
 
-        <section>
+        <section data-cat="ai">
           <h3>Operator chatter</h3>
           <label className="check">
             <input
@@ -703,7 +770,7 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
           </button>
         </section>
 
-        <section>
+        <section data-cat="ai" data-last>
           <h3>Operator memory &amp; sight</h3>
           <label className="check">
             <input
@@ -885,7 +952,7 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
           )}
         </section>
 
-        <section>
+        <section data-cat="feeds">
           <h3>Community data <span style={{ color: 'var(--dim)', fontSize: '0.8em' }}>(optional, off by default)</span></h3>
           <label className="check">
             <input
@@ -930,7 +997,7 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
           </div>
         </section>
 
-        <section>
+        <section data-cat="feeds" data-last>
           <h3>Trade leads</h3>
           <label className="check">
             <input
@@ -1019,7 +1086,7 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
           )}
         </section>
 
-        <section>
+        <section data-cat="hud">
           <h3>HUD</h3>
           <div className="row">
             <label>
@@ -1062,9 +1129,31 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
             />
             Click-through (HUD ignores mouse — Ctrl+Shift+T to toggle back!)
           </label>
+
+          <div className="tint-label">Instrument colour</div>
+          <div className="tint-row" role="radiogroup" aria-label="Instrument colour">
+            {TINTS.map((t) => (
+              <button
+                key={t.id}
+                role="radio"
+                aria-checked={s.hud.tint === t.id}
+                className={s.hud.tint === t.id ? 'tint on' : 'tint'}
+                onClick={() => set({ ...s, hud: { ...s.hud, tint: t.id } })}
+              >
+                <i style={{ background: t.swatch }} />
+                {t.label}
+              </button>
+            ))}
+          </div>
+          <div className="hint">
+            Repaints the instrument — the frame, the title, gauges and edges. The four signal
+            colours stay put, because on this panel a colour is a fact: amber is money and the
+            standing job, cyan a destination, green delivered, red expiry. Red is the night
+            setting; it is the one that leaves your eyes adjusted to the dark.
+          </div>
         </section>
 
-        <section>
+        <section data-cat="data">
           <h3>Journal</h3>
           <label>
             Directory (blank = auto-detect Saved Games)
@@ -1116,7 +1205,7 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
           </button>
         </section>
 
-        <section>
+        <section data-cat="data" data-last>
           <h3>Manual import</h3>
           <textarea
             rows={4}
@@ -1135,7 +1224,7 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
           </button>
         </section>
 
-        <section>
+        <section data-cat="hud" data-last>
           <h3>Shortcuts (global)</h3>
           <div className="hint">
             Ctrl+Shift+M show/hide · Ctrl+Shift+H ask AI · Ctrl+Shift+V voice ·{' '}

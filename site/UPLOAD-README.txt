@@ -7,9 +7,9 @@ WHAT THIS IS
   index.html                              the page
   img/                                    screenshots + icons
   fonts/                                  the two webfonts, self-hosted
-  ED-Mission-Operator-1.8.0-setup.exe       the Windows installer (~132 MB)
-  ED-Mission-Operator-1.8.0-amd64.deb       Linux beta, Ubuntu/Debian (~147 MB)
-  ED-Mission-Operator-1.8.0-x86_64.AppImage Linux beta, any distro (~231 MB)
+  ED-Mission-Operator-1.9.0-setup.exe       the Windows installer (~132 MB)
+  ED-Mission-Operator-1.9.0-amd64.deb       Linux beta, Ubuntu/Debian (~147 MB)
+  ED-Mission-Operator-1.9.0-x86_64.AppImage Linux beta, any distro (~231 MB)
 
 HOW TO PUT IT ON YOUR WEB HOTEL
   1. Open your web hotel's File Manager (or connect with FTP, e.g. FileZilla).
@@ -22,7 +22,43 @@ NOTES
   * The installer is ~132 MB. Browser-based file managers sometimes limit
     uploads (often to 100 MB) — if the .exe upload fails, use FTP instead,
     or upload it to a file service and change the download link in
-    index.html (search for "ED-Mission-Operator-1.8.0-setup.exe").
+    index.html (search for "ED-Mission-Operator-1.9.0-setup.exe").
+  * 1.9.0 tidies SETTINGS and lets you pick the instrument's colour.
+
+    FIVE CATEGORIES INSTEAD OF ONE LONG SCROLL. The drawer had grown to
+    fifteen sections and about 3,700 pixels of column: turning the radio down
+    meant scrolling past model downloads, long-term memory and trade
+    thresholds to reach it. It is now AI · Audio · Feeds · HUD · Data, named
+    for what you are trying to change rather than for which part of the code
+    owns it. The tallest category is a third of the old height — 71% less
+    scroll — and most of them fit one screen. The rail sits above the
+    scrolling area, because a menu that scrolls away with the content would
+    not have fixed anything.
+
+    Two things that only showed up once it was driven in a browser: closing
+    and reopening the drawer used to dump you back at the top, so it now
+    remembers where you were for as long as the app is running; and the
+    seventeen-row offline voice catalogue — a shelf you visit once and scroll
+    past forever — is folded behind a disclosure with the count on it.
+
+    INSTRUMENT COLOUR: AMBER, GREEN, RED OR GREY. It repaints the INSTRUMENT —
+    the window edge, the header, the title, section headings, gauges, sliders,
+    focus rings, the footer rule. It deliberately does NOT repaint the four
+    signal colours, because on this HUD a colour is a fact: amber is money and
+    the standing job, cyan a destination, green delivered, red expiry. A theme
+    that recoloured those would be a theme that made the panel lie.
+
+    Each alternative sits at lower chroma than the signal hue it stands
+    nearest, which is what stops a green instrument swallowing a green
+    "delivered" — dim furniture, bright readout, the arrangement every real
+    cockpit already uses. Red is the night setting, and not as a gimmick: red
+    is the one instrument colour that leaves your dark adaptation intact.
+
+    Section headings used to be cyan, which spent a signal colour on a label.
+    They follow the instrument now, and cyan means something again.
+
+    New screenshot: img/hud-settings.png.
+
   * 1.8.0 adds the RADIO tab.
 
     THE DIAL, OUT OF THE SETTINGS DRAWER. Every station is one click away on
@@ -502,7 +538,7 @@ NOTES
     ranges and payout estimates; and four opt-in community lookups the operator
     calls only when asked (Spansh routes, galaxy-wide markets via Ardent
     Insight, the EDAstro exploration catalogue, and the Galnet news wire).
-  * All three installers are 1.8.0.
+  * All three installers are 1.9.0.
 
     Windows:  npm run tauri build
               -> src-tauri/target/release/bundle/nsis/

@@ -69,6 +69,19 @@ export interface AppSettings {
      * blank panel.
      */
     autoView: boolean;
+    /**
+     * The phosphor — what colour the INSTRUMENT is.
+     *
+     * It re-tints the furniture only: the title, panel edges, gauge fills,
+     * focus rings, sliders. The four signal colours are deliberately left
+     * alone, because on this HUD a hue is a fact: amber is the standing job,
+     * cyan a destination, green delivered, red expiry. A theme that recoloured
+     * those would be a theme that made the panel lie.
+     *
+     * Each phosphor sits at lower chroma than any signal it might sit beside,
+     * which is how real instruments read: dim furniture, bright readout.
+     */
+    tint: 'amber' | 'green' | 'red' | 'grey';
   };
   journal: {
     directory: string | null; // null = auto-detect default Saved Games path
@@ -219,6 +232,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     fontScale: 1.0,
     clickThrough: false,
     autoView: true,
+    tint: 'amber',
   },
   journal: {
     directory: null,

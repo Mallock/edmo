@@ -171,7 +171,7 @@ export function App() {
   if (snap.collapsed) {
     const next = snap.missions[0] ?? null;
     return (
-      <div className="hud collapsed" style={rootStyle}>
+      <div className="hud collapsed" style={rootStyle} data-tint={s.hud.tint}>
         <div className="bar" data-tauri-drag-region>
           <span className="bar-dot" data-tauri-drag-region style={{ background: next ? categoryColor(next.category) : '#808090' }} />
           <span className="bar-text" data-tauri-drag-region>
@@ -197,7 +197,7 @@ export function App() {
   };
 
   return (
-    <div className="hud" style={rootStyle}>
+    <div className="hud" style={rootStyle} data-tint={s.hud.tint}>
       <header className="head" data-tauri-drag-region>
         <span className="head-title" data-tauri-drag-region>
           ⬢ MISSION OPERATOR
