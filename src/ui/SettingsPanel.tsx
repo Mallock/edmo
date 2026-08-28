@@ -1,6 +1,7 @@
 /** Settings drawer — the bundled AI engine, voice, HUD, journal, manual import (T5.6). */
 import { useEffect, useState } from 'react';
-import type { AppSettings } from './settings.ts';
+import type { AppSettings, TtsEngine } from './settings.ts';
+import { edgeVoices as listEdgeVoices, type EdgeVoice } from './bridge.ts';
 import { listSystemVoices } from './tts.ts';
 import type { AppSnapshot } from './store.ts';
 import { core } from './store.ts';
@@ -52,6 +53,26 @@ const TINTS = [
   { id: 'grey', label: 'Grey', swatch: '#9aabc2' },
 ] as const;
 
+/** Shown when the live catalogue cannot be fetched — the voices this app has
+ *  actually been tested with, so the picker is never empty. */
+const FALLBACK_EDGE_VOICES: EdgeVoice[] = [
+  { ShortName: 'en-GB-SoniaNeural', Locale: 'en-GB', Gender: 'Female' },
+  { ShortName: 'en-GB-RyanNeural', Locale: 'en-GB', Gender: 'Male' },
+  { ShortName: 'en-GB-LibbyNeural', Locale: 'en-GB', Gender: 'Female' },
+  { ShortName: 'en-GB-ThomasNeural', Locale: 'en-GB', Gender: 'Male' },
+  { ShortName: 'en-US-AriaNeural', Locale: 'en-US', Gender: 'Female' },
+  { ShortName: 'en-US-EricNeural', Locale: 'en-US', Gender: 'Male' },
+  { ShortName: 'en-US-MichelleNeural', Locale: 'en-US', Gender: 'Female' },
+  { ShortName: 'en-US-RogerNeural', Locale: 'en-US', Gender: 'Male' },
+];
+
+/** "Sonia — en-GB, female · friendly, positive" */
+function edgeVoiceLabel(v: EdgeVoice): string {
+  const short = v.ShortName.replace(/^en-[A-Z]{2}-/, '').replace(/Neural$/, '');
+  const traits = v.VoiceTag?.VoicePersonalities?.slice(0, 2).join(', ');
+  return `${short} — ${v.Locale}, ${(v.Gender ?? '').toLowerCase()}${traits ? ` · ${traits.toLowerCase()}` : ''}`;
+}
+
 export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
   const s = snap.settings;
   const [voicesTick, setVoicesTick] = useState(0);
@@ -59,6 +80,14 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
   const [forgetArmed, setForgetArmed] = useState(false);
   const [campaignArmed, setCampaignArmed] = useState(false);
   const [cat, setCatState] = useState<Category>(lastCategory);
+  // The live English catalogue, fetched once when the drawer opens on Audio.
+  // Microsoft adds and retires voices; a hard-coded list would eventually
+  // offer something that no longer answers.
+  const [edgeVoices, setEdgeVoices] = useState<EdgeVoice[]>([]);
+  useEffect(() => {
+    if (s.voice.engine !== 'edge' || edgeVoices.length) return;
+    void listEdgeVoices().then(setEdgeVoices);
+  }, [s.voice.engine, edgeVoices.length]);
   const setCat = (next: Category) => {
     lastCategory = next;
     setCatState(next);
@@ -277,15 +306,55 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
             <select
               value={s.voice.engine}
               onChange={(e) =>
-                set({ ...s, voice: { ...s.voice, engine: e.target.value as 'piper' | 'system' } })
+                set({ ...s, voice: { ...s.voice, engine: e.target.value as TtsEngine } })
               }
             >
               <option value="piper">
                 Piper — bundled local neural voice (Alba, offline{snap.piperOk ? '' : ' — NOT FOUND'})
               </option>
               <option value="system">Windows system voices</option>
+              <option value="edge">Online neural voices — best quality, needs internet</option>
             </select>
           </label>
+          {s.voice.engine === 'edge' && (
+            <>
+              <label>
+                Online voice
+                <select
+                  value={s.voice.edgeVoice ?? 'en-GB-SoniaNeural'}
+                  onChange={(e) => set({ ...s, voice: { ...s.voice, edgeVoice: e.target.value } })}
+                >
+                  {(edgeVoices.length ? edgeVoices : FALLBACK_EDGE_VOICES).map((v) => (
+                    <option key={v.ShortName} value={v.ShortName}>
+                      {edgeVoiceLabel(v)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Speed {s.voice.edgeRate > 0 ? '+' : ''}
+                {s.voice.edgeRate}%
+                <input
+                  type="range"
+                  min={-25}
+                  max={60}
+                  step={5}
+                  value={s.voice.edgeRate}
+                  onChange={(e) =>
+                    set({ ...s, voice: { ...s.voice, edgeRate: Number(e.target.value) } })
+                  }
+                />
+              </label>
+              <div className="hint warn-hint">
+                These voices are synthesized by <b>Microsoft</b>, not on this machine. Everything
+                the operator says — including system names, station names and what you ask it — is
+                sent to their servers as text. Every other voice in this app runs locally. Each
+                line is cached on disk, so a repeat costs nothing and is spoken even offline, and
+                if the service is unreachable the bundled Piper voice takes over rather than going
+                silent.
+              </div>
+            </>
+          )}
           {s.voice.engine === 'piper' && (
             <>
               <label>
@@ -537,8 +606,13 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
             <a href="https://nightride.fm" target="_blank" rel="noopener">
               Nightride FM
             </a>
-            , also listener-supported, and Galaxy News Radio from Fallout.FM. This is the app's only
-            continuous internet connection; everything else stays on this machine.
+            , also listener-supported. Rock and eclectic come from{' '}
+            <a href="https://radioparadise.com" target="_blank" rel="noopener">
+              Radio Paradise
+            </a>
+            , listener-supported too; country, classic rock and hip hop from 181.FM; Galaxy News
+            Radio from Fallout.FM. This is the app's only continuous internet connection;
+            everything else stays on this machine.
           </div>
         </section>
 

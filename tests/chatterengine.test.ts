@@ -14,7 +14,7 @@ import { parseGrammar } from '../src/engine/chatter/grammar.ts';
 import { BUNDLED_GRAMMAR } from '../src/engine/chatter/bundled-grammar.ts';
 import { textureBrief, verifyAgainstBrief, type Brief } from '../src/engine/chatter/brief.ts';
 import { sceneText, type Scene } from '../src/engine/chatter/scenes.ts';
-import type { ChannelId } from '../src/engine/chatter/types.ts';
+import { CHANNEL_IDS, type ChannelId } from '../src/engine/chatter/types.ts';
 
 const GRAMMAR = parseGrammar(BUNDLED_GRAMMAR, 'bundled');
 const VOICES = ['en_GB-alba-medium', 'en_GB-northern_english_male-medium'];
@@ -377,8 +377,10 @@ test('exhausted material yields silence rather than repetition', () => {
     input({
       context: {
         ...input().context,
+        // Every channel, TOWER included — muting six of seven and leaving one
+        // open would prove nothing about silence.
         mutedChannels: new Set<ChannelId>([
-          'STATION', 'LOCAL', 'CREW', 'DEEP', 'EMERGENCY', 'CARRIER', 'CONCOURSE',
+          'TOWER', 'STATION', 'LOCAL', 'CREW', 'DEEP', 'EMERGENCY', 'CARRIER', 'CONCOURSE',
         ]),
       },
     }),
@@ -393,7 +395,9 @@ test('exhausted material yields silence rather than repetition', () => {
 
 test('every tick reports the state of every channel for the panel', () => {
   const r = engine().tick(input());
-  assert.equal(r.channels.length, 7);
+  // Counted from the source of truth rather than pinned to a number, so
+  // adding a channel cannot silently drop it from the panel.
+  assert.equal(r.channels.length, CHANNEL_IDS.length);
   for (const c of r.channels) {
     if (!c.open) assert.ok(c.reason, `${c.id} closed with no reason`);
   }
@@ -920,4 +924,115 @@ test('a channel the guard keeps refusing eventually speaks anyway', () => {
     if (r.transmission) spoke = true;
   }
   assert.equal(spoke, true, 'the channel never recovered from the guard');
+});
+
+// ---------------------------------------------------------------------------
+// Arcs — the threads that make consecutive scenes belong to one another
+// ---------------------------------------------------------------------------
+
+test('a transmitted setup opens a thread, which is what nothing ever did', () => {
+  // THE GAP this closes. The arc machinery was complete and completely inert:
+  // `upsertArc` had one production caller, `noteArcBeat`, and that only updates
+  // an arc already in `openArcs()`. An Arc was constructed nowhere outside the
+  // cast test. So openArcs() was permanently empty, payoffDue() always returned
+  // nothing, and every scene was written with no thread to pick up — which is
+  // exactly what the air sounded like: twenty unrelated vignettes.
+  const e = engine();
+  const now = new Date(T).toISOString();
+  e.cast.remember({
+    name: 'Yusuf Fiore',
+    persona: { voice: 'v', timbre: 0, quirk: null } as never,
+    homeSystem: 'Ratraii',
+    channel: 'LOCAL',
+    role: 'hauler',
+    firstAt: now,
+    lastAt: now,
+    arcs: [],
+  });
+  assert.equal(e.cast.openArcs().length, 0, 'nothing is carried to begin with');
+
+  const id = e.openArc({
+    system: 'Ratraii',
+    speaker: 'Yusuf Fiore',
+    subjectKey: 'steel@Anders City',
+    subjectKind: 'price',
+    func: 'establish',
+    summary: 'the steel quota',
+    atIso: now,
+  });
+  assert.ok(id, 'a setup that went out opens a thread');
+  assert.equal(e.cast.openArcs().length, 1);
+});
+
+test('only a setup opens a thread — atmosphere and payoffs must not', () => {
+  // `texture` is scenery and starts nothing. `reverse`/`aftermath` are the
+  // beats that CLOSE an arc (PAYOFF in cast.ts), so opening on one would mean
+  // a thread finished the moment it began.
+  const now = new Date(T).toISOString();
+  for (const func of ['texture', 'reverse', 'aftermath'] as const) {
+    const e = engine();
+    e.cast.remember({
+      name: 'Yusuf Fiore',
+      persona: { voice: 'v', timbre: 0, quirk: null } as never,
+      homeSystem: 'Ratraii',
+      channel: 'LOCAL',
+      role: 'hauler',
+      firstAt: now,
+      lastAt: now,
+      arcs: [],
+    });
+    const id = e.openArc({
+      system: 'Ratraii',
+      speaker: 'Yusuf Fiore',
+      subjectKey: 'steel@Anders City',
+      subjectKind: 'price',
+      func,
+      summary: 's',
+      atIso: now,
+    });
+    assert.equal(id, null, `${func} must not open a thread`);
+    assert.equal(e.cast.openArcs().length, 0);
+  }
+});
+
+test('one subject is carried once, and its payoff comes back to its own channel', () => {
+  const e = engine();
+  const now = new Date(T).toISOString();
+  for (const name of ['Yusuf Fiore', 'Dmitri Sarkis']) {
+    e.cast.remember({
+      name,
+      persona: { voice: 'v', timbre: 0, quirk: null } as never,
+      homeSystem: 'Ratraii',
+      channel: 'LOCAL',
+      role: 'hauler',
+      firstAt: now,
+      lastAt: now,
+      arcs: [],
+    });
+  }
+  const first = e.openArc({
+    system: 'Ratraii', speaker: 'Yusuf Fiore', subjectKey: 'steel@Anders City',
+    subjectKind: 'price', func: 'establish', summary: 'the steel quota', atIso: now,
+  });
+  // The same subject picked up by somebody else is a continuation, not a
+  // second story running alongside the first.
+  const twin = e.openArc({
+    system: 'Ratraii', speaker: 'Dmitri Sarkis', subjectKey: 'steel@Anders City',
+    subjectKind: 'price', func: 'complicate', summary: 'still the steel', atIso: now,
+  });
+  assert.equal(twin, null, 'a subject already being carried is not doubled');
+  assert.equal(e.cast.openArcs().length, 1);
+
+  // And the whole point: the thread now asks for its own next beat, on the
+  // channel and in the role that owns it. This list was empty for ever.
+  // Two complications, because that is the point at which nextBeatFor stops
+  // flipping a coin and insists on the turn — the test is about the routing,
+  // not about which side the coin lands on.
+  e.noteArcBeat('Ratraii', first!, 'complicate', 'the quota slipped', now);
+  e.noteArcBeat('Ratraii', first!, 'complicate', 'and slipped again', now);
+  const due = e.payoffDue('BUILDING');
+  assert.equal(due.length, 1, 'an open thread eventually asks to be paid off');
+  assert.equal(due[0].arcId, first);
+  assert.equal(due[0].channel, 'LOCAL');
+  assert.equal(due[0].speaker, 'hauler');
 });

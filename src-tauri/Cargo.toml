@@ -1,6 +1,6 @@
 [package]
 name = "ed-mission-operator"
-version = "1.9.0"
+version = "1.9.3"
 description = "Elite Dangerous Mission Operator — always-on-top HUD with journal ingestion, LM Studio AI operator, and local Piper TTS"
 authors = ["Mika Leiman"]
 edition = "2021"
@@ -20,8 +20,14 @@ futures-util = "0.3"
 tokio = { version = "1", features = ["time", "net", "io-util"] }
 cpal = "0.15"
 hound = "3"
-# Integrity checking for the large bundled-engine downloads (runtime + model).
+# Integrity checking for the large bundled-engine downloads (runtime + model),
+# and the Sec-MS-GEC handshake token for the online neural voices.
 sha2 = "0.10"
+# The online voice service refuses plain HTTP and refuses browsers, so the
+# WebSocket has to come from here. native-tls rather than rustls: reqwest
+# already links it, so this adds no second TLS stack.
+native-tls = "0.2"
+tokio-native-tls = "0.3"
 
 [target."cfg(windows)".dependencies]
 # Screen glances (GDI capture) and the zip-packaged whisper build are
@@ -49,3 +55,7 @@ windows-sys = { version = "0.59", features = [
 codegen-units = 1
 lto = true
 strip = true
+
+[dev-dependencies]
+# The live edge-tts test drives its own runtime.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "io-util"] }

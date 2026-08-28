@@ -1326,32 +1326,159 @@ body {
   font-size: var(--fs-meta);
   padding-bottom: 6px;
 }
-/* The dial: every station one click away, which is the whole point of the
-   tab — nobody should open Settings to change the record. */
-.radio-dial {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  padding-bottom: 6px;
+/* ---- the tuning dial ----
+   A slide-rule scale: the names travel, the needle does not. Thirty-one
+   stations cannot be chips on a 420 px panel without turning into six rows of
+   confetti, and this is how the object being imitated actually works. Grab it
+   anywhere and drag, or click a name you can already see. */
+.dial {
+  position: relative;
+  /* Tall enough that the names, the pointer head and the graduations each get
+     their own band. Crowd them and the needle strikes through the one word
+     that has to stay readable. */
+  height: 60px;
+  margin: 2px 0 4px;
+  overflow: hidden;
+  border-top: 1px solid rgba(var(--phos-rgb), 0.25);
+  border-bottom: 1px solid rgba(var(--phos-rgb), 0.25);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), transparent 60%);
+  cursor: grab;
+  touch-action: pan-y;
+  /* The glass: names fade out toward the edges instead of being guillotined
+     by the panel border, which is what makes it read as a window onto a
+     longer scale rather than as a cropped row. */
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 14%, #000 86%, transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 14%, #000 86%, transparent);
 }
-.radio-station {
-  font: inherit;
+
+.dial:active {
+  cursor: grabbing;
+}
+
+.dial:focus-visible {
+  outline: 2px solid var(--phos);
+  outline-offset: -2px;
+}
+
+.dial-track {
+  display: flex;
+  align-items: flex-start;
+  height: 100%;
+  will-change: transform;
+  transition: transform 260ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* While a finger is on it the scale must track the finger exactly — an eased
+   follow would feel like dragging something through treacle. */
+.dial-track.held {
+  transition: none;
+}
+
+.dial-stn {
+  position: relative;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 5px;
+  color: var(--dim);
+  font-size: var(--fs-meta);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.dial-stn:hover {
+  color: var(--text);
+}
+
+.dial-stn.on {
+  color: var(--phos);
+  font-weight: 600;
+}
+
+.dial-name {
+  padding: 0 6px;
+}
+
+/* The major tick under each station, and a minor one halfway to the next.
+   Stations ARE the graduations here — a printed 98.4 MHz would be the one
+   invented number on a panel that never invents numbers. */
+.dial-tick {
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  height: 14px;
+  background: rgba(var(--phos-rgb), 0.55);
+}
+
+.dial-stn.on .dial-tick {
+  height: 21px;
+  background: var(--phos);
+}
+
+.dial-minor {
+  position: absolute;
+  bottom: 0;
+  left: 100%;
+  width: 1px;
+  height: 7px;
+  background: rgba(122, 138, 160, 0.35);
+}
+
+/* The needle crosses the GRADUATIONS, not the names. Run it the full height
+   and it strikes through whatever station is tuned — which is the one word on
+   the dial that has to stay readable. */
+.dial-needle {
+  position: absolute;
+  top: 31px;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--red);
+  box-shadow: 0 0 6px rgba(224, 48, 48, 0.75);
+  pointer-events: none;
+}
+
+/* The pointer head, drawn with borders the way every hairline cursor on a
+   tuner is: a small solid wedge aimed down the scale. */
+.dial-needle::before {
+  content: '';
+  position: absolute;
+  top: -5px;
+  left: 50%;
+  margin-left: -5px;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 6px solid var(--red);
+}
+
+/* What the tuned station actually is, in words. */
+.radio-blurb {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 2px 0 6px;
   font-size: var(--fs-meta);
   color: var(--dim);
-  background: transparent;
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  padding: 3px 7px;
-  cursor: pointer;
 }
-.radio-station:hover {
-  color: var(--text);
-  border-color: var(--cyan);
+
+.radio-source {
+  margin-left: auto;
+  padding-left: 10px;
+  flex: none;
+  font-size: var(--fs-micro);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.8;
 }
-.radio-station.on {
-  color: var(--ink);
-  background: var(--green);
-  border-color: var(--green);
+
+@media (prefers-reduced-motion: reduce) {
+  .dial-track {
+    transition: none;
+  }
 }
 
 /* The cruise card's rows. The ship panel's .sp-label is a fixed 46px column

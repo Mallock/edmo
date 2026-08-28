@@ -4,7 +4,7 @@
  * fixed (see README).
  */
 
-export type TtsEngine = 'piper' | 'system';
+export type TtsEngine = 'piper' | 'system' | 'edge';
 
 export interface AppSettings {
   lm: {
@@ -52,6 +52,19 @@ export interface AppSettings {
     engine: TtsEngine; // 'piper' = bundled local neural model (default, private)
     piperVoice: string | null; // null = first installed voice
     systemVoice: string | null;
+    /**
+     * Microsoft's online neural voice, when the engine is 'edge'.
+     *
+     * OFF BY DEFAULT AND DELIBERATELY SO. Every line spoken this way is sent
+     * as text to Microsoft — a different bargain from the rest of this app,
+     * which runs its AI, its journal reading and its speech on this machine.
+     * The commander opts in with their eyes open or not at all.
+     */
+    edgeVoice: string | null;
+    /** Speech rate for the online voices, as a percentage. The reference
+     *  implementation runs +20% and it is right: the default is slow for
+     *  radio. */
+    edgeRate: number;
     localVoicesOnly: boolean; // filter cloud voices from the system picker
     rate: number; // 0.5 .. 2.0
     volume: number; // 0 .. 100
@@ -223,6 +236,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
     engine: 'piper',
     piperVoice: null,
     systemVoice: null,
+    edgeVoice: 'en-GB-SoniaNeural',
+    edgeRate: 20,
     localVoicesOnly: true,
     rate: 1.0,
     volume: 80,

@@ -49,6 +49,8 @@ import {
   buildPersonaPool,
   inventName,
   resolvePersona,
+  type Arc,
+  type ArcSubject,
   type CastMember,
   type Persona,
 } from './cast.ts';
@@ -324,6 +326,13 @@ export class ChatterEngine {
       lastReject = ready;
     }
 
+    // The tower's grace period: while the writer still has time to produce a
+    // real transmission, do not spend the moment on a template. Once the grace
+    // is over the template goes out — a plain clearance beats a missed one.
+    if (channel === 'TOWER' && input.context.towerWrittenOnly && !sawReady) {
+      return { scene: null, exhausted: false };
+    }
+
     // Starvation breaker.
     //
     // The guard only learns from scenes that were actually TRANSMITTED —
@@ -548,6 +557,64 @@ export class ChatterEngine {
       });
     }
     return out;
+  }
+
+  /**
+   * Start a thread, because until this existed nothing ever did.
+   *
+   * The arc machinery below and in cast.ts was complete and completely inert:
+   * `upsertArc` had exactly one caller, `noteArcBeat`, and that only updates an
+   * arc already in `openArcs()`. The sole place an Arc was ever constructed was
+   * the cast test. So `openArcs()` was permanently empty, `payoffDue()` always
+   * returned nothing, `noteArcBeat` looped over nothing, and every `arcId`
+   * threaded through the store was inert. The air had no memory at all — every
+   * scene a fresh vignette, which is exactly what it sounded like.
+   *
+   * WHAT OPENS A THREAD. Only a scene that has actually just gone out, and only
+   * on a function that leaves something hanging: `establish` introduces and
+   * leaves it unresolved, `complicate` makes it worse and is told not to
+   * resolve it. `texture` is atmosphere and must not start anything, and
+   * `reverse`/`aftermath` are the payoffs that CLOSE one (see PAYOFF in
+   * cast.ts) — opening on those would mean a thread that is finished the moment
+   * it begins.
+   *
+   * WHO OWNS IT is the speaker, because that is what `payoffDue` reads to route
+   * the payoff back to the right channel and role. One arc per subject: a
+   * subject already carried by somebody is continued, never doubled.
+   *
+   * Everything that keeps this from becoming a soap opera already exists —
+   * `upsertArc` caps a member at three open threads, `dropStaleArcs` abandons a
+   * subject that goes quiet, and `PAYOFF` closes an arc when its reversal is
+   * finally told.
+   */
+  openArc(input: {
+    system: string;
+    speaker: string;
+    subjectKey: string;
+    subjectKind: ArcSubject;
+    func: DramaticFunction;
+    summary: string;
+    atIso: string;
+  }): string | null {
+    if (input.func !== 'establish' && input.func !== 'complicate') return null;
+    if (!input.subjectKey || !input.speaker) return null;
+    // Already being carried — by this speaker or any other.
+    for (const { arc } of this.cast.openArcs()) {
+      if (arc.subjectKey === input.subjectKey) return null;
+    }
+    const arc: Arc = {
+      id: `arc:${input.subjectKey}:${Date.parse(input.atIso) || Date.now()}`,
+      subjectKind: input.subjectKind,
+      subjectKey: input.subjectKey,
+      beats: [{ at: input.atIso, func: input.func, summary: input.summary }],
+      state: 'open',
+      lastSeenAt: input.atIso,
+    };
+    this.cast.upsertArc(input.system, input.speaker, arc);
+    // upsertArc is a no-op for a name the book does not know, so report what
+    // actually happened rather than what was asked for.
+    const stored = this.cast.openArcs().some(({ arc: a }) => a.id === arc.id);
+    return stored ? arc.id : null;
   }
 
   /** Record a beat against an arc after a scene carrying it was transmitted. */

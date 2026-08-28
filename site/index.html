@@ -256,7 +256,7 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
 <div class="strip">
   <div class="wrap">
     <span><b>ED MISSION OPERATOR</b></span>
-    <span>v1.9.0 · Windows 10/11 · Linux beta</span>
+    <span>v1.9.3 · Windows 10/11 · Linux beta</span>
     <span><span class="dot"></span>100% local</span>
     <nav>
       <a href="#features">Features</a>
@@ -284,15 +284,15 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
         it installs itself.
       </p>
       <div class="cta-row">
-        <a class="dl" href="ED-Mission-Operator-1.9.0-setup.exe" download>
+        <a class="dl" href="ED-Mission-Operator-1.9.3-setup.exe" download>
           ⬇ DOWNLOAD FOR WINDOWS
-          <small>ED-Mission-Operator-1.9.0-setup.exe · 132 MB · no admin needed</small>
+          <small>ED-Mission-Operator-1.9.3-setup.exe · 132 MB · no admin needed</small>
         </a>
         <p class="cta-note">Free hobby project. Two offline voices included. AI features optional.</p>
         <p class="cta-note">🐧 <b>Linux beta:</b>
-          <a href="ED-Mission-Operator-1.9.0-amd64.deb" download class="a-amber">.deb (147 MB)</a>
+          <a href="ED-Mission-Operator-1.9.3-amd64.deb" download class="a-amber">.deb (147 MB)</a>
           ·
-          <a href="ED-Mission-Operator-1.9.0-x86_64.AppImage" download class="a-amber">AppImage (231 MB)</a>
+          <a href="ED-Mission-Operator-1.9.3-x86_64.AppImage" download class="a-amber">AppImage (231 MB)</a>
           — journals auto-detected from the Steam Proton prefix; X11 recommended
           (global hotkeys don't exist on Wayland); screen glances are Windows-only for now.
           Fresh out of the forge — reports welcome. AppImage users: install an emoji font
@@ -479,15 +479,17 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
       <div class="mi"><div>
         <h4>Music on the third bus <span class="opt">(new in 1.7.0, off by default)</span></h4>
         <ul>
-          <li>Internet radio while you work — twenty-three curated stations, from <b>deep space ambient</b> and <b>real NASA mission audio</b> to <b>seventies album rock</b>, frontier americana, and Galaxy News Radio</li>
+          <li>Internet radio while you work — thirty-one curated stations, from <b>deep space ambient</b> and <b>real NASA mission audio</b> to <b>seventies album rock</b>, frontier americana, and Galaxy News Radio</li>
           <li>It <b>ducks properly</b>: hard under the operator, only thinned under comms traffic — the same bus arithmetic the voices use, not a volume trick</li>
           <li><b>The dial follows the work</b>: the rings get drone, long hauls get rock, the black gets ambient — or switch that off and pick your own</li>
           <li>The current track shows on the HUD</li>
           <li><b>New in 1.8.0 — a radio tab with an old-school analyser.</b> Every station one click away, so changing the record never means opening Settings. Twenty-four segmented bars, green through amber to red, with peak caps that hang and fall</li>
           <li>The bars are tapped off the <b>music bus itself</b>, not the stream — so when the operator cuts in and the radio ducks, <b>the display dips with it</b>. It shows what you are hearing, not what is being sent</li>
-          <li><b>The whole dial, not just the calm end:</b> instrumental hip-hop and liquid trap, vintage soul off the 45s, dark industrial and electronic body music, vaporwave, IDM, DEF CON's music-for-hacking channel, and a run of <b>synthwave and darksynth</b> from Nightride FM for anyone who wants the cockpit to feel like a neon street</li>
+          <li><b>The whole dial, not just the calm end:</b> 90s hip hop and instrumental trap, vintage soul and R&amp;B, classic and modern <b>country</b>, <b>classic rock</b> and Radio Paradise's hand-picked rock mix, indie pop, dark industrial, vaporwave, IDM, DEF CON's music-for-hacking channel, and a run of <b>synthwave and darksynth</b> from Nightride FM</li>
+          <li><b>Tuned like a tuner</b> <span class="opt">(new in 1.9.0)</span>: thirty-one stations on a slide-rule dial — the scale travels under a fixed needle, so you drag it like a knob, click a name in view, or step with the arrow keys. The names are grouped by mood, so scanning one way gets quieter and the other way gets darker</li>
+          <li>No invented frequencies on it. The graduations are stations, because a printed 98.4&nbsp;MHz would be the one made-up number on a panel that never makes up numbers</li>
           <li><b>A strip at the bottom keeps it in sight</b>: the HUD retunes its own view as you fly — the orrery on arrival, the market on docking — so the analyser and the track name live under whatever tab is showing, and one click puts the full set back</li>
-          <li>Streams from <b>SomaFM</b>, listener-supported and advert-free. This is the app's <b>only continuous internet connection</b> — off unless you turn it on</li>
+          <li>Streams from <b>SomaFM</b>, <b>Radio Paradise</b>, <b>Nightride FM</b> and <b>181.FM</b> — all listener-supported or advert-light. Off unless you turn it on, and it sends nothing about you or your game</li>
         </ul>
       </div></div>
       <div class="mi"><div>
@@ -676,7 +678,7 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
       <div class="step"><div>
         <h3>Download the installer</h3>
         <p>Click the download button above — you get a single file,
-        <span class="mono">ED-Mission-Operator-1.9.0-setup.exe</span> (about 132&nbsp;MB — it
+        <span class="mono">ED-Mission-Operator-1.9.3-setup.exe</span> (about 132&nbsp;MB — it
         carries the offline voices). Your browser may ask where to save it; Downloads is fine.</p>
       </div></div>
 
@@ -777,7 +779,8 @@ footer .o7{margin-left:auto;color:var(--amber);font-family:"Michroma",sans-serif
       <div class="priv">
         <h3>● What it will never do</h3>
         <ul>
-          <li><b>No cloud, no account, no telemetry.</b> The AI runs on your own machine — all inference traffic is to the built-in engine on 127.0.0.1. The only downloads are ones you click: the AI engine and its model (from their official sources), extra voices, and four opt-in community lookups &mdash; all off by default. The optional <b>music player</b> is the single continuous connection, and only while it is switched on: it streams audio from SomaFM and asks them what track is playing. It sends nothing about you or your game. Spansh routes and Ardent market searches send just a system name (and the commodity you asked about); the exploration catalogue sends only the system name; Galnet sends nothing at all.</li>
+          <li><b>No cloud, no account, no telemetry.</b> The AI runs on your own machine — all inference traffic is to the built-in engine on 127.0.0.1. The only downloads are ones you click: the AI engine and its model (from their official sources), extra voices, and the opt-in community lookups &mdash; all off by default. Spansh routes and Ardent market searches send just a system name (and the commodity you asked about); the exploration catalogue sends only the system name; Galnet sends nothing at all.</li>
+          <li><b>Two things can send more than that, and both are off until you switch them on.</b> The <b>music player</b> streams audio from SomaFM, Radio Paradise, Nightride FM or 181.FM and asks what track is playing — continuous while it runs, but it sends nothing about you or your game. The <b>online neural voices</b> are the bigger one: choosing them sends <b>the text of every line the operator speaks</b> to Microsoft, which includes system names, station names and the questions you type. That is a genuinely different bargain from the rest of this app, which is why it is not the default and why it says so in the settings panel. Every other voice — the bundled Piper voices, and your own Windows voices — is synthesized on your machine and sends nothing. Spoken lines are cached on disk, so a repeat is never sent twice.</li>
           <li><b>Memory stays home.</b> The operator's long-term memory is one local JSON file you can open, inspect, or wipe with one click ("Forget everything"). Screen glances are off by default; when enabled, screenshots go only to your local LM endpoint and are never written to disk.</li>
           <li><b>Your voice stays home.</b> Push-to-talk is off by default; when enabled, speech is transcribed by a local Whisper model on your own CPU. No cloud speech service, ever — the microphone is only live while you hold the key.</li>
           <li><b>Open source.</b> Don't take any of this on faith — the full source is on

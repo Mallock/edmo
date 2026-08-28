@@ -26,8 +26,8 @@ test('every station is playable and credited', () => {
     assert.match(s.url, /^https?:\/\//, s.id);
     assert.ok(s.label.length > 2 && s.blurb.length > 8, s.id);
     assert.ok(
-      s.source === 'SomaFM' || s.source === 'Fallout.FM' || s.source === 'Nightride FM',
-      s.id,
+      ['SomaFM', 'Fallout.FM', 'Nightride FM', 'Radio Paradise', '181.FM'].includes(s.source),
+      `${s.id} has no credited source`,
     );
     // A routable station is one we can duck properly; it must be HTTPS, since
     // the CORS routing that makes it routable rides on the secure origin.
@@ -65,12 +65,39 @@ test('the dial covers the genres it claims to', () => {
   // it was carrying should be a deliberate decision, not a quiet loss.
   const has = (id: string) => assert.ok(stationById(id), `${id} left the dial`);
   has('fluid'); // instrumental hip-hop / trap
+  has('oldschool'); // 90s hip hop, the golden age
   has('7soul'); // vintage soul
+  has('truerb'); // R&B
   has('doomed'); // dark industrial
   has('ebsm'); // electronic body music
   has('nightride'); // synthwave
   has('darksynth'); // cyberpunk, harder
   has('defcon'); // music for hacking
+  has('rprock'); // rock
+  has('eagle'); // classic rock
+  has('indiepop'); // indie pop
+  has('kickincountry'); // modern country
+  has('highway'); // classic country
+  has('bootliquor'); // americana
+});
+
+test('the dial is ordered as a scale, not as a list', () => {
+  // The tuning dial is a slide-rule: scanning one way should get quieter and
+  // the other way darker. That only holds if neighbours belong together, so
+  // the ambient end, the country block and the dark end must each stay
+  // contiguous — an alphabetical sort or a careless insert would scatter them.
+  const at = (id: string) => STATIONS.findIndex((s) => s.id === id);
+  const contiguous = (ids: string[]) => {
+    const idx = ids.map(at).sort((a, b) => a - b);
+    assert.ok(idx[0] >= 0, `unknown station in ${ids.join(',')}`);
+    assert.equal(idx[idx.length - 1] - idx[0], ids.length - 1, `${ids.join(',')} is not contiguous`);
+  };
+  contiguous(['deepspaceone', 'missioncontrol', 'spacestation', 'dronezone', 'synphaera']);
+  contiguous(['kickincountry', 'highway', 'bootliquor']);
+  contiguous(['nightride', 'darksynth', 'datawave', 'ebsm']);
+  // And the quiet end really is the quiet end.
+  assert.ok(at('deepspaceone') < at('oldschool'), 'ambient should sit before hip hop');
+  assert.ok(at('rprock') < at('doomed'), 'rock should sit before the dark end');
 });
 
 test('every chapter tunes to a station that exists', () => {
@@ -103,4 +130,33 @@ test('music ducks under the operator harder than under comms', () => {
   assert.ok(MUSIC_DUCK_PRIORITY_DB < MUSIC_DUCK_AMBIENT_DB);
   // Ducking is relative to wherever the commander left the slider.
   assert.equal(musicGainDb(-6, true, false), -6 + MUSIC_DUCK_PRIORITY_DB);
+});
+
+test('the listen.fm additions point at 181.FM mounts that exist', () => {
+  // These were asked for as listen.fm links. listen.fm is an aggregator whose
+  // own backend (tp.andresamaya.co) no longer resolves, and its slugs are
+  // 181.FM channel names — so they are wired to the upstream source directly,
+  // through the one81 helper this dial already had. Each mount was checked
+  // against 181.FM's own catalogue and answered audio/mpeg.
+  const want: Array<[string, string]> = [
+    ['classical', '181-classical'],
+    ['90sdance', '181-90sdance'],
+    ['hairband', '181-hairband'],
+    ['power181', '181-powerexplicit'],
+    ['thebeat', '181-beat'],
+  ];
+  for (const [id, mount] of want) {
+    const s = stationById(id);
+    assert.ok(s, `${id} is on the dial`);
+    assert.equal(s!.url, `https://listen.181fm.com/${mount}_128k.mp3`);
+    assert.equal(s!.source, '181.FM');
+    assert.equal(s!.routable, true, 'the relay routes these like the other 181 mounts');
+  }
+});
+
+test('the explicit channel says so in its blurb', () => {
+  // Power 181 [E] is 181.FM's uncensored feed. The picker is one line per
+  // station, so that line is the only warning a commander gets before it
+  // starts playing over the game.
+  assert.match(stationById('power181')!.blurb, /explicit/i);
 });

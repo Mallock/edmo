@@ -16,6 +16,7 @@
  * possible. Content lives in scenes.
  */
 export type ChannelId =
+  | 'TOWER' // traffic control talking to THIS ship, by name
   | 'STATION' // traffic control and station operations
   | 'LOCAL' // ship-to-ship on the open channel
   | 'CREW' // your own crew, over the intercom
@@ -25,6 +26,7 @@ export type ChannelId =
   | 'CONCOURSE'; // station PA, heard on foot
 
 export const CHANNEL_IDS: readonly ChannelId[] = [
+  'TOWER',
   'STATION',
   'LOCAL',
   'CREW',
@@ -80,7 +82,8 @@ export type ClosedReason =
   | 'too-soon'
   | 'act-suppressed'
   | 'others-in-range'
-  | 'no-verified-brief';
+  | 'no-verified-brief'
+  | 'nothing-to-say';
 
 /** Human wording for the panel's channel strip. */
 export const CLOSED_REASON_LABEL: Readonly<Record<ClosedReason, string>> = {
@@ -95,4 +98,7 @@ export const CLOSED_REASON_LABEL: Readonly<Record<ClosedReason, string>> = {
   'act-suppressed': 'channel clear — priority traffic',
   'others-in-range': 'local traffic in range',
   'no-verified-brief': 'nothing to report',
+  // The tower's resting state. It is not out of range or squelched — it simply
+  // has no reason to call, which is what a tower does almost all the time.
+  'nothing-to-say': 'standing by',
 };

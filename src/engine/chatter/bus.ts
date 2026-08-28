@@ -21,7 +21,32 @@
  * and applies these numbers to them.
  */
 
-export type BusId = 'PRIORITY' | 'AMBIENT' | 'MUSIC';
+export type BusId = 'PRIORITY' | 'AMBIENT' | 'MUSIC' | 'TOWER';
+
+/**
+ * TOWER is the fourth bus, and it exists because of a category error in the
+ * first three.
+ *
+ * AMBIENT is atmosphere: people talking to each other, none of it addressed
+ * to the commander, all of it droppable. PRIORITY is the operator — the app's
+ * own voice, speaking about the commander in the third person.
+ *
+ * Traffic control calling YOUR ship by name is neither. It is not atmosphere,
+ * because it is addressed to you and answering it is the difference between
+ * docking and being shot at; and it is not the operator, because it comes
+ * from the world rather than from the app. Putting it on AMBIENT meant it
+ * could be dropped for a queue of dockside gossip. Putting it on PRIORITY
+ * would have it compete with hull-breach callouts.
+ *
+ * So: it ducks under PRIORITY (nothing outranks the hull), ambience ducks
+ * under IT (chatter gets out of the way when the tower calls), and music
+ * drops as hard for it as for the operator, because a clearance you did not
+ * hear is a clearance you did not get.
+ */
+export const TOWER_DUCK_PRIORITY_DB = -10;
+
+/** How far AMBIENT drops while the tower is talking to this ship. */
+export const AMBIENT_DUCK_TOWER_DB = -11;
 
 /** How far AMBIENT drops while PRIORITY is sounding. */
 export const DUCK_DB = -14;
@@ -37,6 +62,8 @@ export const DUCK_DB = -14;
  */
 export const MUSIC_DUCK_PRIORITY_DB = -20;
 export const MUSIC_DUCK_AMBIENT_DB = -9;
+/** Addressed to this ship, so it gets the operator's depth, not ambience's. */
+export const MUSIC_DUCK_TOWER_DB = -20;
 
 /** How long the ambient bus takes to come back up. A step reads as a glitch;
  *  a ramp reads as someone turning a dial. */
@@ -60,8 +87,21 @@ export const DEFAULT_TTL_MS = 90_000;
  * level is a user setting: ducking is relative to wherever they left the
  * slider, not an absolute target.
  */
-export function ambientGainDb(configuredDb: number, priorityActive: boolean): number {
-  return priorityActive ? configuredDb + DUCK_DB : configuredDb;
+export function ambientGainDb(
+  configuredDb: number,
+  priorityActive: boolean,
+  towerActive = false,
+): number {
+  // The deeper duck wins. Chatter gets out of the way for both, but the
+  // operator outranks the tower — nothing outranks the hull.
+  if (priorityActive) return configuredDb + DUCK_DB;
+  if (towerActive) return configuredDb + AMBIENT_DUCK_TOWER_DB;
+  return configuredDb;
+}
+
+/** The tower bus gain: full, unless the operator is speaking over it. */
+export function towerGainDb(configuredDb: number, priorityActive: boolean): number {
+  return priorityActive ? configuredDb + TOWER_DUCK_PRIORITY_DB : configuredDb;
 }
 
 /** Ramp time for a duck transition, in milliseconds. */
@@ -79,8 +119,12 @@ export function musicGainDb(
   configuredDb: number,
   priorityActive: boolean,
   ambientActive: boolean,
+  towerActive = false,
 ): number {
   if (priorityActive) return configuredDb + MUSIC_DUCK_PRIORITY_DB;
+  // A clearance you did not hear is a clearance you did not get, so the tower
+  // gets the operator's depth rather than ambience's.
+  if (towerActive) return configuredDb + MUSIC_DUCK_TOWER_DB;
   if (ambientActive) return configuredDb + MUSIC_DUCK_AMBIENT_DB;
   return configuredDb;
 }

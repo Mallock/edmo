@@ -11,9 +11,9 @@
  * when the operator cuts in and the radio ducks, the bars dip with it, and
  * the display explains the silence instead of contradicting it.
  */
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { core } from './store.ts';
-import { STATIONS } from '../engine/stations.ts';
+import { STATIONS, stationById } from '../engine/stations.ts';
 import type { MusicState } from './music.ts';
 import type { AppSettings } from './settings.ts';
 
@@ -171,6 +171,121 @@ export function MiniRadio({ music }: { music: MusicState | null }) {
   );
 }
 
+/** Millimetres of dial per station. Wide enough for "Groove Salad Classic". */
+const PITCH = 138;
+
+/**
+ * The tuning dial.
+ *
+ * Thirty-one stations will not fit as chips on a 420 px panel without becoming
+ * six rows of confetti, and a dropdown would hide the one thing worth seeing —
+ * that there is a whole scale here and you are somewhere on it. So it is built
+ * the way a tuner actually is: the scale travels, the needle does not. Drag it
+ * like a tuning knob, click a name you can see, or use the arrow keys.
+ *
+ * The names are grouped by mood along the scale rather than alphabetically,
+ * so scanning left goes quieter and scanning right goes darker — which is what
+ * a dial is FOR. Nothing here invents a frequency: the ticks are stations,
+ * because a made-up 98.4 MHz would be the one dishonest thing on this panel.
+ */
+function Dial({ current, onPick }: { current: string; onPick: (id: string) => void }) {
+  const idx = Math.max(
+    0,
+    STATIONS.findIndex((s) => s.id === current),
+  );
+  const [dragPx, setDragPx] = useState(0);
+  const dragging = useRef<{ startX: number; moved: boolean } | null>(null);
+
+  const clamp = (n: number) => Math.min(STATIONS.length - 1, Math.max(0, n));
+
+  const onDown = (e: React.PointerEvent) => {
+    dragging.current = { startX: e.clientX, moved: false };
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  };
+  const onMove = (e: React.PointerEvent) => {
+    const d = dragging.current;
+    if (!d) return;
+    const dx = e.clientX - d.startX;
+    if (Math.abs(dx) > 3) d.moved = true;
+    setDragPx(dx);
+  };
+  const onUp = (e: React.PointerEvent) => {
+    const d = dragging.current;
+    dragging.current = null;
+    (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
+    if (!d) return;
+    // Both gestures resolve to a position on the scale, and BOTH are settled
+    // here rather than in a per-station click handler. Pointer capture — which
+    // the drag needs, or letting go outside the dial would strand it — makes
+    // the browser retarget the following click to the capturing element, so a
+    // click listener on the station names silently never fires.
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const landed = d.moved
+      ? clamp(Math.round(idx - dragPx / PITCH))
+      : clamp(idx + Math.round((e.clientX - (rect.left + rect.width / 2)) / PITCH));
+    if (STATIONS[landed].id !== current) onPick(STATIONS[landed].id);
+    setDragPx(0);
+  };
+
+  const step = (by: number) => {
+    const next = clamp(idx + by);
+    if (STATIONS[next].id !== current) onPick(STATIONS[next].id);
+  };
+
+  return (
+    <div
+      className="dial"
+      role="listbox"
+      aria-label="Station dial"
+      aria-activedescendant={`dial-${current}`}
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+          e.preventDefault();
+          step(1);
+        } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+          e.preventDefault();
+          step(-1);
+        } else if (e.key === 'Home') {
+          e.preventDefault();
+          onPick(STATIONS[0].id);
+        } else if (e.key === 'End') {
+          e.preventDefault();
+          onPick(STATIONS[STATIONS.length - 1].id);
+        }
+      }}
+      onPointerDown={onDown}
+      onPointerMove={onMove}
+      onPointerUp={onUp}
+      onPointerCancel={onUp}
+      onWheel={(e) => step(e.deltaY > 0 ? 1 : -1)}
+    >
+      <div
+        className={dragging.current ? 'dial-track held' : 'dial-track'}
+        style={{ transform: `translateX(calc(50% - ${idx * PITCH + PITCH / 2}px + ${dragPx}px))` }}
+      >
+        {STATIONS.map((st, i) => (
+          <div
+            key={st.id}
+            id={`dial-${st.id}`}
+            role="option"
+            aria-selected={st.id === current}
+            className={st.id === current ? 'dial-stn on' : 'dial-stn'}
+            style={{ width: PITCH }}
+            title={`${st.blurb} · ${st.source}`}
+          >
+            <span className="dial-name">{st.label}</span>
+            <span className="dial-tick" />
+            {/* Minor ticks between the stations, purely to read as a scale. */}
+            {i < STATIONS.length - 1 && <span className="dial-minor" />}
+          </div>
+        ))}
+      </div>
+      <span className="dial-needle" aria-hidden="true" />
+    </div>
+  );
+}
+
 export function RadioCard({ music, settings }: { music: MusicState | null; settings: AppSettings }) {
   const s = settings.music;
   const playing = !!music?.playing;
@@ -221,23 +336,17 @@ export function RadioCard({ music, settings }: { music: MusicState | null; setti
         Follow the work — the rings get drone, hauls get rock
       </label>
 
-      {/* The dial. One click, no trip to Settings. */}
-      <div className="radio-dial">
-        {STATIONS.map((st) => (
-          <button
-            key={st.id}
-            className={st.id === s.station && s.enabled ? 'radio-station on' : 'radio-station'}
-            title={`${st.blurb} · ${st.source}`}
-            onClick={() => core.setMusicStation(st.id)}
-          >
-            {st.label}
-          </button>
-        ))}
+      <Dial current={s.station} onPick={(id) => core.setMusicStation(id)} />
+
+      <div className="radio-blurb">
+        {stationById(s.station)?.blurb}
+        <span className="radio-source">{stationById(s.station)?.source}</span>
       </div>
 
       <div className="empty-hint">
-        Ducks under the operator, thins under comms traffic. Streams from SomaFM, Nightride FM and
-        Fallout.FM — the only part of this app that stays connected.
+        Drag the dial, click a name, or use the arrow keys. Ducks under the operator, thins under
+        comms traffic. Streams from SomaFM, Radio Paradise, Nightride FM, 181.FM and Fallout.FM —
+        the only part of this app that stays connected.
       </div>
     </div>
   );

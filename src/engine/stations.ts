@@ -37,7 +37,8 @@ import type { ChapterKind } from './arc.ts';
  */
 export type TrackFeed =
   | { kind: 'somafm'; url: string }
-  | { kind: 'nightride'; url: string; channel: string };
+  | { kind: 'nightride'; url: string; channel: string }
+  | { kind: 'radioparadise'; url: string };
 
 export interface RadioStation {
   id: string;
@@ -53,7 +54,7 @@ export interface RadioStation {
   /** Where the current track can be read, when the host publishes one. */
   track?: TrackFeed;
   /** Who to credit, shown in Settings beside the picker. */
-  source: 'SomaFM' | 'Fallout.FM' | 'Nightride FM';
+  source: 'SomaFM' | 'Fallout.FM' | 'Nightride FM' | 'Radio Paradise' | '181.FM';
 }
 
 /** The `-128-mp3` mount is the highest-quality MP3 SomaFM publishes. */
@@ -90,6 +91,41 @@ const nightride = (id: string, label: string, blurb: string): RadioStation => ({
 });
 
 /**
+ * Radio Paradise — listener-supported, no adverts, and the best-sounding
+ * stream on this dial at 192 kbps. Its now-playing API answers with NO CORS
+ * header, so the track name arrives through the relay or not at all; the
+ * station still names itself either way.
+ */
+const paradise = (
+  id: string,
+  chan: number,
+  label: string,
+  blurb: string,
+): RadioStation => ({
+  id,
+  label,
+  blurb,
+  url: `https://stream.radioparadise.com/${id === 'rpmain' ? 'mp3-192' : `${id.slice(2)}-192`}`,
+  routable: true,
+  track: { kind: 'radioparadise', url: `https://api.radioparadise.com/api/now_playing?chan=${chan}` },
+  source: 'Radio Paradise',
+});
+
+/**
+ * 181.FM — the format radio of the dial: classic rock, country, old-school
+ * hip hop, R&B. No public now-playing endpoint worth relying on, so these
+ * announce themselves by name, which is what a dial does anyway.
+ */
+const one81 = (id: string, mount: string, label: string, blurb: string): RadioStation => ({
+  id,
+  label,
+  blurb,
+  url: `https://listen.181fm.com/${mount}_128k.mp3`,
+  routable: true,
+  source: '181.FM',
+});
+
+/**
  * The curated dial. Not all 46 SomaFM channels — the ones a commander would
  * actually leave on, in the order the picker shows them.
  *
@@ -100,28 +136,47 @@ const nightride = (id: string, label: string, blurb: string): RadioStation => ({
  * rearranges itself under them between versions.
  */
 export const STATIONS: readonly RadioStation[] = [
+  // — the quiet end of the scale
   soma('deepspaceone', 'Deep Space One', 'Deep ambient and space music — for the black'),
   soma('missioncontrol', 'Mission Control', 'Ambient, cut with real NASA mission audio'),
   soma('spacestation', 'Space Station Soma', 'Spaced-out ambient and mid-tempo electronica'),
   soma('dronezone', 'Drone Zone', 'Atmospheric textures with minimal beats'),
   soma('synphaera', 'Synphaera Radio', 'Modern space ambient from an indie label'),
+  one81('classical', '181-classical', 'Classical Music', 'The standard repertoire, played straight — for a long plot'),
+  // — downtempo and electronic
   soma('groovesalad', 'Groove Salad', 'Chilled ambient downtempo — the default'),
   soma('gsclassic', 'Groove Salad Classic', 'The early-2000s cut of the same idea'),
-  soma('seventies', 'Left Coast 70s', 'Mellow album rock. Yacht not required'),
-  soma('bootliquor', 'Boot Liquor', 'Americana for cowhands — the frontier hour'),
-  soma('u80s', 'Underground 80s', 'Early-80s UK synthpop and new wave'),
-  soma('secretagent', 'Secret Agent', 'For spies and the stylishly dangerous'),
   soma('beatblender', 'Beat Blender', 'Late-night deep house and downtempo'),
-  soma('fluid', 'Fluid', 'Instrumental hip-hop, future soul and liquid trap'),
-  soma('7soul', 'Seven Inch Soul', 'Vintage soul, straight off the 45s'),
-  soma('defcon', 'DEF CON Radio', 'Music for hacking — the DEF CON year-round channel'),
   soma('cliqhop', 'Cliqhop IDM', "Blips'n'beeps over beats. Intelligent dance music"),
   soma('vaporwaves', 'Vaporwaves', 'All vaporwave, all the time — a dead mall in orbit'),
-  soma('doomed', 'Doomed', 'Dark industrial and ambient, for tortured souls'),
+  soma('secretagent', 'Secret Agent', 'For spies and the stylishly dangerous'),
+  one81('90sdance', '181-90sdance', "90's Dance", 'Nineties club and eurodance, entirely unrepentant'),
+  // — rock and pop
+  paradise('rpmain', 0, 'Radio Paradise', 'Eclectic hand-picked rock, 192 kbps — the good stuff'),
+  paradise('rprock', 2, 'RP Rock Mix', 'The same curation, turned up: rock and alternative'),
+  soma('indiepop', 'Indie Pop Rocks!', 'Indie pop and jangle — SomaFM at its most cheerful'),
+  one81('eagle', '181-eagle', 'The Eagle', 'Classic rock, the way a truck stop plays it'),
+  soma('seventies', 'Left Coast 70s', 'Mellow album rock. Yacht not required'),
+  soma('u80s', 'Underground 80s', 'Early-80s UK synthpop and new wave'),
+  one81('hairband', '181-hairband', "80's Hairband", 'Eighties stadium rock, hairspray and all'),
+  one81('power181', '181-powerexplicit', 'Power 181', 'Chart pop and hip hop — the uncensored feed, explicit lyrics'),
+  // — country and americana
+  one81('kickincountry', '181-kickincountry', "Kickin' Country", 'Modern country, the hits end'),
+  one81('highway', '181-highway', 'Highway 181', 'Classic country — the long haul, honestly'),
+  soma('bootliquor', 'Boot Liquor', 'Americana for cowhands — the frontier hour'),
+  // — soul, R&B and hip hop
+  soma('7soul', 'Seven Inch Soul', 'Vintage soul, straight off the 45s'),
+  one81('truerb', '181-rnb', 'True R&B', 'R&B and slow jams, wall to wall'),
+  one81('oldschool', '181-oldschool', 'Old School Hip Hop', 'The 90s golden age — beats, rhymes and attitude'),
+  soma('fluid', 'Fluid', 'Instrumental hip-hop, future soul and liquid trap'),
+  one81('thebeat', '181-beat', 'The Beat', 'Hip hop and R&B at the current end'),
+  // — the dark end: hacking, neon, industrial
+  soma('defcon', 'DEF CON Radio', 'Music for hacking — the DEF CON year-round channel'),
   nightride('nightride', 'Nightride FM', 'Synthwave — neon, chrome and a long night drive'),
   nightride('darksynth', 'Darksynth', 'The harder, horror-tinged cut of the same neon'),
   nightride('datawave', 'Datawave', 'Cyberpunk downtempo — for working the console'),
   nightride('ebsm', 'EBSM', 'Electronic body music: industrial with a pulse'),
+  soma('doomed', 'Doomed', 'Dark industrial and ambient, for tortured souls'),
   {
     id: 'gnr',
     label: 'Galaxy News Radio',

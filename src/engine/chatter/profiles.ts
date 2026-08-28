@@ -45,6 +45,7 @@ export interface RadioProfile {
 
 export type RadioProfileName =
   | 'clean'
+  | 'tower'
   | 'station'
   | 'local'
   | 'crew'
@@ -80,6 +81,21 @@ export const RADIO_PROFILES: Readonly<Record<RadioProfileName, RadioProfile>> = 
 
   // Traffic control: strong signal, good equipment, formal procedure. The
   // telephone band is deliberate — it is the sound everyone reads as "radio".
+  // Traffic control on the approach channel, addressed to this ship. Cleaner
+  // and louder than the general station feed: it is a directed transmission
+  // from a few hundred metres away, not overheard chatter from across the
+  // bay, and the commander is meant to act on it.
+  tower: {
+    hpfHz: 380,
+    lpfHz: 3800,
+    drive: 0.4,
+    hissDb: -40,
+    popsPerMin: 3,
+    squelchMs: 150,
+    beep: 'both',
+    gainDb: 0,
+  },
+
   station: {
     hpfHz: 450,
     lpfHz: 3400,

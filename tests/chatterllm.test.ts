@@ -15,6 +15,7 @@ import assert from 'node:assert/strict';
 import {
   ChatterConversation,
   SITUATIONS,
+  echoesRecent,
   SceneSlots,
   acceptSceneReply,
   buildSceneChat,
@@ -809,4 +810,46 @@ test('the prompt says names are attribution, not dialogue', () => {
   assert.match(system, /never says their own name/i);
   const user = buildSceneChat(req())[1].content;
   assert.match(user, /names are for YOU, not for the lines/i);
+});
+
+test('the house style rides at the END of the user message, not in the preamble', () => {
+  // Placement is the whole finding. CREW's channel subject has said "never
+  // reach for a technical term when an ordinary one does the job" the entire
+  // time, and CREW still measured the worst channel in the run at 100%
+  // hardware vocabulary — the same instruction is scenery in a 600-word
+  // preamble and an order immediately before "write now". If a later edit
+  // tidies these three blocks up into the system prompt, the measured effect
+  // goes with them, so the position is asserted rather than the wording.
+  const user = buildSceneChat(req())[1].content;
+  for (const block of [
+    /NOT ABOUT EQUIPMENT/,
+    /ONE THOUGHT PER LINE/,
+    /THE SECOND LINE IS A PERSON/,
+  ]) {
+    assert.match(user, block);
+    assert.ok(
+      user.search(block) > user.indexOf('WHO IS SPEAKING'),
+      `${block} must come after the briefing, not before it`,
+    );
+  }
+  // Nothing may be appended after them: the closing instruction is the last
+  // thing the model reads, and these three are what it reads just before.
+  assert.ok(user.trimEnd().endsWith('now.'));
+  assert.ok(user.indexOf('THE SECOND LINE IS A PERSON') > user.indexOf('ONE THOUGHT PER LINE'));
+});
+
+test('every ambient channel gets the house style, TOWER keeps its own prompt', () => {
+  // The ban was measured across all four ambient channels and the worst of
+  // them (CREW, 100% -> 25%) is the reason it is unconditional. TOWER is a
+  // different prompt entirely — one speaker, talking TO the commander — and
+  // must not silently acquire a rule about what its second line does when it
+  // only ever has one.
+  const ambient = ['STATION', 'LOCAL', 'CREW', 'DEEP', 'EMERGENCY', 'CARRIER', 'CONCOURSE'] as const;
+  for (const channel of ambient) {
+    const user = buildSceneChat(req({ channel }))[1].content;
+    assert.match(user, /NOT ABOUT EQUIPMENT/, `${channel} lost the equipment ban`);
+    assert.match(user, /ONE THOUGHT PER LINE/, `${channel} lost the length rule`);
+  }
+  const tower = buildSceneChat(req({ channel: 'TOWER' }))[1].content;
+  assert.doesNotMatch(tower, /THE SECOND LINE IS A PERSON/);
 });

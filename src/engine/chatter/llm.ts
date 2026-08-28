@@ -37,6 +37,11 @@ import type { Act, ChannelId, DramaticFunction } from './types.ts';
 
 /** How each channel should sound to the model. */
 const CHANNEL_STYLE: Readonly<Record<ChannelId, string>> = {
+  TOWER:
+    'station traffic control transmitting directly to ONE ship — the listener’s own. ' +
+    'Real procedure, addressed by name: the ship, the instruction, the pad, done. Brisk and ' +
+    'professional, occasionally human at the end of a line. This is the only channel that ' +
+    'speaks TO the listener rather than around them.',
   STATION:
     'station traffic control talking to a ship. Formal, clipped, procedural. They are busy and ' +
     'the commander is not important to them. Real radio protocol is the poetry of this channel: ' +
@@ -57,6 +62,64 @@ const CHANNEL_STYLE: Readonly<Record<ChannelId, string>> = {
   CONCOURSE:
     'a public-address announcement inside a station concourse. Bureaucratic, bloodless, ' +
     'accidentally funny.',
+};
+
+/**
+ * WHAT EACH CHANNEL IS ABOUT — the subject matter, per channel.
+ *
+ * CHANNEL_STYLE above says how a channel SOUNDS. This says what its people
+ * actually discuss, and it exists because sound alone did not spread the
+ * subjects out. Every channel shared one system prompt whose standing line was
+ * "their attention stays on work, danger, money, traffic, cargo, factions,
+ * repairs, schedules, rumours and each other" — one list, read by all seven,
+ * with factions in it. So a crew sitting three metres apart on an intercom
+ * discussed the influence board exactly as readily as two strangers on the
+ * open channel, and a live session came out as a rolling bulletin.
+ *
+ * Giving each channel its own subjects is what makes the distribution even by
+ * CONSTRUCTION rather than by hoping a rotation lands well: the political
+ * channels stay political, and the domestic ones are told plainly that
+ * politics is not their business. It is also the tuning surface — one channel
+ * can now be adjusted on its own evidence without touching the other six.
+ */
+const CHANNEL_SUBJECTS: Readonly<Record<ChannelId, string>> = {
+  TOWER:
+    'This transmission and nothing else: the clearance, the refusal, the pad, the departure. ' +
+    'Name the ship, give the instruction, and stop. No politics, no gossip, no small talk ' +
+    'beyond a single dry human remark at the end. NEVER write a reply from the ship — the ' +
+    'commander is a real person and this channel does not speak for them.',
+  STATION:
+    'Movement and procedure: pads, slots, clearances, queues, paperwork, who is late and who ' +
+    'is blocking whom. Politics reaches this channel only where it changes a clearance, and ' +
+    'then only as an inconvenience nobody has time to discuss. Between the procedure they are ' +
+    'people at a desk on a long shift — tea going cold, a handover, somebody covering for a ' +
+    'colleague.',
+  LOCAL:
+    'Work and money and each other: what a run pays, the state of the lanes, who is hiring, ' +
+    'who is not to be trusted, what somebody thinks they saw. This is the one channel where ' +
+    'faction politics is natural, and even here it arrives as GOSSIP and grievance — who is ' +
+    'throwing their weight about, who pays late — never as figures or a briefing.',
+  CREW:
+    'The ship and one another. This is a household: the job in hand, the state of the kit, ' +
+    'meals, sleep, whose turn it is, a message from home, an old argument. They do NOT discuss ' +
+    'faction politics, influence, expansions or station management — those things are weather ' +
+    'happening to somebody else, and if they come up at all it is one weary aside before the ' +
+    'subject returns to the work and the people doing it.',
+  DEEP:
+    'Distance and time. What is out there, how long since anything answered, the state of the ' +
+    'ship and the person in it. No local politics whatsoever — nothing that far out cares who ' +
+    'runs a station a hundred light years behind them.',
+  EMERGENCY:
+    'The emergency and nothing else. Position, condition, what is needed, who is coming. No ' +
+    'politics, no commerce, no small talk.',
+  CARRIER:
+    'Services and schedule: what the carrier offers, when it jumps, what its crew are dealing ' +
+    'with today, who has not paid their docking fees. A carrier is a small town with an owner, ' +
+    'so its notices are institutional and its crew are ordinary people at work.',
+  CONCOURSE:
+    'Public life indoors: announcements, closures, lost property, queues, retail, the crowd. ' +
+    'This is the most ordinary channel on the station — food, transport, opening hours, ' +
+    'somebody being paged. Faction politics belongs here only as a notice nobody reads.',
 };
 
 /** What each dramatic function is asking the scene to accomplish. */
@@ -154,6 +217,83 @@ export function buildSceneChat(req: SceneRequest, history: ChatMessage[] = []): 
 
   const n = Math.max(1, Math.min(MAX_TURNS, req.lines ?? req.speakers.length));
 
+  // THE TOWER GETS ITS OWN SYSTEM PROMPT, not a variation on the ambient one.
+  //
+  // Every other channel is people talking to each other with the commander
+  // overhearing, and the shared prompt is built around that: invent freely,
+  // never address the listener, make it feel like a world going about its
+  // business. Handing the tower those instructions produced exactly what they
+  // asked for — a controller chatting to somebody else about a flicker near
+  // the mining patch, while the commander sat on final approach waiting to be
+  // told which pad.
+  //
+  // This channel inverts nearly all of it. There is one speaker, it is talking
+  // TO the commander, it is answering something they just did, and the numbers
+  // in it are real: the pad is the one the game assigned, and inventing a
+  // different one is worse than saying nothing, because the commander will fly
+  // to it.
+  if (req.channel === 'TOWER') {
+    return [
+      {
+        role: 'system',
+        content:
+          'You are station traffic control, transmitting to ONE ship: the listener’s own. ' +
+          `${UNIVERSE_REGISTER} ` +
+          'Address them directly — by their ship name if you have it, or as "Commander". ' +
+          'This is a live transmission answering something they have just done, not overheard ' +
+          'chatter: they are on approach, or cleared, or refused, or leaving, and they are ' +
+          'waiting on you. ' +
+          'Real radio procedure is the whole voice of this channel: the callsign, the ' +
+          'instruction, the read-back if there is one, a brisk close. Say the thing and stop. ' +
+          'NEVER invent a pad number, a bay, a time or a clearance code. If a number is given ' +
+          'to you below, use exactly that one; if it is not, do not produce one — the commander ' +
+          'acts on what you say, and a made-up pad sends them to the wrong side of the station. ' +
+          'BE A PERSON, not a public-address system. This commander is a regular on your ' +
+          'frequency and you are pleased enough to hear them: greet them, use their ship’s ' +
+          'name like you know it, and let the procedure carry a little warmth. A word about the ' +
+          'traffic, the hour, the weather down the well, whether they have been away a while, ' +
+          'or how the last lot went — one human touch alongside the instruction, never instead ' +
+          'of it. Warm does not mean chatty: this is still radio, and the clearance still comes ' +
+          'first and plainly. ' +
+          'Do not discuss politics, the faction board, gossip, or other ships’ business. ' +
+          'Do not write a reply from the commander: they are a real person at the controls and ' +
+          'this channel does not speak for them. ' +
+          `Write exactly ${n} line${n === 1 ? '' : 's'} — the tower’s transmission, nothing ` +
+          'else. Output only the spoken words, with no speaker name and no stage directions.',
+      },
+      {
+        role: 'user',
+        content:
+          `WHO YOU ARE: ${req.speakerNames[req.speakers[0]] ?? 'Traffic Control'}
+` +
+          // The ship being called. Without this the model reached for the only
+          // name it had — the station's — and cleared "Corman Beacon" to a pad
+          // at Corman Beacon. The callsign is the whole point of the channel.
+          `WHO YOU ARE CALLING: ${brief.tokens.myship ?? 'the commander'}` +
+          ` — address them by that name, or as "Commander". Never address them ` +
+          `by the station's name; that is YOU.
+` +
+          (brief.tokens.pad
+            ? `THE PAD THEY ARE CLEARED TO: ${brief.tokens.pad} — say this number and no other.
+`
+            : `NO PAD HAS BEEN ASSIGNED — do not name one.
+`) +
+          (req.dossier ? `
+WHERE THIS IS: 
+${req.dossier}
+` : '') +
+          `
+WHAT IS HAPPENING RIGHT NOW: ${req.situation ?? 'a ship is on approach'}
+` +
+          `
+THE MOMENT: ${sceneEnergy(req.rotate ?? 0)}
+` +
+          `
+Write the transmission now.`,
+      },
+    ];
+  }
+
   return [
       {
       role: 'system',
@@ -181,8 +321,14 @@ export function buildSceneChat(req: SceneRequest, history: ChatMessage[] = []): 
         // word "clip" and a scene promptly described a voice as "clipped".
         'Names shrink with familiarity: nobody on a working channel gives an organisation its ' +
         'full registered name twice. ' +
-        'Keep every exchange entirely between local speakers. Their attention stays on immediate ' +
-        'work, danger, money, traffic, cargo, factions, repairs, schedules, rumours and each other. ' +
+        'Keep every exchange entirely between local speakers. ' +
+        // The single shared attention list used to live here — "work, danger,
+        // money, traffic, cargo, FACTIONS, repairs, schedules, rumours and each
+        // other" — read identically by all seven channels. It is why a crew on
+        // an intercom discussed the influence board as readily as two strangers
+        // on the open channel. Per-channel subjects replace it; see
+        // CHANNEL_SUBJECTS, appended below where recency makes it count.
+        `WHAT THESE PEOPLE TALK ABOUT: ${CHANNEL_SUBJECTS[req.channel]} ` +
         // The old version of this passage gave worked examples ("a contested
         // faction board might produce rumours…") and the model memorised them
         // as vocabulary: "board" turned up in eight scenes out of ten as a
@@ -289,7 +435,86 @@ export function buildSceneChat(req: SceneRequest, history: ChatMessage[] = []): 
         // thirteen minutes, in different words. This rotates which part of the
         // briefing carries the scene; when the named part is absent it reads as
         // a preference and the model falls back to what is there.
-        `${commsAnchorLean(req.rotate ?? 0)}\n\n` +
+        `${commsAnchorLean(req.rotate ?? 0, req.channel)}\n\n` +
+
+        // ------------------------------------------------- THE HOUSE STYLE
+        //
+        // Three instructions that live HERE, at the very end of the user
+        // message, and not up in the standing prose — because position is what
+        // makes them work at this model size, and that is measurable.
+        //
+        // The complaint that produced them: the air had gone technical. Two
+        // haulers on the open channel discussing harmonics; a crew intercom
+        // that was 100% equipment. An audit against the reference corpus
+        // (EDCoPilot's hand-written static chatter, 872 lines) put numbers on
+        // it — that corpus averages 6.8 words a line and carries hardware
+        // vocabulary on 3% of them; this app was averaging 18.7 words and 26%.
+        //
+        // The cause is one thing, not two. A small model told to write a long
+        // radio line will fill it, and its filler for science fiction is
+        // machinery — so the length was buying the jargon. Measured over
+        // 16-scene runs at temperature 0.95, each block added on its own and
+        // then together (words per line / jargon per line):
+        //
+        //   baseline        18.7w  26%
+        //   + LENGTH        12.1w   8%   density fixed, but people vanished
+        //   + SUBJECT       17.0w  10%   people back, lines still long
+        //   + ANSWER        19.5w  12%
+        //   all three       12.4w   3%   at the reference corpus's own rate
+        //
+        // Note what this does NOT contradict. CREW's channel subject already
+        // said "never reach for a technical term when an ordinary one does the
+        // job", and CREW measured the WORST channel in the run at 100%. The
+        // same instruction is obeyed here and ignored there, so the lesson is
+        // about placement, not wording: standing prose in a 600-word system
+        // preamble is scenery, and the last thing before "write now" is an
+        // order.
+        // NO WORD LIST HERE, AND THAT IS THE POINT.
+        //
+        // This block used to enumerate the offenders — conduits, couplings,
+        // regulators and the rest — and the enumeration is gone on measured
+        // evidence, not taste. A 40-scene A/B on the channel's other tic put a
+        // word in the prompt to forbid it and the model used it MORE THAN
+        // TWICE as often: 'near' went from 23% of scenes to 55%. That is this
+        // codebase's oldest failure, the one the faction-board incident and
+        // the "clip" -> "clipped" leak both taught: anything quotable in the
+        // prompt eventually gets quoted, and a prohibition is quotable.
+        //
+        // The rule survives without the list. What did the work was naming the
+        // SUBJECT that is off-limits and giving somewhere to go instead; the
+        // vocabulary was only ever an illustration, and an expensive one.
+        `NOT ABOUT EQUIPMENT. These are people talking, not a maintenance report. Do not build ` +
+        `the exchange out of machinery, systems, readings or procedures. If something aboard ` +
+        `matters, name it the way its owner would in one plain word and move straight on to ` +
+        `what it costs somebody.\n\n` +
+
+        // The length rule, and the reason it is phrased as a SENTENCE and not
+        // as a word cap. A hard "under twelve words" was tried once before and
+        // reverted: it produced telegraphic command-fragments that read as code
+        // rather than talk. Six to fourteen words is the reference corpus's own
+        // range, and asking for a short complete sentence gets it without the
+        // fragments — "Docking request acknowledged. Proceed to landing pad
+        // twelve" is nine words and perfectly ordinary speech.
+        //
+        // AND LEAVE THE SYSTEM PROMPT'S "lines may run to a sentence or two"
+        // WHERE IT IS. It reads like a contradiction of this block and it is
+        // load-bearing anyway: cutting it was measured over 32 scenes and made
+        // things WORSE, 9% hardware vocabulary to 19%, at the same line length.
+        // The permission is what keeps a short line a sentence instead of a
+        // fragment; the order here is what keeps it short. Tidying the pair
+        // into agreement costs the result.
+        `ONE THOUGHT PER LINE. A line is a single short spoken sentence — most run six to ` +
+        `fourteen words. No stacked clauses, no line that states a fact and then explains it. ` +
+        `Say the one thing and stop.\n\n` +
+
+        // What stops the short lines going cold. On its own the length rule
+        // halved the number of scenes with any person in them at all (47% ->
+        // 19%): brevity spent on objects instead of people. This is the block
+        // that puts them back, and it is why the three ship together.
+        `THE SECOND LINE IS A PERSON, NOT MORE INFORMATION. The first line puts something on the ` +
+        `table; every line after it is somebody REACTING — agreeing, refusing, complaining, ` +
+        `teasing, worrying about a person, or telling them what to do. Never answer a line with ` +
+        `further detail about the same object.\n\n` +
 
         `Write the ${n} line${n === 1 ? '' : 's'} now.`,
     },
@@ -536,17 +761,65 @@ function isDegenerateTurn(text: string): boolean {
   return top >= 4;
 }
 
+/** A line, reduced to what makes it the same line: words, lowercased. */
+function lineKey(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]+/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean)
+    .join(' ');
+}
+
+/**
+ * Has the writer already said this, in an earlier scene?
+ *
+ * `isDegenerateTurn` catches a line repeating inside ONE scene. This catches
+ * the other direction, which a 60-scene run found and it could not: the model
+ * is fed its own accepted scenes as a rolling transcript, so a good line comes
+ * back later almost word for word — twice verbatim in sixty, and once across
+ * two different channels, a crew intercom and traffic control sharing a
+ * sentence about a life-support scrubber. That is the transcript teaching
+ * rather than reminding.
+ *
+ * A high bar deliberately: real radio repeats stock phrases ("say again",
+ * "cleared to dock") and gating those would flatten the channel. Only a
+ * substantial line that is nearly wholly reused counts.
+ */
+export function echoesRecent(lines: readonly string[], recentAir: readonly string[]): string | null {
+  const seen = new Set<string>();
+  for (const scene of recentAir) for (const l of scene.split('\n')) seen.add(lineKey(l));
+  for (const line of lines) {
+    const key = lineKey(line);
+    // Short utterances are stock radio and must stay repeatable.
+    if (key.split(' ').length < 7) continue;
+    if (seen.has(key)) return line;
+    // Near-misses too: the same sentence with a discourse marker bolted on
+    // ("So the primary life support scrubber…") is the observed failure.
+    for (const prior of seen) {
+      if (prior.length < 30) continue;
+      if (prior.includes(key) || key.includes(prior)) return line;
+    }
+  }
+  return null;
+}
+
 export function acceptSceneReply(
   reply: string,
   req: SceneRequest,
   id: string,
   ttlMs: number,
   arcId?: string,
+  recentAir: readonly string[] = [],
 ): SceneOutcome {
   const turns = parseSceneReply(reply, req.speakers, req.speakerNames);
   if (!turns.length) return { ok: false, why: 'no-turns' };
   if (turns.some((t) => isDegenerateTurn(t.text))) {
     return { ok: false, why: 'invalid', detail: 'degenerate turn — one clause on repeat' };
+  }
+  const echo = echoesRecent(turns.map((t) => t.text), recentAir);
+  if (echo) {
+    return { ok: false, why: 'invalid', detail: `echo of an earlier scene: "${echo.slice(0, 48)}"` };
   }
 
   const scene: Scene = {
@@ -670,6 +943,27 @@ export class SceneSlots {
     this.slots.set(key, list);
     if (nowMs > slot.readyBy) return null;
     return slot.scene;
+  }
+
+  /**
+   * Throw away everything held for one key, ready or still being written.
+   *
+   * `sweep` forgets scenes whose TIME has passed; this is for scenes whose
+   * MOMENT has passed while the clock says they are still fine. The tower is
+   * the whole reason it exists: a clearance written for an arrival is not a
+   * worse departure line, it is a wrong one — "welcome back, you're cleared to
+   * approach" spoken to a commander who has just undocked. TTL cannot catch
+   * that, because the scene is only seconds old; only the event that changed
+   * the moment knows.
+   *
+   * In-flight reservations go too. A generation already running for the old
+   * moment would otherwise land in the slot a second later and be transmitted
+   * as if it were about the new one.
+   */
+  discard(key: string): number {
+    const n = this.count(key);
+    this.slots.delete(key);
+    return n;
   }
 
   /** Forget slots whose moment has passed. */
@@ -811,6 +1105,20 @@ export class ChatterConversation {
  * what makes the air feel alive rather than merely large.
  */
 export const SITUATIONS: Readonly<Record<ChannelId, readonly string[]>> = {
+  TOWER: [
+    'clearing this ship to a pad',
+    'refusing this ship permission to dock',
+    'signing this ship off on its way out',
+    'a clearance given with a warning attached',
+    'a pad assignment the controller is faintly apologetic about',
+    'a departure acknowledged by somebody who has done this all shift',
+    'a clearance read out while the controller is plainly doing three things at once',
+    'a pad given grudgingly because somebody better connected wanted it',
+    'a clearance from a controller who recognises this ship and says so',
+    'a by-the-book clearance from somebody new to the desk',
+    'a clearance with a note about the weather, the traffic or the hour',
+    'a departure wished well by somebody who means it',
+  ],
   STATION: [
     'a pad reassignment nobody is happy about',
     'a customs or manifest check',
@@ -849,6 +1157,17 @@ export const SITUATIONS: Readonly<Record<ChannelId, readonly string[]>> = {
     'a maintenance crew asking traffic control to buy them five more minutes',
     'an outbound commander discovering their cargo clearance has expired',
     'a pilot reporting something odd seen on approach, tactfully',
+    'a controller eating at the desk and not hiding it',
+    'somebody covering a shift for a colleague who is unwell',
+    'a pilot asking where on the station you can still get a decent meal',
+    'the end of a long shift audible in somebody’s voice',
+    'a birthday being mentioned between clearances',
+    'a docking request from a ship that has been here many times before',
+    'a docking request from somebody who has never been here',
+    'a returning ship recognised by a controller who remembers them',
+    'a read-back that gets the pad number wrong the first time',
+    'clearance given, then immediately amended',
+    'somebody on the pad who has not been seen here in a very long time',
   ],
   LOCAL: [
     'a complaint about what a run pays',
@@ -895,6 +1214,12 @@ export const SITUATIONS: Readonly<Record<ChannelId, readonly string[]>> = {
     'a light on the scanner where nothing is charted',
     'wreckage spotted today that was not there yesterday',
     'a manoeuvre witnessed so bad it has to be retold immediately',
+    'two pilots comparing how long it has been since either was home',
+    'somebody eating in the cockpit mid-conversation',
+    'a complaint about the coffee wherever they last docked',
+    'a pilot mentioning a message from home they have not answered yet',
+    'somebody describing the view and somebody else entirely unmoved by it',
+    'a conversation about sleep, or the lack of it',
   ],
   CREW: [
     'a maintenance niggle that will not resolve',
@@ -934,6 +1259,11 @@ export const SITUATIONS: Readonly<Record<ChannelId, readonly string[]>> = {
     'a routine systems test producing one deeply non-routine result',
     'someone realising they loaded the wrong supplies several jumps ago',
     'something seen out the viewport that nobody can explain and nobody will log',
+    'an argument about whose turn it is to do something domestic',
+    'somebody’s cooking becoming a topic against their will',
+    'a crewmate being teased about a message from home',
+    'the small ritual that marks the end of a watch',
+    'somebody quietly asking a favour that has nothing to do with the ship',
   ],
   DEEP: [
     'the sheer absence of traffic',
@@ -966,6 +1296,8 @@ export const SITUATIONS: Readonly<Record<ChannelId, readonly string[]>> = {
     'the crew debating whether curiosity justifies another ten jumps',
     'a system that looks ordinary until one scan refuses to fit',
     'a moment when nobody speaks because there is genuinely nothing useful to say',
+    'a long silence broken by something completely mundane',
+    'somebody counting the days since they last saw another ship',
   ],
   EMERGENCY: [
     'a vessel losing systems',
@@ -996,6 +1328,7 @@ export const SITUATIONS: Readonly<Record<ChannelId, readonly string[]>> = {
     'a crisis resolved by something embarrassingly simple',
     'a supposed emergency turning out to conceal something else',
     'a rescue completed, followed by an argument about who caused it',
+    'a stand-down after something that turned out to be nothing',
   ],
   CARRIER: [
     'services being advertised to local traffic',
@@ -1026,6 +1359,9 @@ export const SITUATIONS: Readonly<Record<ChannelId, readonly string[]>> = {
     'somebody discovering they left a ship on the carrier several systems ago',
     'a visiting commander asking where the carrier is going next',
     'the carrier owner changing plans halfway through explaining the plans',
+    'a supply of something ordinary running low and mattering more than it should',
+    'crew rota complaints on a long parking',
+    'somebody planning what they will do with shore leave',
   ],
   CONCOURSE: [
     'a delay announcement',
@@ -1065,5 +1401,9 @@ export const SITUATIONS: Readonly<Record<ChannelId, readonly string[]>> = {
     'a passenger discovering their ship has departed without them',
     'a maintenance announcement accidentally broadcasting an internal conversation',
     'a traveller retelling something they saw on the way in, embellishing freely',
+    'a lost property announcement for something faintly embarrassing',
+    'a notice about a canteen closure that will ruin somebody’s day',
+    'a public reminder nobody has ever obeyed',
+    'somebody being paged who plainly does not want to be found',
   ],
 };

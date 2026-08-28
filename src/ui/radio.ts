@@ -29,6 +29,7 @@
 import {
   DUCK_RESTORE_MS,
   ambientGainDb,
+  towerGainDb,
   duckRampMs,
   musicGainDb,
   type BusId,
@@ -91,6 +92,8 @@ export class RadioBus {
   private priorityDepth = 0;
   /** Comms transmissions currently sounding — MUSIC thins under these. */
   private ambientDepth = 0;
+  /** Transmissions currently sounding on the tower bus. */
+  private towerDepth = 0;
   /** The routed music element, so it is only ever wired into the graph once
    *  (a second MediaElementAudioSourceNode for one element throws). */
   private musicSrc: MediaElementAudioSourceNode | null = null;
@@ -129,7 +132,7 @@ export class RadioBus {
       const master = ctx.createGain();
       master.gain.value = 1;
       master.connect(ctx.destination);
-      for (const id of ['PRIORITY', 'AMBIENT', 'MUSIC'] as BusId[]) {
+      for (const id of ['PRIORITY', 'TOWER', 'AMBIENT', 'MUSIC'] as BusId[]) {
         const g = ctx.createGain();
         g.gain.value = 1;
         g.connect(master);
@@ -165,7 +168,7 @@ export class RadioBus {
     if (!ctx) return;
     const db = volume0to1 <= 0 ? -120 : 20 * Math.log10(Math.min(1, volume0to1));
     this.configuredDb.set(bus, db);
-    if (bus === 'AMBIENT' || bus === 'MUSIC') this.applyDuck();
+    if (bus === 'AMBIENT' || bus === 'MUSIC' || bus === 'TOWER') this.applyDuck();
     else {
       const g = this.buses.get(bus);
       if (g) g.gain.setTargetAtTime(dbToGain(db), ctx.currentTime, 0.02);
@@ -178,11 +181,22 @@ export class RadioBus {
     if (!ctx) return;
     const speaking = this.priorityDepth > 0;
     const chattering = this.ambientDepth > 0;
+    const towering = this.towerDepth > 0;
     const ms = duckRampMs(speaking);
+
+    // The tower itself only steps aside for the operator.
+    const tower = this.buses.get('TOWER');
+    if (tower) {
+      const target = dbToGain(towerGainDb(this.configuredDb.get('TOWER') ?? 0, speaking));
+      tower.gain.cancelScheduledValues(ctx.currentTime);
+      tower.gain.setTargetAtTime(target, ctx.currentTime, ms / 3000);
+    }
 
     const ambient = this.buses.get('AMBIENT');
     if (ambient) {
-      const target = dbToGain(ambientGainDb(this.configuredDb.get('AMBIENT') ?? 0, speaking));
+      const target = dbToGain(
+        ambientGainDb(this.configuredDb.get('AMBIENT') ?? 0, speaking, towering),
+      );
       ambient.gain.cancelScheduledValues(ctx.currentTime);
       ambient.gain.setTargetAtTime(target, ctx.currentTime, ms / 3000);
     }
@@ -191,10 +205,14 @@ export class RadioBus {
     const music = this.buses.get('MUSIC');
     if (music) {
       const target = dbToGain(
-        musicGainDb(this.configuredDb.get('MUSIC') ?? 0, speaking, chattering),
+        musicGainDb(this.configuredDb.get('MUSIC') ?? 0, speaking, chattering, towering),
       );
       music.gain.cancelScheduledValues(ctx.currentTime);
-      music.gain.setTargetAtTime(target, ctx.currentTime, duckRampMs(speaking || chattering) / 3000);
+      music.gain.setTargetAtTime(
+        target,
+        ctx.currentTime,
+        duckRampMs(speaking || towering || chattering) / 3000,
+      );
     }
   }
 
@@ -405,6 +423,7 @@ export class RadioBus {
     if (p.beep === 'roger' || p.beep === 'both') this.beep(ctx, out, endAt + 0.06, 1560, 0.09);
 
     if (opts.bus === 'PRIORITY') this.priorityDepth += 1;
+    else if (opts.bus === 'TOWER') this.towerDepth += 1;
     else if (opts.bus === 'AMBIENT') this.ambientDepth += 1;
     if (opts.bus !== 'MUSIC') this.applyDuck();
 
@@ -417,6 +436,9 @@ export class RadioBus {
         settled = true;
         if (opts.bus === 'PRIORITY') {
           this.priorityDepth = Math.max(0, this.priorityDepth - 1);
+          this.applyDuck();
+        } else if (opts.bus === 'TOWER') {
+          this.towerDepth = Math.max(0, this.towerDepth - 1);
           this.applyDuck();
         } else if (opts.bus === 'AMBIENT') {
           this.ambientDepth = Math.max(0, this.ambientDepth - 1);

@@ -741,3 +741,47 @@ export function factionPolitics(intel: SystemIntel | undefined): string[] {
   }
   return lines;
 }
+
+/**
+ * The tower calling THIS ship — the one brief that is about the commander.
+ *
+ * Every other brief describes the world; this one describes a transmission
+ * addressed to the player, so it carries the two things such a transmission
+ * cannot do without: what their ship is called, and the pad number the game
+ * actually assigned. Both come from the journal — `Loadout` names the ship,
+ * `DockingGranted` gives the pad — so the tower can be exactly right about
+ * the one detail the commander is about to act on.
+ */
+export function towerBrief(fact: {
+  station: string;
+  system: string;
+  ship: string;
+  pad?: number | null;
+  /** What the tower is actually calling about. */
+  moment: 'granted' | 'denied' | 'requested' | 'departure' | 'arrival';
+  /** Why, when the game refused — already in plain words. */
+  reason?: string | null;
+}): Brief {
+  const src: FactSource = { kind: 'geography', system: fact.system };
+  const nouns = [noun(fact.station, src), noun(fact.ship, src)];
+  const figures: BriefFigure[] = [];
+  const tokens: Record<string, string> = {
+    station: fact.station,
+    system: fact.system,
+    callsign: fact.station,
+    myship: fact.ship,
+  };
+  if (fact.pad != null && fact.pad > 0) {
+    tokens.pad = String(fact.pad);
+    figures.push(figure(fact.pad, src));
+  }
+  if (fact.reason) tokens.reason = fact.reason;
+  return {
+    kind: 'geography',
+    nouns,
+    figures,
+    tokens,
+    subjectKey: `tower:${fact.station.toLowerCase()}:${fact.moment}`,
+    summary: `${fact.station} tower to ${fact.ship}`,
+  };
+}

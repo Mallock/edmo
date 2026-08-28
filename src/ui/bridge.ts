@@ -232,6 +232,34 @@ export async function piperSpeak(
   return invoke<ArrayBuffer>('piper_speak', { text, lengthScale, voice });
 }
 
+/** One line through Microsoft's online neural voices. Rejects on any failure
+ *  so the caller can fall back to the bundled local voice. */
+export async function edgeSpeak(
+  text: string,
+  voice: string,
+  rate: number,
+  pitch: number,
+): Promise<ArrayBuffer> {
+  return invoke<ArrayBuffer>('edge_speak', { text, voice, rate, pitch });
+}
+
+export interface EdgeVoice {
+  ShortName: string;
+  Locale: string;
+  Gender: string;
+  VoiceTag?: { VoicePersonalities?: string[] };
+}
+
+/** The service's live English catalogue. Empty array when offline — the
+ *  picker then shows what is stored rather than nothing. */
+export async function edgeVoices(): Promise<EdgeVoice[]> {
+  try {
+    return await invoke<EdgeVoice[]>('edge_voices');
+  } catch {
+    return [];
+  }
+}
+
 export async function llmModels(endpoint: string, apiKey?: string | null): Promise<string[]> {
   return invoke<string[]>('llm_models', { endpoint, apiKey: apiKey ?? null });
 }

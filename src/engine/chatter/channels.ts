@@ -148,6 +148,28 @@ export interface ChannelDef {
 const ALL_BUT_CRISIS: readonly Act[] = ['QUIET', 'BUILDING', 'AFTERMATH'];
 
 export const CHANNELS: Readonly<Record<ChannelId, ChannelDef>> = {
+  // Traffic control talking to THIS ship. Rare on purpose — it fires on the
+  // real docking events rather than on a cadence, because a tower that hails
+  // you every forty seconds is a tower nobody listens to.
+  TOWER: {
+    id: 'TOWER',
+    profile: 'tower',
+    // The HIGHEST weight on the dial, which looks alarming and is not.
+    //
+    // Rarity is enforced by the channel being SHUT unless the commander's own
+    // docking events have opened it — see towerCallPending. Weight decides
+    // only what happens once it is open, and then the tower should win: it is
+    // answering something the commander just did and they are waiting on it.
+    //
+    // It was 0, which was the bug. selectChannel runs a weighted lottery, so
+    // `roll -= 0` never fires and the tower could not be picked to transmit at
+    // all — a clearance could be written and then sit in its slot unheard.
+    weight: 20,
+    // Long enough that a granted-then-denied pair does not double up, short
+    // enough that a departure right after an arrival still gets its line.
+    minIntervalMs: 15_000,
+    acts: ALL_BUT_CRISIS,
+  },
   STATION: {
     id: 'STATION',
     profile: 'station',
@@ -228,6 +250,28 @@ export interface ChannelContext {
   mutedChannels: ReadonlySet<ChannelId>;
   /** True when a verified brief exists for an emergency right now. */
   emergencyBriefReady: boolean;
+  /**
+   * The tower has something to say to THIS ship, right now.
+   *
+   * The tower is the only channel that is not ambient, and it must behave
+   * like it: it answers the commander's own docking events and is otherwise
+   * silent. Shipped without this it was merely a channel with weight 0 — and
+   * weight is not what the scheduler uses, it picks the open channel with the
+   * fewest scenes in flight. So an empty tower kept winning that comparison
+   * and hailed a ship in open space about a pad it had invented.
+   */
+  towerCallPending: boolean;
+  /**
+   * The tower has been called but the writer has not had long enough yet.
+   *
+   * The template tier can produce a correct clearance instantly, and for a
+   * while that was the whole design — procedure does not need a model. But a
+   * template says the same eight things for ever, and the commander is the one
+   * person on the channel who is actually listening. So the model gets first
+   * refusal for a few seconds, and the template is the backstop that
+   * guarantees the clearance is never simply missed.
+   */
+  towerWrittenOnly: boolean;
 }
 
 export type ChannelState =
@@ -252,6 +296,17 @@ export function evaluateChannel(id: ChannelId, ctx: ChannelContext): ChannelStat
   if (last !== undefined && ctx.nowMs - last < def.minIntervalMs) return shut('too-soon');
 
   switch (id) {
+    // The tower is in reach whenever a port is, and on the same terms — it is
+    // the same aerial. What makes it rare is that nothing schedules it; only
+    // a docking event claims it.
+    case 'TOWER': {
+      // Silent unless the commander just did something a tower would answer.
+      if (!ctx.towerCallPending) return shut('nothing-to-say');
+      if (ctx.resolvedPorts <= 0) return shut('no-ports-in-system');
+      const strength = signalStrength(ctx.portSeparationLs);
+      if (strength < MIN_AUDIBLE_STRENGTH) return shut('out-of-range');
+      return { id, open: true, strength, degrade: degradeFor(strength) };
+    }
     case 'STATION': {
       if (ctx.resolvedPorts <= 0) return shut('no-ports-in-system');
       const strength = signalStrength(ctx.portSeparationLs);

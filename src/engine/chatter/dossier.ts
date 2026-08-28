@@ -39,6 +39,16 @@ export interface DossierInput {
   place?: string;
   /** Scanned worlds for the "out the window" line — see WorldFact. */
   worlds?: readonly WorldFact[];
+  /**
+   * Named pilots the commander has actually scanned here, most recent first.
+   *
+   * The journal names them (ShipTargeted carries PilotName_Localised, rank,
+   * ship, faction and legal status) and the app was keeping only the rank for
+   * a threat callout. These are real people in the real sky at this moment —
+   * far better radio than another invented hauler, and the app's own rule is
+   * never to invent what the journal already knows.
+   */
+  pilots?: readonly PilotFact[];
   /** Summaries from the fact briefs — construction depots, markets, events. */
   extra?: readonly string[];
   /**
@@ -116,6 +126,29 @@ export interface WorldFact {
   terraformable?: boolean;
   /** Landable and never footfalled — nobody has ever stood there. */
   virgin?: boolean;
+}
+
+/** A pilot seen in this system, as a person rather than as a contact. */
+export interface PilotFact {
+  name: string;
+  rank?: string;
+  ship?: string;
+  faction?: string | null;
+  legal?: string | null;
+}
+
+/** One line for the briefing: who is about, and what they are flying. */
+export function pilotNotes(pilots: readonly PilotFact[], rotate = 0, cap = 3): string[] {
+  const notes = pilots.map((p) => {
+    const bits: string[] = [];
+    if (p.ship) bits.push(`flying a ${p.ship}`);
+    if (p.rank) bits.push(p.rank.toLowerCase());
+    // Wanted is the only legal status worth the air — "Clean" is everybody.
+    if (p.legal && /wanted|lawless/i.test(p.legal)) bits.push(p.legal.toLowerCase());
+    if (p.faction) bits.push(`with ${p.faction}`);
+    return `${p.name}${bits.length ? ` (${bits.slice(0, 3).join(', ')})` : ''}`;
+  });
+  return rotateWindow(notes, cap, rotate).shown;
 }
 
 /** "Icy body" → "an icy world" / "an icy moon"; giants keep their grandeur. */
@@ -196,6 +229,10 @@ export function buildDossier(input: DossierInput): string {
     ...(s?.signals ?? []).map((x) => x.name),
     ...(s?.factions ?? []).map((f) => f.name),
     ...(s?.controllingFaction ? [s.controllingFaction] : []),
+    // People cool exactly like places. A real pilot is a better noun than an
+    // invented one, but a real pilot in every scene is the same failure with
+    // a nicer name on it.
+    ...(input.pilots ?? []).map((p) => p.name),
   ]);
   const cool = (names: string[]): string[] => {
     const kept = names.filter((n) => !hot.has(n));
@@ -282,7 +319,26 @@ export function buildDossier(input: DossierInput): string {
   // recentAir above) — unless cooling would empty the list, because a
   // briefing with no places at all is worse than a warm one.
   const stationSignals = (s?.signals ?? []).filter((x) => x.isStation);
-  const stations = cool(stationSignals.filter((x) => !isFleetCarrier(x)).map((x) => x.name));
+  const stationNames = stationSignals.filter((x) => !isFleetCarrier(x)).map((x) => x.name);
+  // A SINGLE-STATION system defeated the brake completely, and this is where
+  // the worst repetition in the audits was coming from — not from the
+  // instructions, which already say most strong lines need no proper noun at
+  // all, but from the data contradicting them sixty times in sixty. `cool()`
+  // falls back to the whole list when filtering would empty it, so a system
+  // with one port handed the writer that port's name in EVERY prompt however
+  // saturated the air already was. Measured: 60/60 briefings named it.
+  //
+  // The old reasoning — "a briefing with no places at all is worse than a warm
+  // one" — was written when this was a shorter document. It now also carries
+  // signals, worlds, the people seen about and the population, so dropping the
+  // station row leaves plenty of somewhere. If those are all missing too, the
+  // warm name is still better than nothing and comes back.
+  const somewhereElse =
+    (s?.signals ?? []).some((x) => !x.isStation) ||
+    (input.worlds ?? []).length > 0 ||
+    (input.pilots ?? []).length > 0;
+  const allHot = stationNames.length > 0 && stationNames.every((n) => hot.has(n));
+  const stations = allHot && somewhereElse ? [] : cool(stationNames);
   const carriers = stationSignals.filter(isFleetCarrier).length;
   if (stations.length) {
     const { shown, more } = trim([...new Set(stations)], 5);
@@ -301,6 +357,10 @@ export function buildDossier(input: DossierInput): string {
   const keptSites = new Set(cool(siteSignals.map((x) => x.name)));
   const sites = siteSignals.filter((x) => keptSites.has(x.name)).map(describeSignal);
   if (sites.length) {
+    // Six. Trimming this row to three was TRIED as a way to quieten the place
+    // names and measured worse on every axis (politics 25% -> 38%, life 13% ->
+    // 0%) — though at sixteen scenes a run, that is inside the noise. Recorded
+    // so it is not "obviously" retried: fewer signals did not buy more life.
     const { shown, more } = trim([...new Set(sites)], 6);
     lines.push(`Signals detected: ${shown.join(' · ')}${plus(more)}`);
   }
@@ -310,6 +370,31 @@ export function buildDossier(input: DossierInput): string {
   // bulletin, and an icy moon nobody has ever stood on is conversation.
   const worlds = worldNotes(input.worlds ?? [], rot);
   if (worlds.length) lines.push(`Out the window: ${worlds.join(' · ')}`);
+
+  // WHO IS ABOUT. Real people, named by the game, cooled like every other
+  // noun so one hauler cannot ride every scene.
+  const pilotSource = (input.pilots ?? []).filter((p) => !hot.has(p.name));
+  const pilots = pilotNotes(pilotSource, rot);
+  if (pilots.length) lines.push(`Seen about lately: ${pilots.join(' · ')}`);
+
+  // WHO LIVES HERE. A prompt census over a real system found the briefing was
+  // 62% factions and infrastructure and 0% anything domestic — and the writer
+  // obeyed, filing bulletins from a place nobody appeared to live in. This row
+  // states, in the plainest terms, that the system has a population and a trade
+  // those people work in. It invents NOTHING: the number and the economy are
+  // the journal's own, restated as what they mean for a person rather than as
+  // a specification. The texture on top is the model's job, which is the half
+  // it is actually good at.
+  if (s?.population && s.population > 0) {
+    const work = s.economy ? `${s.economy.toLowerCase()} work` : 'the local trade';
+    const crowd =
+      s.population >= 1_000_000
+        ? `${(s.population / 1_000_000).toFixed(1)} million people live here`
+        : s.population >= 1_000
+          ? `about ${Math.round(s.population / 1000)} thousand people live here`
+          : `only ${s.population.toLocaleString('en-US')} people live here`;
+    lines.push(`People: ${crowd}, most of them on ${work} — shifts, meals, families, days off`);
+  }
 
   // How far out things are — the most complained-about fact in the game.
   const sep = input.portSeparationLs;
@@ -356,7 +441,12 @@ export function buildDossier(input: DossierInput): string {
   // Nothing known at all still says something. An empty briefing reads to a
   // model as an instruction to name nothing, which is the exact failure this
   // whole approach replaced.
-  const bare = !s?.signals?.length && !s?.controllingFaction && !props.length;
+  // A pilot the commander has actually scanned counts as knowing something,
+  // even out where nothing else is surveyed. Somebody is out there and has a
+  // name — that is the opposite of an empty briefing, and in deep space it may
+  // be the only human fact available.
+  const bare =
+    !s?.signals?.length && !s?.controllingFaction && !props.length && !(input.pilots ?? []).length;
   if (bare && !(input.extra ?? []).length) {
     return `System: ${input.system} — unsurveyed. Nobody here knows much about this place yet.`;
   }

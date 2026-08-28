@@ -133,6 +133,7 @@ import { momentOf, CombatStreak } from '../engine/moments.ts';
 import { SessionArc } from '../engine/arc.ts';
 import { CampaignTracker } from '../engine/campaign.ts';
 import { spineLines } from '../engine/spine.ts';
+import { PortMemory, portGreeting, carrierTravels, portLedger } from '../engine/ports.ts';
 import { oracleCommandOf, planOracle, type OraclePlan } from '../engine/oracle.ts';
 import {
   profileFor,
@@ -175,8 +176,10 @@ import {
   constructionBrief,
   geographyBrief,
   systemBrief,
+  towerBrief,
 } from '../engine/chatter/briefs.ts';
-import { textureBrief, type Brief, type FactSource } from '../engine/chatter/brief.ts';
+import { textureBrief, type Brief, type BriefKind, type FactSource } from '../engine/chatter/brief.ts';
+import type { ArcSubject } from '../engine/chatter/cast.ts';
 import { chooseFunction, nextBeatFor, pickBrief } from '../engine/chatter/director.ts';
 import type { ChannelState } from '../engine/chatter/channels.ts';
 import { sceneTranscript } from '../engine/chatter/scenes.ts';
@@ -274,6 +277,7 @@ import {
   piperAvailable,
   piperDownloadVoice,
   piperVoices,
+  edgeVoices,
   copyText,
   setClickThrough,
   spanshTradeRoute,
@@ -609,6 +613,46 @@ export interface AppSnapshot {
 }
 
 const GAME_LIVE_WINDOW_MS = 90_000;
+/** How long an arrival or departure may wait for its scene before it lapses. */
+const ARRIVAL_CLAIM_MS = 120_000;
+/** A clearance goes stale fastest of all — it answers something just done. */
+const TOWER_CLAIM_MS = 90_000;
+
+/**
+ * What KIND of thread a brief starts, in the arc system's own vocabulary.
+ *
+ * The two vocabularies were never joined up because nothing ever opened an
+ * arc. `subjectKind` is what the cast book files a thread under; a brief knows
+ * only what sort of fact it came from. The mapping is the obvious one, and
+ * 'personal' is the honest bucket for the rest — a texture brief about a meal
+ * or the end of a shift is somebody's own business, not a market or a faction.
+ */
+function arcSubjectFor(kind: BriefKind): ArcSubject {
+  switch (kind) {
+    case 'market':
+      return 'price';
+    case 'faction':
+      return 'faction';
+    case 'construction':
+      return 'build';
+    case 'event':
+      return 'grudge';
+    default:
+      return 'personal';
+  }
+}
+/**
+ * How long the writer gets before the template tier is allowed to speak.
+ *
+ * A scene takes a few seconds when the engine is free and much longer when the
+ * copilot is mid-answer, so this is generous — but it is bounded, because the
+ * clearance has to arrive while the commander is still flying towards the pad.
+ * Docking granted to docked was 70 seconds on the session this was measured
+ * from, which is the budget this sits inside.
+ */
+const TOWER_WRITER_GRACE_MS = 18_000;
+/** How long the dial must sit still before the stream is actually opened. */
+const TUNE_SETTLE_MS = 350;
 
 /**
  * The longest a comms write can legitimately hold the writer.
@@ -696,6 +740,11 @@ function effectiveCommsSource(source: AppSettings['comms']['source']): ChatterSo
 }
 
 const COMMS_SPEAKER_REFS: Readonly<Record<ChannelId, readonly string[]>> = {
+  // ONE voice. The tower transmits to the commander, and the commander is a
+  // person at a keyboard — putting words in their mouth is the one thing this
+  // app has never done. So the channel is one-sided by construction, not by
+  // instruction the model might wander away from.
+  TOWER: ['tower'],
   STATION: ['control', 'ship'],
   LOCAL: ['hauler', 'hauler2'],
   CREW: ['crew:ops', 'crew:engineering'],
@@ -710,6 +759,8 @@ export class AppCore {
   private hb: Heartbeat;
   private speaker = new Speaker(() => this.settings);
   /** Internet radio on the MUSIC bus — off unless the commander turns it on. */
+  /** Pending tune, while the dial is still moving. */
+  private tuneTimer: ReturnType<typeof setTimeout> | null = null;
   private music = new MusicPlayer(
     () => this.speaker.radioBus(),
     () => this.settings,
@@ -737,6 +788,17 @@ export class AppCore {
   private lmBusy = false;
   private piperOk = false;
   private piperVoiceList: string[] = [];
+  /**
+   * Microsoft's English catalogue, when the Edge engine is in use.
+   *
+   * The cast was always handed `piperVoiceList` regardless of engine, so on
+   * Edge every character was assigned a voice name the Edge service has never
+   * heard of — and `speakEdge` ignored the persona anyway and used the one
+   * configured voice for everybody. Two halves of the same fault: the cast had
+   * nothing real to draw on, and nothing drew on it. This is the pool it draws
+   * on now, roughly ninety en-* voices rather than one.
+   */
+  private edgeVoiceList: string[] = [];
   private voiceDownloading: string | null = null;
   private specs: SystemSpecs | null = null;
 
@@ -960,6 +1022,73 @@ export class AppCore {
    * tally — and folded from LIVE events only, so a bootstrap replay of the
    * same journals cannot count a run twice.
    */
+  /**
+   * Every port and carrier the commander has docked at, with how often and how
+   * long ago. Persisted, because the whole value is the long memory: a welcome
+   * that knows this is your ninth visit cannot be reconstructed from a session.
+   */
+  private ports: PortMemory = (() => {
+    try {
+      const raw = localStorage.getItem('edmo.ports.v1');
+      return PortMemory.fromJSON(raw ? JSON.parse(raw) : []);
+    } catch {
+      return new PortMemory();
+    }
+  })();
+  /** The port record as it stood BEFORE this docking, so a first arrival reads
+   *  as one rather than as a visit that has already been counted. */
+  private arrivalGreeting: string | null = null;
+  /**
+   * An arrival or departure waiting to be put on the air.
+   *
+   * The port memory was wired without this and the result was exactly nothing:
+   * docking twice produced no welcome, because scenes are chosen by a
+   * round-robin over whichever channels are open and NOTHING fired one because
+   * the ship had arrived. The greeting rode along in the briefing and waited
+   * for a STATION scene that had no particular reason to come.
+   *
+   * So a docking now CLAIMS the next station scene. It expires — a welcome
+   * that arrives four minutes after the clamps engage is worse than none, the
+   * same rule the rest of this tier already lives by.
+   */
+  private pendingArrival: { kind: 'arrive' | 'depart'; station: string; at: number } | null = null;
+  /**
+   * The tower wants this ship. Set by the real docking events, because that
+   * is when a tower would actually key the mic — a clearance is a reply to a
+   * request, not something that happens on a timer.
+   */
+  private pendingTower: {
+    moment: 'granted' | 'denied' | 'departure';
+    station: string;
+    pad: number | null;
+    reason: string | null;
+    at: number;
+    /**
+     * The writer has taken this call and a scene is on its way.
+     *
+     * NOT the same as the claim being over, which is the distinction the
+     * tower went mute on. Every other channel is open on facts about the
+     * world — there is a port, there is a crew — so spending a claim the
+     * moment the writer takes it costs nothing. TOWER is open on this field
+     * alone, so nulling it here shut the channel several seconds before the
+     * scene it was writing ever arrived, and a shut channel is not in the
+     * lottery: the clearance was written, landed in its slot, and rotted
+     * there for its full 150 s TTL.
+     *
+     * So the claim survives the write and is spent on the AIR instead. This
+     * flag is only what stops it being written twice while the first one is
+     * still in flight; TOWER_CLAIM_MS remains the outer bound, so a scene
+     * that never arrives still frees the channel after ninety seconds.
+     */
+    writing?: boolean;
+  } | null = null;
+
+  /** What the tower should call this ship. The journal names it; failing that
+   *  the ident, failing that the honest generic. */
+  private ownShipName(): string {
+    const cur = this.ship.current as { shipName?: string; shipIdent?: string } | null;
+    return cur?.shipName || cur?.shipIdent || 'Commander';
+  }
   private boozeRuns: Delivery[] = (() => {
     try {
       const raw = localStorage.getItem('edmo.booze.v1');
@@ -1319,6 +1448,31 @@ export class AppCore {
   private lastLedgerAt = 0;
   private ledgerEarnedMark = 0;
   private recentThreats = new Map<string, number>();
+  /**
+   * The commander's own hired crew, by name.
+   *
+   * The journal has been saying this for months — NpcCrewPaidWage names them
+   * on every wage run — while the CREW channel introduced them as "Ops". The
+   * app's own rule is never to invent what the journal knows.
+   */
+  private npcCrewName: string | null = null;
+  /**
+   * Named pilots actually seen in this system, most recent first.
+   *
+   * ShipTargeted carries PilotName_Localised, rank, ship, faction and legal
+   * status, and the app was keeping only the rank and the hull for a threat
+   * callout. These are real people flying real ships past the commander; they
+   * make far better radio than another invented hauler.
+   */
+  private seenPilots: Array<{
+    name: string;
+    rank: string;
+    ship: string;
+    faction: string | null;
+    legal: string | null;
+    system: string;
+    at: number;
+  }> = [];
 
   private listeners = new Set<() => void>();
   private version = 0;
@@ -1765,6 +1919,7 @@ export class AppCore {
         })
         .catch(() => undefined);
       void this.refreshPiperVoices();
+      void this.refreshEdgeVoices();
 
       // The memory bank MUST be loaded before the journal watch starts, or
       // the bootstrap replay refolds history into an empty bank.
@@ -2029,6 +2184,27 @@ export class AppCore {
           const where = typeof ev.StationName === 'string' ? ev.StationName : this.sm.location.station;
           if (where) {
             this.dockVisits.set(where, (this.dockVisits.get(where) ?? 0) + 1);
+            // Greet from the record as it stood BEFORE this arrival, then fold
+            // this one in. The other order would tell a first-time visitor
+            // they had been here once already.
+            const prior = this.ports.get(where);
+            this.arrivalGreeting = portGreeting(prior, Date.now(), where);
+            this.pendingArrival = { kind: 'arrive', station: where, at: Date.now() };
+            this.commsDirty = true;
+            this.ports.dock({
+              name: where,
+              system: (ev.StarSystem as string) ?? this.sm.location.system ?? 'unknown',
+              type: (ev.StationType as string) ?? null,
+              faction:
+                ((ev.StationFaction as { Name?: string } | undefined)?.Name as string) ?? null,
+              economy: (ev.StationEconomy_Localised as string) ?? null,
+              atIso: (ev.timestamp as string) ?? new Date().toISOString(),
+            });
+            try {
+              localStorage.setItem('edmo.ports.v1', JSON.stringify(this.ports.toJSON()));
+            } catch {
+              /* a full disk must not stop the ship docking */
+            }
             const fact = describeStation(ev);
             if (fact) this.stationFacts.set(where, fact);
           }
@@ -2506,6 +2682,25 @@ export class AppCore {
     switch (ev.event) {
       case 'ShipTargeted': {
         if (ev.TargetLocked !== true) return;
+        // Remember WHO, at every rank. The threat callout below only cares
+        // about the dangerous ones, but a Harmless Type-7 hauler is exactly
+        // the sort of person who belongs on the local channel.
+        const pilot = typeof ev.PilotName_Localised === 'string' ? ev.PilotName_Localised : '';
+        if (pilot && !/^\$/.test(pilot)) {
+          const system = this.sm.location.system ?? 'unknown';
+          this.seenPilots = [
+            {
+              name: pilot,
+              rank: typeof ev.PilotRank === 'string' ? ev.PilotRank : '',
+              ship: (ev.Ship_Localised as string) ?? (ev.Ship as string) ?? 'ship',
+              faction: typeof ev.Faction === 'string' ? ev.Faction : null,
+              legal: typeof ev.LegalStatus === 'string' ? ev.LegalStatus : null,
+              system,
+              at: now,
+            },
+            ...this.seenPilots.filter((p) => p.name !== pilot),
+          ].slice(0, 12);
+        }
         const rank = typeof ev.PilotRank === 'string' ? ev.PilotRank : '';
         if (!['Dangerous', 'Deadly', 'Elite'].includes(rank)) return;
         const ship = (ev.Ship_Localised as string) ?? (ev.Ship as string) ?? 'contact';
@@ -2555,6 +2750,11 @@ export class AppCore {
           `EVENT: Docking granted — pad ${pad} at ${station}${kind ? `, ${kind}` : ''}.`,
         );
         this.copilotReact('arrival', 'copilot — reacting to docking clearance…');
+        // And the tower says it too, on its own channel, by name. The operator
+        // line above is the app talking ABOUT the commander; this is the
+        // station talking TO them, which is a different voice and a different
+        // bus.
+        this.setTowerCall({ moment: 'granted', station, pad, reason: null, at: now });
         break;
       }
       case 'DockingDenied': {
@@ -2568,6 +2768,13 @@ export class AppCore {
         this.pushFeed('system', `⛔ ${text}${station ? ` (${station})` : ''}`);
         this.speak(text);
         this.copilotEvent(`EVENT: Docking denied at ${station || 'a station'} — ${why}.`);
+        this.setTowerCall({
+          moment: 'denied',
+          station: station || 'the station',
+          pad: null,
+          reason: why,
+          at: now,
+        });
         break;
       }
       case 'FSDTarget': {
@@ -2872,6 +3079,62 @@ export class AppCore {
             return;
           }
         }
+        break;
+      }
+      // The commander's crew, by name. Three events carry it — hiring, the
+      // wage run and a rank change — and the wage run fires often enough that
+      // a name is known within minutes of a session starting.
+      case 'CrewHire':
+      case 'NpcCrewRank':
+      case 'NpcCrewPaidWage': {
+        const name =
+          (ev.NpcCrewName as string) ?? (ev.Name as string) ?? (ev.CrewName as string) ?? '';
+        if (name.trim()) this.npcCrewName = name.trim();
+        break;
+      }
+      // THE STATION LOG. Trade and jobs are attributed to whatever the ship is
+      // actually docked at; in open space they belong to nobody and are
+      // dropped, because inventing an attribution would put another ship's
+      // cargo on this station's books.
+      // Departures were never handled at all — the other half of the complaint.
+      case 'Undocked': {
+        const where = (ev.StationName as string) ?? this.sm.location.station;
+        if (where) {
+          this.pendingArrival = { kind: 'depart', station: where, at: Date.now() };
+          this.setTowerCall({
+            moment: 'departure',
+            station: where,
+            pad: null,
+            reason: null,
+            at: Date.now(),
+          });
+        }
+        break;
+      }
+      case 'MarketBuy': {
+        this.ports.note(this.sm.location.station, {
+          bought: typeof ev.Count === 'number' ? ev.Count : 0,
+          commodity: (ev.Type_Localised as string) ?? (ev.Type as string) ?? null,
+        });
+        break;
+      }
+      case 'MarketSell': {
+        this.ports.note(this.sm.location.station, {
+          sold: typeof ev.Count === 'number' ? ev.Count : 0,
+          credits: typeof ev.TotalSale === 'number' ? ev.TotalSale : 0,
+          commodity: (ev.Type_Localised as string) ?? (ev.Type as string) ?? null,
+        });
+        break;
+      }
+      case 'MissionAccepted': {
+        this.ports.note(this.sm.location.station, { missionTaken: true });
+        break;
+      }
+      case 'MissionCompleted': {
+        this.ports.note(this.sm.location.station, {
+          missionDone: true,
+          credits: typeof ev.Reward === 'number' ? ev.Reward : 0,
+        });
         break;
       }
       case 'ReceiveText': {
@@ -3785,7 +4048,37 @@ export class AppCore {
       hasCrew: !st?.onFoot,
       mutedChannels: new Set(this.settings.comms.mutedChannels as ChannelId[]),
       emergencyBriefReady: false,
+      // The tower speaks only when the commander's own docking events give it
+      // something to say, and only while that is still fresh.
+      towerCallPending:
+        !!this.pendingTower && Date.now() - this.pendingTower.at < TOWER_CLAIM_MS,
+      // First refusal to the writer, then the template as backstop.
+      towerWrittenOnly:
+        !!this.pendingTower && Date.now() - this.pendingTower.at < TOWER_WRITER_GRACE_MS,
     };
+  }
+
+  /**
+   * Hand the tower a new thing to say, and bin whatever it was about to say.
+   *
+   * A tower scene is written for ONE moment. The live fault: dock, then undock
+   * inside the slot's 150 s life, and the arrival clearance still sitting in
+   * the slot is what goes out — "welcome back, you're cleared to approach",
+   * spoken to a commander who has just left the pad. The undock was read
+   * correctly; the line was simply the previous one.
+   *
+   * The TTL cannot catch this. That scene is seconds old and perfectly fresh
+   * by the clock — it is the MOMENT that expired, and only the event that
+   * replaced it knows. So every new call clears the channel it is about to
+   * speak on, including any generation still in flight for the old moment.
+   */
+  private setTowerCall(call: NonNullable<AppCore['pendingTower']>): void {
+    const prev = this.pendingTower;
+    if (!prev || prev.moment !== call.moment || prev.station !== call.station) {
+      this.comms.sceneSlots.discard('channel:TOWER');
+    }
+    this.pendingTower = call;
+    this.commsDirty = true;
   }
 
   private commsPendingCount(): number {
@@ -3819,14 +4112,30 @@ export class AppCore {
     }
   }
 
+  /** The nth real pilot seen in this system recently, if there is one. */
+  private pilotName(n: number): string | null {
+    const system = this.sm.location.system;
+    const cutoff = Date.now() - 90 * 60_000;
+    const here = this.seenPilots.filter((p) => p.system === system && p.at > cutoff);
+    return here[n]?.name ?? null;
+  }
+
   private commsRoleDisplay(ref: string): string {
+    if (ref === 'tower') {
+      const at = this.pendingTower?.station ?? this.sm.location.station;
+      return at ? `${at} Tower` : 'Tower';
+    }
     if (ref === 'control') return this.sm.location.station ?? `${this.sm.location.system} Control`;
     if (ref === 'ship') return 'Inbound Traffic';
-    if (ref === 'hauler') return 'Yusuf Fiore';
-    if (ref === 'hauler2') return 'Dmitri Petrov';
+    // Real pilots first, in the order they were actually seen. The invented
+    // pair remain as the fallback for a quiet system where nobody has been
+    // scanned yet — a name is needed either way, and an empty channel is
+    // worse than a stranger.
+    if (ref === 'hauler') return this.pilotName(0) ?? 'Yusuf Fiore';
+    if (ref === 'hauler2') return this.pilotName(1) ?? 'Dmitri Petrov';
     if (ref === 'carrier') return this.sm.location.station ?? 'Carrier Operations';
     if (ref === 'pa') return this.sm.location.station ?? 'Concourse PA';
-    if (ref === 'crew:ops') return 'Ops';
+    if (ref === 'crew:ops') return this.npcCrewName ?? 'Ops';
     if (ref === 'crew:engineering') return 'Engineering';
     if (ref === 'distress') return 'Distress Caller';
     if (ref === 'rescue') return 'Rescue Control';
@@ -3841,6 +4150,17 @@ export class AppCore {
     speakerNames: Record<string, string>;
   } {
     const refs = [...(COMMS_SPEAKER_REFS[channel] ?? ['speaker', 'speaker2'])];
+    // The tower is a DESK, not a person. The recurring cast is right for every
+    // other channel — a hauler you keep meeting should keep their name — but
+    // it was overwriting the tower's, so clearance came from "Ines Halloway"
+    // instead of from the station. A controller may have a name; the callsign
+    // on this channel is the port.
+    if (channel === 'TOWER') {
+      return {
+        speakers: refs,
+        speakerNames: Object.fromEntries(refs.map((r) => [r, this.commsRoleDisplay(r)])),
+      };
+    }
     const seen = new Set<string>();
     const names: Record<string, string> = {};
     const known = this.comms.cast
@@ -3914,6 +4234,16 @@ export class AppCore {
     return buildDossier({
       place,
       worlds: this.worldFacts(),
+      // Real people, scanned in this system within the last ninety minutes.
+      pilots: this.seenPilots
+        .filter((p) => p.system === this.sm.location.system && Date.now() - p.at < 90 * 60_000)
+        .map((p) => ({
+          name: p.name,
+          rank: p.rank,
+          ship: p.ship,
+          faction: p.faction,
+          legal: p.legal,
+        })),
       rotate: this.briefSeq,
       system: this.sm.location.system,
       intel: this.sm.getState().system,
@@ -3929,6 +4259,17 @@ export class AppCore {
       extra: [
         ...briefs.map((b) => b.summary),
         ...spineLines(this.campaign.view(), 'comms', this.briefSeq),
+        // Who this port is TO THIS COMMANDER. The reference implementation
+        // greets every arrival with the same fixed "welcome back"; the journal
+        // knows whether that is even true. Stated as fact, so the writer picks
+        // the tone — warmth, boredom, or a running joke about the same pad.
+        ...(this.sm.docked && this.arrivalGreeting ? [this.arrivalGreeting] : []),
+        ...(this.sm.docked
+          ? [
+              carrierTravels(this.ports.get(this.sm.location.station ?? '')),
+              portLedger(this.ports.get(this.sm.location.station ?? '')),
+            ].filter((x): x is string => !!x)
+          : []),
       ],
     });
   }
@@ -4008,12 +4349,42 @@ export class AppCore {
     const withRoom = open.filter((c) => !slots.full(`channel:${c.id}`));
     if (!withRoom.length) return;
 
+    // An arrival or departure claims the next STATION scene, ahead of the
+    // round-robin. Without this the port memory produced nothing on the air:
+    // the greeting sat in the briefing waiting for a station scene that had no
+    // reason to come. Two minutes, then the claim lapses — a welcome long
+    // after the clamps engage is worse than no welcome.
+    const arrival =
+      this.pendingArrival && Date.now() - this.pendingArrival.at < ARRIVAL_CLAIM_MS
+        ? this.pendingArrival
+        : null;
+    if (this.pendingArrival && !arrival) this.pendingArrival = null;
+    const arrivalTarget = arrival ? withRoom.find((c) => c.id === 'STATION') : undefined;
+
+    // The tower outranks everything, including an arrival scene. A clearance
+    // is a reply to something the commander just did, and it goes stale faster
+    // than anything else on the air — half the arrival window.
+    const towerCall =
+      this.pendingTower && Date.now() - this.pendingTower.at < TOWER_CLAIM_MS
+        ? this.pendingTower
+        : null;
+    if (this.pendingTower && !towerCall) this.pendingTower = null;
+    // Open for TRANSMIT for as long as the call stands, but eligible to be
+    // WRITTEN only once. Slot depth is 3, so without the second test one
+    // clearance would be written three times over and the commander would be
+    // told which pad three times.
+    const towerTarget =
+      towerCall && !towerCall.writing ? withRoom.find((c) => c.id === 'TOWER') : undefined;
+
     const due = this.comms.payoffDue(act).find((p) => withRoom.some((c) => c.id === p.channel));
-    const target = due
-      ? withRoom.find((c) => c.id === due.channel)!
-      : [...withRoom].sort(
-          (a, b) => slots.count(`channel:${a.id}`) - slots.count(`channel:${b.id}`),
-        )[0];
+    const target =
+      towerTarget ??
+      arrivalTarget ??
+      (due
+        ? withRoom.find((c) => c.id === due.channel)!
+        : [...withRoom].sort(
+            (a, b) => slots.count(`channel:${a.id}`) - slots.count(`channel:${b.id}`),
+          )[0]);
 
     const choice = this.commsWriteFunction(act, target.id);
     if (!choice) return;
@@ -4024,9 +4395,42 @@ export class AppCore {
     slots.reserve(key, nowMs + ttlMs);
     if (slots.count(key) <= before) return;
 
-    const brief = this.commsWriteBrief(briefs, target.id, choice.arcId);
+    const brief =
+      towerTarget && target.id === 'TOWER'
+        ? towerBrief({
+            station: towerCall!.station,
+            system: this.sm.location.system ?? 'this system',
+            ship: this.ownShipName(),
+            pad: towerCall!.pad,
+            moment: towerCall!.moment === 'departure' ? 'departure' : towerCall!.moment,
+            reason: towerCall!.reason,
+          })
+        : this.commsWriteBrief(briefs, target.id, choice.arcId);
     const { speakers, speakerNames } = this.commsSpeakerSpec(target.id);
-    const situation = this.pickCommsSituation(target.id);
+    // An arrival gets the moment it is actually having, not a random one off
+    // the pool — and the claim is spent here, whether or not the scene
+    // survives, so a dropped welcome cannot hold the channel hostage.
+    // The tower's claim is NOT spent here — see the note on `writing` in the
+    // field declaration. Marking it instead keeps the channel open long enough
+    // for the scene now being written to actually be picked and heard; the
+    // claim is released when it goes out, or by TOWER_CLAIM_MS if it never
+    // does. Arrivals still spend theirs immediately, because STATION is open
+    // whether or not anybody docked.
+    const towerClaimed = towerTarget && target.id === 'TOWER' ? towerCall : null;
+    if (towerClaimed && this.pendingTower) this.pendingTower = { ...this.pendingTower, writing: true };
+    const claimed = arrivalTarget && target.id === 'STATION' ? arrival : null;
+    if (claimed) this.pendingArrival = null;
+    const situation = towerClaimed
+      ? towerClaimed.moment === 'granted'
+        ? `${towerClaimed.station} tower clearing this ship to land on pad ${towerClaimed.pad}`
+        : towerClaimed.moment === 'denied'
+          ? `${towerClaimed.station} tower refusing this ship permission to dock — ${towerClaimed.reason}`
+          : `${towerClaimed.station} tower signing this ship off as it leaves`
+      : claimed
+      ? claimed.kind === 'arrive'
+        ? `this ship is docking at ${claimed.station} right now — the arrival itself`
+        : `this ship has just undocked from ${claimed.station} and is on its way out`
+      : this.pickCommsSituation(target.id);
 
     // Build the whole plan BEFORE claiming the writer.
     //
@@ -4201,6 +4605,8 @@ export class AppCore {
         `comms:${plan.channel}:${Date.now()}`,
         plan.ttlMs,
         plan.arcId,
+        // What has already been on the air, so a line cannot come back.
+        this.recentCommsAir,
       );
 
       if (!accepted.ok) {
@@ -4313,7 +4719,11 @@ export class AppCore {
       const speaker = cast?.name ?? turn.speakerRef;
       turns.push({ speaker, text: turn.text, returning: cast?.returning ?? false });
       this.speaker.speak(turn.text, cast?.persona?.voice || null, {
-        bus: 'AMBIENT',
+        // The tower gets its own bus: it is addressed to this ship, so it must
+        // not be droppable behind a queue of dockside gossip, and ambience
+        // steps aside for it. See bus.ts for why that is a fourth bus rather
+        // than a louder kind of ambience.
+        bus: t.channel === 'TOWER' ? 'TOWER' : 'AMBIENT',
         channel: t.channel,
         profile: t.profile,
         timbre: cast?.persona?.timbre,
@@ -4336,15 +4746,37 @@ export class AppCore {
       ...this.commsLog,
     ].slice(0, 40);
 
+    // The tower has now actually said it, so the call is finally answered.
+    // This is the release the write path deliberately does not do: the claim
+    // is what holds the channel open, and letting go of it any earlier is what
+    // left a written clearance with nowhere to go.
+    if (t.channel === 'TOWER') this.pendingTower = null;
+
     this.commsLastPerChannel[t.channel] = now;
+    const atIso = new Date(now).toISOString();
     if (t.scene.arcId) {
       this.comms.noteArcBeat(
         this.sm.location.system,
         t.scene.arcId,
         t.scene.func,
         t.scene.brief.summary,
-        new Date(now).toISOString(),
+        atIso,
       );
+    } else {
+      // No arc yet — so this is where one starts. Nothing else in the app ever
+      // opened a thread, which is why the air had no memory and every exchange
+      // was about a brand new subject. Only a scene that has actually gone out
+      // may open one: an arc for a scene nobody heard is a story starting
+      // off-air.
+      this.comms.openArc({
+        system: this.sm.location.system,
+        speaker: t.cast[0]?.name ?? '',
+        subjectKey: t.scene.brief.subjectKey,
+        subjectKind: arcSubjectFor(t.scene.brief.kind),
+        func: t.scene.func,
+        summary: t.scene.brief.summary,
+        atIso,
+      });
     }
     this.commsDiag.spoken += 1;
     this.commsDirty = true;
@@ -4366,7 +4798,7 @@ export class AppCore {
       system: this.sm.location.system,
       briefs,
       context: this.commsContext(),
-      installedVoices: this.piperVoiceList,
+      installedVoices: this.castVoicePool(),
     });
 
     this.commsChannels = r.channels;
@@ -4549,13 +4981,25 @@ export class AppCore {
   }
 
   /** Picker action: tune the radio by hand (and stop following the work). */
+  /**
+   * Tune. The dial is a SCANNING control — an arrow key held down, or a drag
+   * that passes over a dozen names — so the setting moves at once (the panel
+   * must track the finger) but the stream is only opened once the dial has
+   * settled. Without the wait, scanning from one end to the other would open
+   * and abandon thirty connections on the way past.
+   */
   setMusicStation(id: string): void {
     this.settings = {
       ...this.settings,
       music: { ...this.settings.music, station: id, enabled: true, followActivity: false },
     };
     saveSettings(this.settings);
-    this.music.play(id);
+    if (this.tuneTimer) clearTimeout(this.tuneTimer);
+    this.tuneTimer = setTimeout(() => {
+      this.tuneTimer = null;
+      // Still the wanted station, and the radio still on.
+      if (this.settings.music.station === id && this.settings.music.enabled) this.music.play(id);
+    }, TUNE_SETTLE_MS);
     this.emit();
   }
 
@@ -7797,6 +8241,36 @@ ${missionContext(mission, state)}`);
     this.speaker.test(this.settings.news.voice ?? this.settings.voice.piperVoice);
   }
 
+  /**
+   * The voices the CAST may be built from, for whichever engine is speaking.
+   *
+   * Not the same question as "which voice does the operator use". A persona is
+   * only worth assigning if the engine that will speak it can actually produce
+   * it, so the pool has to follow the engine. Empty falls back to the Piper
+   * list rather than to nothing: `resolvePersona` substitutes deterministically
+   * when a voice is missing, and an empty pool would mark every character
+   * substituted for no reason.
+   */
+  private castVoicePool(): string[] {
+    if (this.settings.voice.engine === 'edge' && this.edgeVoiceList.length) {
+      return this.edgeVoiceList;
+    }
+    return this.piperVoiceList;
+  }
+
+  /** Microsoft's live English list, once, and only when Edge is the engine. */
+  private async refreshEdgeVoices(): Promise<void> {
+    if (this.settings.voice.engine !== 'edge' || this.edgeVoiceList.length) return;
+    try {
+      this.edgeVoiceList = (await edgeVoices()).map((v) => v.ShortName).filter(Boolean);
+    } catch {
+      // Offline. The cast keeps whatever it already had; personas resolve
+      // against the Piper pool until the list arrives on a later pass.
+      this.edgeVoiceList = [];
+    }
+    this.emit();
+  }
+
   private async refreshPiperVoices(): Promise<void> {
     try {
       this.piperVoiceList = await piperVoices();
@@ -7842,6 +8316,11 @@ ${missionContext(mission, state)}`);
     }
     if (prev.radio.muted !== next.radio.muted) {
       this.speaker.setMuted(next.radio.muted);
+    }
+    // Switched to Edge after boot — fetch the catalogue the cast will be built
+    // from, or it keeps handing out Piper names the service cannot speak.
+    if (prev.voice.engine !== next.voice.engine && next.voice.engine === 'edge') {
+      void this.refreshEdgeVoices();
     }
     if (prev.comms.source !== next.comms.source) {
       this.comms.setSource(effectiveCommsSource(next.comms.source));

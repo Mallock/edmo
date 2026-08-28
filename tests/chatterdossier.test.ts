@@ -328,3 +328,69 @@ test('the dossier never instructs, only describes', () => {
   const out = buildDossier({ system: 'X', intel: intel(), docked: false });
   assert.doesNotMatch(out, /may not|must not|do not name|only ever/i);
 });
+
+test('real pilots reach the briefing, and cool like every other noun', () => {
+  // The journal names the people flying past — ShipTargeted carries the pilot,
+  // the rank, the hull, the faction and whether they are wanted. The app kept
+  // only the rank, for a threat callout, and invented haulers for the radio.
+  const pilots = [
+    { name: 'Joshua Staub', rank: 'Competent', ship: 'Asp Explorer', faction: 'HIP 71462 Council', legal: 'Wanted' },
+    { name: 'James Cook', rank: 'Master', ship: 'dolphin', faction: 'The Dark Wheel', legal: 'Clean' },
+  ];
+  const d = buildDossier({ system: 'HIP 71120', docked: true, pilots });
+  assert.match(d, /Seen about lately:/);
+  assert.match(d, /Joshua Staub/);
+  // Wanted is worth the air; "Clean" is everybody and must not be printed.
+  assert.match(d, /wanted/i);
+  assert.doesNotMatch(d, /clean/i);
+
+  // And a pilot who has been in three of the last six scenes sits the next
+  // one out — a real name repeated every scene is the same failure as a
+  // station name repeated every scene.
+  const air = ['Joshua Staub again', 'Staub once more', 'and Joshua Staub'];
+  const cooled = buildDossier({
+    system: 'HIP 71120',
+    docked: true,
+    pilots,
+    recentAir: air,
+  });
+  assert.doesNotMatch(cooled, /Joshua Staub/);
+  assert.match(cooled, /James Cook/);
+});
+
+test('a system with ONE station can still cool that station out', () => {
+  // The worst repetition in the 60-scene audits came from here, and it was
+  // never an instruction problem: cool() falls back to the whole list when
+  // filtering would empty it, so a system with a single port handed the writer
+  // that port's name in EVERY prompt however saturated the air already was.
+  // Measured before the fix: 60 briefings out of 60 named it.
+  const intel = {
+    controllingFaction: 'Explorer on Tour',
+    security: 'Low',
+    signals: [
+      { name: 'Benyovszky Gateway', isStation: true },
+      { name: 'Resource Extraction Site [High]' },
+    ],
+  } as unknown as Parameters<typeof buildDossier>[0]['intel'];
+
+  const saturated = ['a scene naming Benyovszky Gateway', 'and Benyovszky again', 'Benyovszky once more'];
+  const cooled = buildDossier({ system: 'HIP 71120', intel, docked: true, recentAir: saturated });
+  assert.doesNotMatch(cooled, /Benyovszky/, 'the only station must still be able to sit one out');
+  // Somewhere else is still on offer, so the briefing is not left placeless.
+  assert.match(cooled, /Resource Extraction/);
+
+  // With a clear air it comes straight back — this is cooling, not banning.
+  const warm = buildDossier({ system: 'HIP 71120', intel, docked: true, recentAir: [] });
+  assert.match(warm, /Benyovszky/);
+
+  // And when there is genuinely nowhere else, a warm name beats no place at
+  // all — the original reasoning, preserved for the case it was written for.
+  const lonely = {
+    controllingFaction: 'Explorer on Tour',
+    signals: [{ name: 'Benyovszky Gateway', isStation: true }],
+  } as unknown as Parameters<typeof buildDossier>[0]['intel'];
+  assert.match(
+    buildDossier({ system: 'HIP 71120', intel: lonely, docked: true, recentAir: saturated }),
+    /Benyovszky/,
+  );
+});

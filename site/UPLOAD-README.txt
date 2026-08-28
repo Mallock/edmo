@@ -7,9 +7,9 @@ WHAT THIS IS
   index.html                              the page
   img/                                    screenshots + icons
   fonts/                                  the two webfonts, self-hosted
-  ED-Mission-Operator-1.9.0-setup.exe       the Windows installer (~132 MB)
-  ED-Mission-Operator-1.9.0-amd64.deb       Linux beta, Ubuntu/Debian (~147 MB)
-  ED-Mission-Operator-1.9.0-x86_64.AppImage Linux beta, any distro (~231 MB)
+  ED-Mission-Operator-1.9.3-setup.exe       the Windows installer (~132 MB)
+  ED-Mission-Operator-1.9.3-amd64.deb       Linux beta, Ubuntu/Debian (~147 MB)
+  ED-Mission-Operator-1.9.3-x86_64.AppImage Linux beta, any distro (~231 MB)
 
 HOW TO PUT IT ON YOUR WEB HOTEL
   1. Open your web hotel's File Manager (or connect with FTP, e.g. FileZilla).
@@ -22,7 +22,115 @@ NOTES
   * The installer is ~132 MB. Browser-based file managers sometimes limit
     uploads (often to 100 MB) — if the .exe upload fails, use FTP instead,
     or upload it to a file service and change the download link in
-    index.html (search for "ED-Mission-Operator-1.9.0-setup.exe").
+    index.html (search for "ED-Mission-Operator-1.9.3-setup.exe").
+  * 1.9.3 makes the tower actually reach the air, and gives it some manners.
+
+    1.9.2 stopped the tower talking out of turn but left it MUTE, which was a
+    worse bug and entirely self-inflicted. Channels are chosen to transmit by a
+    weighted lottery, and the tower had been given weight 0 to keep it rare —
+    so `roll -= 0` never fired and it could not be picked at all. A clearance
+    could be written correctly and then sit in its slot, unheard. Rarity is
+    enforced by the channel being SHUT unless your own docking events open it;
+    weight only decides what happens once it is open, and then the tower should
+    win, because you are waiting on it.
+
+    THE MODEL GETS FIRST REFUSAL. A template can produce a correct clearance
+    instantly, and for a while that was the whole design — procedure does not
+    need a model. But a template says the same things for ever, and on this one
+    channel the commander is the person actually being spoken to. So the writer
+    now gets eighteen seconds before the template tier is allowed to speak, and
+    the template remains the backstop that guarantees a clearance is never
+    simply missed. Measured budget: docking granted to docked was 70 seconds.
+
+    AND IT TALKS TO YOU LIKE A PERSON. The tower knows your ship, is pleased
+    enough to hear from you, and lets the procedure carry some warmth — a word
+    about the traffic, the hour, whether you have been away. The instruction
+    still comes first and plainly; warm is not chatty. Live samples:
+
+      "Stardust Runner, you are cleared to pad 3; welcome back, Commander."
+      "Stardust Runner, you're clear of Corman Beacon; watch the jump lane
+       traffic, and an o7 to you."
+
+  * 1.9.2 fixes the tower, which 1.9.1 got wrong in four ways at once.
+
+    It hailed ships in open space. The channel was given weight 0 to keep it
+    rare, but weight is not what the scheduler uses — it picks the open channel
+    with the fewest scenes in flight, and an idle tower won that every time.
+    The tower is now SHUT unless one of your own docking events opens it, and
+    the panel shows it as "standing by".
+
+    It invented pad numbers. A live clearance for pad 3 was announced as "Pad
+    Four". The templates carried the real number but the model was never given
+    it; it is now stated twice in the prompt, and when no pad has been assigned
+    the prompt says so rather than leaving a silence to fill.
+
+    It signed itself with a person's name. The recurring cast was overwriting
+    the speaker — right for a hauler you keep meeting, wrong for a desk. The
+    tower keeps the station's callsign.
+
+    And it did not address the commander at all, which was the complaint that
+    started this. There WAS a tower style, but it was a paragraph inside the
+    shared system prompt — a prompt built around never addressing the listener
+    and inventing freely. The model obeyed it exactly, which is why a
+    controller discussed a flicker near the mining patch while the commander
+    sat on final approach. The tower now has its OWN system prompt: one
+    speaker, talking to you, answering something you just did, told your ship's
+    name and forbidden from addressing you by the station's.
+
+    Tested on the real engine: nine transmissions across three runs, every one
+    addressed to the ship, no invented pads.
+
+  * 1.9.1 gives the tower a voice, the ports a memory, and offers the online
+    neural voices.
+
+    A TOWER CHANNEL THAT ADDRESSES YOUR SHIP. Every comms channel until now was
+    people talking to each other with you overhearing — so station traffic was
+    always about somebody else's ship. TOWER is the one channel that calls YOU,
+    by ship name, and it fires on the real docking events rather than a timer:
+    clearance, refusal, departure. The pad number is the one the game assigned,
+    never invented, and the channel has a single speaker by construction, so it
+    cannot put words in the commander's mouth.
+
+    It rides a FOURTH audio bus. The existing three were the wrong shape for
+    it: ambience is droppable behind dockside gossip and priority is the
+    operator's own voice. A tower calling your ship is neither, so it ducks
+    only under the operator, ambience ducks under IT, and music drops as hard
+    for it as for a hull-breach callout — a clearance you did not hear is a
+    clearance you did not get.
+
+    PORTS REMEMBER YOU. Every docking is now on file: how many visits, how long
+    since the last, and what you have actually done there — jobs taken, jobs
+    handed in, tonnage across the pad, what you usually carry, credits paid
+    out. So a welcome can mean something. The reference implementation greets
+    every arrival with the same fixed "welcome back, Commander", to first-timers
+    and to two-hundredth visits alike; this one knows the difference, including
+    the case worth having — a port you were a regular at a year ago, where the
+    faces will have changed.
+
+    Carriers are handled as places that MOVE, so a carrier's record follows it
+    rather than pretending it is an address.
+
+    ONLINE NEURAL VOICES, OFF BY DEFAULT. Microsoft's Edge neural voices are
+    noticeably better than anything that runs locally, and there are 47 English
+    ones to choose from. They are opt-in and they cost something real: the TEXT
+    of every line the operator speaks is sent to Microsoft, including system and
+    station names and the questions you type. The settings panel says exactly
+    that, in those words, before you choose it.
+
+    Everything else in the app still runs on your machine. Each spoken line is
+    cached to disk, so a repeat is never sent twice and still works offline,
+    and if the service is unreachable the bundled Piper voice takes over rather
+    than the app going silent. One honest limitation: the comms cast's
+    per-speaker pitch shifts do not work on these voices — the trick needs
+    synthesis-time length control the service does not offer — so the online
+    voices are one voice, and Piper keeps the full cast.
+
+    OUTPOSTS ARE STATIONS. A classification bug had been hiding most of every
+    system: the journal only flags the big orbitals as stations, so all eight of
+    HIP 71120's outposts were filed next to the nav beacon as scenery, leaving
+    the comms briefing exactly ONE station to talk about. That is why one name
+    rode 38-53% of scenes. Nine ports now, not one.
+
   * 1.9.0 tidies SETTINGS and lets you pick the instrument's colour.
 
     FIVE CATEGORIES INSTEAD OF ONE LONG SCROLL. The drawer had grown to
@@ -56,6 +164,32 @@ NOTES
 
     Section headings used to be cyan, which spent a signal colour on a label.
     They follow the instrument now, and cyan means something again.
+
+    A TUNING DIAL, AND EIGHT MORE STATIONS. The station picker was a grid of
+    chips; at thirty-one stations that is six rows of confetti. It is now a
+    slide-rule dial — the scale travels under a fixed needle, so you drag it
+    like a knob, click a name you can see, or step with the arrow keys. The
+    names are grouped by mood rather than alphabetically, so scanning left
+    gets quieter and scanning right gets darker, which is what a dial is for.
+    Nothing on it invents a frequency: the graduations are stations, because a
+    printed 98.4 MHz would be the one made-up number on this panel.
+
+    The eight new ones fill the gaps that were obvious once the dial made them
+    visible: Radio Paradise and its Rock Mix (192 kbps, hand-picked), Indie
+    Pop Rocks!, The Eagle for classic rock, Kickin' Country and Highway 181
+    for new and old country, True R&B, and Old School Hip Hop for the 90s
+    golden age. Thirty-one in total, every stream and metadata endpoint
+    checked live.
+
+    On popularity, since it came up: Groove Salad is far and away the most
+    listened-to station on the dial — about 2,000 concurrent listeners against
+    1,000 for the next one — and it was already the default. That is now a
+    measured fact rather than a guess.
+
+    Scanning no longer thrashes the network. Tuning moves the setting at once
+    so the dial tracks your finger, but the stream is only opened once the
+    dial has been still for a moment; without that, a scan from one end to the
+    other opened and abandoned thirty connections on the way past.
 
     New screenshot: img/hud-settings.png.
 
@@ -538,7 +672,7 @@ NOTES
     ranges and payout estimates; and four opt-in community lookups the operator
     calls only when asked (Spansh routes, galaxy-wide markets via Ardent
     Insight, the EDAstro exploration catalogue, and the Galnet news wire).
-  * All three installers are 1.9.0.
+  * All three installers are 1.9.3.
 
     Windows:  npm run tauri build
               -> src-tauri/target/release/bundle/nsis/

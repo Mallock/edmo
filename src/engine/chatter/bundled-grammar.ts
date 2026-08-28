@@ -93,6 +93,62 @@ Ferreira
 Nadel
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# TOWER — traffic control talking to THIS ship, by name.
+#
+# The only channel that addresses the commander. Every line therefore uses
+# <myship>, and the ones about a pad use <pad>, which is the number the game
+# actually assigned rather than an invented one: a tower that clears you to a
+# pad that does not exist is worse than a tower that says nothing.
+#
+# One-sided by design. The commander is a person at a keyboard, not a voice
+# the app may put words into, so the tower transmits and does not wait for a
+# reply it cannot hear.
+# ---------------------------------------------------------------------------
+
+TOWER texture
+[control] <myship>, <station> tower. Docking granted, pad <pad>. Mind your approach speed.
+
+TOWER texture
+[control] <station> to <myship>, you are cleared to dock. Pad <pad>, and it is a tight one today.
+
+TOWER texture
+[control] <myship>, tower. Pad <pad> is yours. Watch the traffic on the way in.
+
+TOWER texture
+[control] <station> tower to <myship>. Pad <pad>, and mind the ship on your starboard side coming out.
+
+TOWER texture
+[control] <myship>, <station>. Clear of the slot, safe travels out there.
+
+TOWER texture
+[control] <station> tower, <myship>. You are away. Try not to be a stranger.
+
+TOWER texture
+[control] <myship>, tower. Departure logged. Lanes are your own problem now.
+
+TOWER texture
+[control] <station> to <myship>, request received. Stand by, we are working the queue.
+
+TOWER texture
+[control] Good to see you back, <myship>. Pad <pad> when you are ready, no rush.
+
+TOWER texture
+[control] <myship>, <station>. Pad <pad>, and welcome in. It has been a quiet shift.
+
+TOWER texture
+[control] Afternoon, <myship>. You have pad <pad>. Mind the crews working the far side.
+
+TOWER texture
+[control] <myship>, tower. Pad <pad> is clear for you. Safe hands today, by the look of it.
+
+TOWER texture
+[control] <myship>, that is you clear of us. Safe lanes, and come back when you like.
+
+TOWER texture
+[control] Off you go then, <myship>. <station> out — mind how you go.
+
+# ---------------------------------------------------------------------------
 # STATION — traffic control and station operations. Formal, clipped, busy.
 # ---------------------------------------------------------------------------
 

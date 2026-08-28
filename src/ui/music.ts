@@ -95,8 +95,21 @@ export class MusicPlayer {
    * that publish none — can be routed into the graph and ducked properly.
    */
   private streamUrl(station: RadioStation): string {
-    if (this.relayPort === null) return station.url;
-    return `http://127.0.0.1:${this.relayPort}/play?url=${encodeURIComponent(station.url)}`;
+    return this.viaRelay(station.url);
+  }
+
+  /**
+   * Through the loopback relay when there is one.
+   *
+   * Used for metadata as well as audio, because the two have the same problem
+   * from opposite directions: SomaFM refuses a browser User-Agent, and Radio
+   * Paradise's now-playing API answers without a CORS header. The relay passes
+   * the upstream Content-Type through untouched, so a JSON document arrives as
+   * JSON — nothing in it is audio-specific.
+   */
+  private viaRelay(url: string): string {
+    if (this.relayPort === null) return url;
+    return `http://127.0.0.1:${this.relayPort}/play?url=${encodeURIComponent(url)}`;
   }
 
   /** The configured level, 0..1, from settings. */
@@ -299,10 +312,16 @@ export class MusicPlayer {
     }
     const fetchTrack = async (): Promise<void> => {
       try {
-        const res = await fetch(feed.url, { cache: 'no-store' });
+        const res = await fetch(this.viaRelay(feed.url), { cache: 'no-store' });
         if (!res.ok) return;
-        const json = (await res.json()) as { songs?: Array<{ artist?: string; title?: string }> };
-        const song = json.songs?.[0];
+        // Two shapes, one poll. SomaFM answers with a list of recent songs and
+        // the first is what is on; Radio Paradise answers with the one song.
+        const json = (await res.json()) as {
+          songs?: Array<{ artist?: string; title?: string }>;
+          artist?: string;
+          title?: string;
+        };
+        const song = feed.kind === 'radioparadise' ? json : json.songs?.[0];
         if (song) this.setTrack(forId, song.artist, song.title);
       } catch {
         /* the track name is a nicety — never let it surface as an error */

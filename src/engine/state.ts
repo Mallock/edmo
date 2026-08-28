@@ -564,10 +564,26 @@ export class MissionStateManager {
     if (!name) return;
     const signals = this.systemIntel.signals;
     if (signals.length >= 40 || signals.some((s) => s.name === name)) return;
+    const type = str(ev.SignalType);
     signals.push({
       name,
-      type: str(ev.SignalType),
-      isStation: ev.IsStation === true,
+      type,
+      // Trusting ev.IsStation alone loses most of a system's ports.
+      //
+      // Frontier sets that flag only for the big orbitals. Counted over 40 of
+      // this commander's journals: StationCoriolis, StationAsteroid,
+      // StationBernalSphere and FleetCarrier all arrive IsStation=true — and
+      // `Outpost` arrives IsStation=FALSE, 604 times. An outpost is a dockable
+      // port with pads, a market and people living on it; calling it scenery
+      // filed eight of HIP 71120's nine ports next to the nav beacon and left
+      // the briefing with exactly one station to name. That is why one station
+      // rode 38-53% of scenes in the audits: with nothing to rotate to, the
+      // noun-cooling brake had no alternative and handed back the same name.
+      //
+      // Installations stay out deliberately — comms arrays and the like are
+      // not places anybody docks at, and the construction sites among them are
+      // already carried by the architect brief.
+      isStation: ev.IsStation === true || type === 'Outpost' || /^Station/.test(type ?? ''),
     });
   }
 

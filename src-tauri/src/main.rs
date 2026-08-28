@@ -11,6 +11,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod edgetts;
 mod engine;
 mod radio;
 
@@ -679,6 +680,65 @@ fn tts_cache_sweep(dir: &Path) {
             freed += len;
         }
     }
+}
+
+/// Online neural voice, as MP3 bytes. Errors so the caller falls back to Piper.
+#[tauri::command]
+async fn edge_speak(
+    app: AppHandle,
+    text: String,
+    voice: String,
+    rate: Option<i32>,
+    pitch: Option<i32>,
+) -> Result<tauri::ipc::Response, String> {
+    let bytes = edgetts::speak(
+        &app,
+        &text,
+        &voice,
+        rate.unwrap_or(20).clamp(-50, 100),
+        pitch.unwrap_or(0).clamp(-50, 50),
+    )
+    .await?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+/// The service's own English voice catalogue, fetched live.
+///
+/// Not hard-coded: Microsoft adds and retires voices, and a stale list would
+/// offer the commander something that no longer answers. English only —
+/// everything this app says is English, and 322 voices is a menu nobody reads.
+#[tauri::command]
+async fn edge_voices() -> Result<serde_json::Value, String> {
+    let url = format!(
+        "https://speech.platform.bing.com/consumer/speech/synthesize/readaloud/voices/list?trustedclienttoken={}",
+        "6A5AA1D4EAFF4E9FB37E23D68491D6F4"
+    );
+    let client = reqwest::Client::new();
+    let res = client
+        .get(url)
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36 Edg/142.0.0.0")
+        .header("Origin", "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold")
+        .send()
+        .await
+        .map_err(|e| format!("voice list: {e}"))?;
+    if !res.status().is_success() {
+        return Err(format!("voice list: HTTP {}", res.status()));
+    }
+    let all: serde_json::Value = res.json().await.map_err(|e| format!("voice list: {e}"))?;
+    let english: Vec<serde_json::Value> = all
+        .as_array()
+        .map(|xs| {
+            xs.iter()
+                .filter(|v| {
+                    v.get("Locale")
+                        .and_then(|l| l.as_str())
+                        .is_some_and(|l| l.starts_with("en-"))
+                })
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(serde_json::Value::Array(english))
 }
 
 #[tauri::command]
@@ -2760,6 +2820,8 @@ fn main() {
             piper_download_voice,
             radio::radio_relay_port,
             piper_speak,
+            edge_speak,
+            edge_voices,
             llm_models,
             llm_chat,
             memory_load,

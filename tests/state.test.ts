@@ -198,3 +198,37 @@ test('a lone goal is the quietest and has no busiest counterpart', () => {
   assert.equal(r.busiest, null); // nothing to contrast against — say nothing
   assert.equal(r.count, 1);
 });
+
+test('outposts are stations, whatever the journal flag says', () => {
+  // Frontier sets IsStation only for the big orbitals. Counted over 40 real
+  // journals: StationCoriolis, StationAsteroid, StationBernalSphere and
+  // FleetCarrier all arrive true — and Outpost arrives FALSE, 604 times.
+  // An outpost is a dockable port with pads, a market and people on it, so
+  // trusting the flag alone filed eight of HIP 71120's nine ports next to the
+  // nav beacon and left the comms briefing one station to name for ever.
+  const sm = new MissionStateManager();
+  const sig = (SignalName: string, SignalType: string, IsStation: boolean) => ({
+    timestamp: '2026-08-27T12:00:00Z',
+    event: 'FSSSignalDiscovered',
+    SystemAddress: 1,
+    SignalName,
+    SignalType,
+    IsStation,
+  });
+  sm.apply({ timestamp: '2026-08-27T11:59:00Z', event: 'Location', StarSystem: 'HIP 71120' });
+  sm.apply(sig('Mikels Town', 'Outpost', false));
+  sm.apply(sig('Benyovszky Gateway', 'StationCoriolis', true));
+  sm.apply(sig('Rock Hall', 'StationAsteroid', true));
+  sm.apply(sig('Resource Extraction Site [High]', 'ResourceExtraction', false));
+  sm.apply(sig('Nav Beacon', 'NavBeacon', false));
+
+  const byName = new Map(
+    (sm.getState().system?.signals ?? []).map((s) => [s.name, s.isStation === true]),
+  );
+  assert.equal(byName.get('Mikels Town'), true, 'an outpost is somewhere you dock');
+  assert.equal(byName.get('Benyovszky Gateway'), true);
+  assert.equal(byName.get('Rock Hall'), true, 'asteroid stations too');
+  // Scenery stays scenery.
+  assert.equal(byName.get('Resource Extraction Site [High]'), false);
+  assert.equal(byName.get('Nav Beacon'), false);
+});

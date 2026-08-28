@@ -20,7 +20,7 @@
  * because it is a real limitation of the browser API, not an oversight.
  */
 import type { AppSettings } from './settings.ts';
-import { isTauri, piperSpeak } from './bridge.ts';
+import { isTauri, piperSpeak, edgeSpeak } from './bridge.ts';
 import { RadioBus } from './radio.ts';
 import {
   AMBIENT_QUEUE_CAP,
@@ -36,6 +36,10 @@ import { LruCache, synthKey } from '../engine/chatter/wavcache.ts';
 const DEDUPE_WINDOW_MS = 3 * 60_000;
 /** One failed synth must not mute comms for the whole session. */
 const PIPER_RETRY_COOLDOWN_MS = 30_000;
+/** Longer than Piper's: a network service that just failed is unlikely to be
+ *  well a second later, and re-dialling a dead endpoint per line costs the
+ *  commander latency on every single utterance. */
+const EDGE_RETRY_COOLDOWN_MS = 120_000;
 
 /** In-memory synthesized-audio cache. The sidecar also caches to disk (which
  *  survives restarts); this one saves the IPC round trip for lines repeated
@@ -101,6 +105,8 @@ export class Speaker {
   private piperOk = true;
   /** When Piper may be tried again after a failure. */
   private piperRetryAt = 0;
+  private edgeOk = true;
+  private edgeRetryAt = 0;
 
   /** The ambient side: its own bounded, self-expiring queue and its own pump. */
   private ambient = new AmbientQueue<Utterance>(AMBIENT_QUEUE_CAP);
@@ -305,7 +311,27 @@ export class Speaker {
     bus: BusId,
     signal?: AbortSignal,
   ): Promise<void> {
-    if (s.voice.engine === 'piper' && isTauri) {
+    // Online neural voices, when the commander has opted in.
+    //
+    // Falls through to Piper on ANY failure rather than going quiet. This is
+    // an undocumented endpoint that Microsoft has already broken twice; the
+    // app must degrade to the local voice, never to silence. The failure is
+    // sticky for a cooldown so a dead service is not re-dialled every line.
+    if (s.voice.engine === 'edge' && isTauri) {
+      if (!this.edgeOk && Date.now() >= this.edgeRetryAt) this.edgeOk = true;
+      if (this.edgeOk) {
+        try {
+          await this.speakEdge(utt, s, bus, signal);
+          return;
+        } catch {
+          this.edgeOk = false;
+          this.edgeRetryAt = Date.now() + EDGE_RETRY_COOLDOWN_MS;
+        }
+      }
+      // Deliberately falls into the Piper branch below.
+    }
+
+    if ((s.voice.engine === 'piper' || s.voice.engine === 'edge') && isTauri) {
       // Recover automatically from a transient sidecar failure (startup race,
       // one bad utterance, temporary IO issue). Sticky-disable made comms look
       // dead for the whole run even after Piper was healthy again.
@@ -355,6 +381,66 @@ export class Speaker {
   /** Cache hit rate, for the settings panel and soak runs. */
   cacheStats(): { hits: number; misses: number; size: number } {
     return this.wavCache.stats();
+  }
+
+  /**
+   * One line through Microsoft's online voices.
+   *
+   * The bytes are MP3 rather than Piper's WAV, which the radio bus decodes
+   * just the same — decodeAudioData does not care. The timbre trick does not
+   * apply here: it works by cancelling a synthesis-time slowdown against a
+   * playback-time speed-up, and the online service gives no length control,
+   * so the cast's per-person pitch shifts are simply not available. Better an
+   * honest single voice than a fake one.
+   */
+  private async speakEdge(
+    utt: Utterance,
+    s: AppSettings,
+    bus: BusId,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    // THE CAST GETS ITS OWN VOICES HERE, and until now it did not.
+    //
+    // `utt.voice` is the persona's — the whole cast system exists to give each
+    // character a voice of their own and keep it across a session. This line
+    // used to read the settings voice unconditionally, so on the Edge engine
+    // every speaker on every channel was the same person: traffic control, both
+    // haulers, the crew and the concourse PA, all in one voice. The operator
+    // still gets the configured voice, because nothing passes a persona for it.
+    const voice = utt.voice ?? s.voice.edgeVoice ?? 'en-GB-SoniaNeural';
+    // Timbre, carried across from the Piper path so a character sounds the same
+    // shape on either engine. Piper takes it as a length scale where >1 is
+    // SLOWER, so it inverts into a rate offset here; the steps are 0.94/1.0/1.06
+    // and land as ±6%, which is a nudge rather than a costume.
+    const base = Math.max(-50, Math.min(100, s.voice.edgeRate ?? 20));
+    const rate = Math.round(
+      Math.max(-50, Math.min(100, utt.timbre !== undefined ? base + (1 - utt.timbre) * 100 : base)),
+    );
+    const key = synthKey(utt.text, `edge:${voice}`, rate);
+    let mp3 = this.wavCache.get(key);
+    if (!mp3) {
+      mp3 = await edgeSpeak(utt.text, voice, rate, 0);
+      this.wavCache.set(key, mp3);
+    }
+    const volume = Math.min(1, Math.max(0, s.voice.volume / 100));
+    if (this.radio.available) {
+      const ambientScale = Math.min(1, Math.max(0, (s.comms?.volume ?? 70) / 100));
+      await this.radio.play(mp3, {
+        bus,
+        // Already a RadioProfile — built once in speak() from the settings and
+        // the bus, exactly as the Piper path below passes it. This line used to
+        // call a `profileFor` that does not exist in this module (the only one
+        // in the codebase takes a MODEL id, and one argument), so every Edge
+        // utterance that reached the radio bus died on a ReferenceError.
+        profile: utt.profile,
+        volume: bus === 'PRIORITY' ? volume : volume * ambientScale,
+        degrade: utt.degrade,
+        pan: utt.pan,
+        signal,
+      });
+      return;
+    }
+    await playBytes(mp3, volume, signal);
   }
 
   private async speakPiper(
