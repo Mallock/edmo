@@ -302,7 +302,7 @@ export function App() {
           {radioOpen ? (
             <RadioCard music={snap.music} settings={s} />
           ) : boozeOpen && snap.booze ? (
-            <BoozeCard view={snap.booze} nowMs={nowMs} />
+            <BoozeCard view={snap.booze} nowMs={nowMs} onQuickNav={() => core.boozeQuickNav()} />
           ) : commsOpen ? (
             <CommsPanel
               view={snap.comms}

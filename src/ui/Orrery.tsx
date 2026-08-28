@@ -154,7 +154,7 @@ export interface OrreryView {
    * Drawn as an interval rather than a dot: the game reports no in-system
    * position, so where the ship is between two bodies is genuinely unknown.
    */
-  ship: (ShipLeg & { destName?: string }) | null;
+  ship: (ShipLeg & { destName?: string; fromPortId?: number; toPortId?: number }) | null;
   /**
    * The exact dock the ship is at, when it is at one — so the marker can ring
    * the station itself, not just the world it orbits.
@@ -498,6 +498,24 @@ export function OrreryCard({ view, nowMs }: { view: OrreryView; nowMs: number })
   const flight = useMemo(() => {
     const leg = view.ship;
     if (!leg || !sys) return null;
+    const pointFromPort = (id: number) => {
+      const port = sys.ports.get(id);
+      if (!port || port.parentId == null) return null;
+      const host = drawn.find((d) => d.p.body.id === port.parentId);
+      if (!host) return null;
+      const siblings = [...sys.ports.values()]
+        .filter((p) => p.parentId === port.parentId)
+        .sort((a, b) => a.id - b.id);
+      const n = siblings.findIndex((p) => p.id === id);
+      if (n < 0) return null;
+      const ang = (-45 + n * 72) * (Math.PI / 180);
+      const off = host.r + 4.5;
+      return {
+        x: host.x + Math.cos(ang) * off,
+        y: host.y + Math.sin(ang) * off,
+        body: host.p.body,
+      };
+    };
     /**
      * A leg endpoint as something with a position.
      *
@@ -506,22 +524,28 @@ export function OrreryCard({ view, nowMs }: { view: OrreryView; nowMs: number })
      * A belt is a ring around its parent, so the parent's position is the
      * honest stand-in: "left the belt around 2 b" starts at 2 b.
      */
-    const endpoint = (id: number) => {
+    const endpoint = (id: number, portId?: number) => {
+      if (portId != null) {
+        const port = pointFromPort(portId);
+        if (port) return port;
+      }
       const direct = drawn.find((d) => d.p.body.id === id);
-      if (direct) return direct;
+      if (direct) return { x: direct.x, y: direct.y, body: direct.p.body };
       const parentId = sys.bodies.get(id)?.parentId;
-      return parentId != null ? drawn.find((d) => d.p.body.id === parentId) : undefined;
+      const parent = parentId != null ? drawn.find((d) => d.p.body.id === parentId) : undefined;
+      return parent ? { x: parent.x, y: parent.y, body: parent.p.body } : null;
     };
-    const a = endpoint(leg.fromId);
-    const b = endpoint(leg.toId);
-    if (!a || !b || a === b) return null;
+    const a = endpoint(leg.fromId, leg.fromPortId);
+    const b = endpoint(leg.toId, leg.toPortId);
+    if (!a || !b) return null;
+    if (a.body.id === b.body.id && Math.hypot(a.x - b.x, a.y - b.y) < 0.5) return null;
     const sepLs = Math.hypot(
-      (a.p.body.distanceLs ?? 0) - (b.p.body.distanceLs ?? 0),
+      (a.body.distanceLs ?? 0) - (b.body.distanceLs ?? 0),
       0,
     );
     const prog = legProgress(leg, liveMs, sepLs);
     const at = (f: number) => ({ x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f });
-    return { a, b, prog, lo: at(prog.lo), hi: at(prog.hi), mid: at(prog.mid), to: b.p.body };
+    return { a, b, prog, lo: at(prog.lo), hi: at(prog.hi), mid: at(prog.mid), to: b.body };
   }, [view.ship, drawn, liveMs, sys]);
 
   /**
@@ -666,7 +690,7 @@ export function OrreryCard({ view, nowMs }: { view: OrreryView; nowMs: number })
     if (!anchor) return;
     if (flight) {
       // A new leg re-arms the dynamic zoom a manual wheel may have paused.
-      const legKey = `${flight.a.p.body.id}>${flight.to.id}`;
+      const legKey = `${flight.a.body.id}>${flight.to.id}`;
       if (legRef.current !== legKey) {
         legRef.current = legKey;
         autoZoom.current = true;
@@ -692,7 +716,7 @@ export function OrreryCard({ view, nowMs }: { view: OrreryView; nowMs: number })
         // rising into its 24x cap.
         const departFloor =
           flight.prog.elapsedS < 30
-            ? localZoom(flight.a.p.body.id) * (1 - flight.prog.elapsedS / 30)
+            ? localZoom(flight.a.body.id) * (1 - flight.prog.elapsedS / 30)
             : 0;
         const zLaw = dp > 1e-6 ? Math.max(1, (zoom * 120) / dp) : 24;
         const want = Math.min(24, Math.max(zLaw, departFloor, 1));

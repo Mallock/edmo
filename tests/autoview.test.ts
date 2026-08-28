@@ -153,6 +153,62 @@ test('a hyperspace target draws no leg — Body 0 must not resolve to the star',
   assert.ok(o2.ship, 'an in-system target still draws the leg');
 });
 
+test('a same-body carrier target still draws by matching the callsign', async () => {
+  const { core, c } = await bootedCore([
+    // Map skeleton: one star and one planet.
+    MAP_LINES[1],
+    MAP_LINES[2],
+    // Learn Anders as a station dock on T 1.
+    line({
+      event: 'Location',
+      StarSystem: 'T',
+      SystemAddress: 42,
+      BodyID: 85,
+      BodyType: 'Station',
+      Body: 'Anders City',
+      StationName: 'Anders City',
+      StationType: 'Outpost',
+      DistFromStarLS: 200,
+    }),
+    // Learn a carrier dock in this session and anchor it to the same body.
+    line({ event: 'SupercruiseExit', StarSystem: 'T', SystemAddress: 42, BodyID: 1, BodyType: 'Planet', Body: 'T 1' }),
+    line({
+      event: 'Docked',
+      StarSystem: 'T',
+      SystemAddress: 42,
+      StationName: 'V6W-TTJ',
+      StationType: 'FleetCarrier',
+      MarketID: 3712889600,
+      DistFromStarLS: 200,
+    }),
+    // Start the live leg from Anders.
+    line({
+      event: 'Location',
+      StarSystem: 'T',
+      SystemAddress: 42,
+      BodyID: 85,
+      BodyType: 'Station',
+      Body: 'Anders City',
+      StationName: 'Anders City',
+      StationType: 'Outpost',
+      DistFromStarLS: 200,
+    }),
+  ]);
+
+  c.onLines([line({ event: 'SupercruiseEntry', StarSystem: 'T', SystemAddress: 42 })], true);
+  core.importText(
+    line({
+      event: 'Status',
+      Flags: 16777240,
+      Destination: { System: 42, Body: 1, Name: 'the Pearl of Donna V6W-TTJ' },
+    }),
+  );
+
+  const o = core.getSnapshot().orrery!;
+  assert.ok(o.ship, 'same-body station->carrier travel should not collapse to no leg');
+  assert.equal(o.ship?.toPortId, 3712889600, 'destination resolved by callsign from Status name');
+});
+
 test('replayed events never switch, even with everything else in place', async () => {
   const { c } = await bootedCore([...MAP_LINES, ...DEPOT_LINES]);
   c.onLines([MARKET], false); // not live — a bootstrap replay

@@ -8,6 +8,7 @@
  * number that would send somebody 5,000 ly on a party that already ended.
  */
 import type { BoozeView } from './store.ts';
+import { BOOZE_SYSTEM } from '../engine/booze.ts';
 
 const cr = (n: number): string => `${Math.round(n).toLocaleString('en-US')} cr`;
 
@@ -35,11 +36,27 @@ function ageOf(at: number | null, nowMs: number): string {
   return `${Math.round(h / 24)} days ago`;
 }
 
-export function BoozeCard({ view, nowMs }: { view: BoozeView; nowMs: number }) {
+export function BoozeCard({
+  view,
+  nowMs,
+  onQuickNav,
+}: {
+  view: BoozeView;
+  nowMs: number;
+  onQuickNav: () => void;
+}) {
   const stale = view.priceSeenAt != null && nowMs - view.priceSeenAt > 6 * 3_600_000;
   return (
     <div className="ship-panel">
       <div className="sp-title mono">🍷 BOOZE CRUISE · Rackham&apos;s Peak</div>
+
+      <div className="booze-row booze-nav">
+        <span className="k">Quick nav</span>
+        <span className="v mono">{BOOZE_SYSTEM}</span>
+        <button className="booze-nav-btn" onClick={onQuickNav} disabled={view.inSystem}>
+          {view.inSystem ? 'here' : 'set route'}
+        </button>
+      </div>
 
       {/* The one thing everybody wants to know, and an honest version of it. */}
       <div className={`booze-row${view.state === 'holiday' ? ' party' : ''}`}>

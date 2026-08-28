@@ -838,6 +838,18 @@ test('the house style rides at the END of the user message, not in the preamble'
   assert.ok(user.indexOf('THE SECOND LINE IS A PERSON') > user.indexOf('ONE THOUGHT PER LINE'));
 });
 
+test('non-emergency channels are not forced into pure business every time', () => {
+  const user = buildSceneChat(req({ channel: 'LOCAL' }))[1].content;
+  assert.match(user, /NOT PURE BUSINESS EVERY TIME/);
+  assert.match(user, /dry humour, a light tease or a small human absurdity/i);
+});
+
+test('emergency channel keeps levity disabled', () => {
+  const user = buildSceneChat(req({ channel: 'EMERGENCY' }))[1].content;
+  assert.match(user, /NO LEVITY/);
+  assert.doesNotMatch(user, /NOT PURE BUSINESS EVERY TIME/);
+});
+
 test('every ambient channel gets the house style, TOWER keeps its own prompt', () => {
   // The ban was measured across all four ambient channels and the worst of
   // them (CREW, 100% -> 25%) is the reason it is unconditional. TOWER is a

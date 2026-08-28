@@ -192,6 +192,8 @@ export interface OrreryPort {
   /** Surface ports only. */
   latitude?: number;
   longitude?: number;
+  /** Session-only docks (fleet carriers): useful now, wrong after they jump. */
+  transient?: boolean;
 }
 
 export interface OrrerySystem {
@@ -574,7 +576,7 @@ export function resolvePorts(sys: OrrerySystem): void {
   );
   if (!candidates.length) return;
   for (const port of sys.ports.values()) {
-    if (port.parentKnown || port.distanceLs == null) continue;
+    if (port.parentKnown || port.distanceLs == null || port.type === 'FleetCarrier') continue;
     let best: OrreryBody | null = null;
     let bestD = Infinity;
     for (const b of candidates) {
@@ -671,6 +673,10 @@ export class OrreryTracker {
     // Ports are learned from several of the same events, so this runs
     // alongside rather than inside the switch.
     this.notePort(ev);
+    if (ev.event === 'Docked' && str(ev.StationType) === 'FleetCarrier') {
+      const market = num(ev.MarketID);
+      if (market !== undefined) this.currentBodyId = market;
+    }
   }
 
   /**
@@ -718,10 +724,6 @@ export class OrreryTracker {
     // Location with no station in it must not cost a slot in the LRU cap.
     const merge = (id: number, patch: Partial<OrreryPort> & { name: string }): void => {
       const sys = this.system(address, str(ev.StarSystem) ?? this.currentSystem);
-      // Fleet carriers are not infrastructure — they jump. Pinning one beside
-      // the world it happened to be parked at would draw it there for ever,
-      // and this table is persisted.
-      if ((patch.type ?? sys.ports.get(id)?.type) === 'FleetCarrier') return;
       const prev = sys.ports.get(id);
       sys.ports.set(id, { ...prev, ...patch, id });
       this.dirty = true;
@@ -735,10 +737,12 @@ export class OrreryTracker {
         const name = str(ev.StationName) ?? str(ev.Body);
         if (id === undefined || !name) break;
         if (type === 'Station') {
+          const stationType = str(ev.StationType);
           merge(id, {
             name,
-            type: str(ev.StationType),
+            type: stationType,
             distanceLs: num(ev.DistFromStarLS),
+            transient: stationType === 'FleetCarrier' ? true : undefined,
           });
         } else if (ev.Docked === true && (type === 'Planet' || type === 'PlanetaryRing')) {
           // Docked on a surface: the body under it is stated, not guessed.
@@ -775,6 +779,25 @@ export class OrreryTracker {
         // No BodyID here at all. Match on the name we may already hold, so a
         // station learned from a drop gains its distance on docking.
         const name = str(ev.StationName);
+        const stationType = str(ev.StationType);
+        if (stationType === 'FleetCarrier') {
+          // Carriers matter for the CURRENT flight path, but become wrong the
+          // moment they jump. Keep them as transient docks keyed by MarketID.
+          const market = num(ev.MarketID);
+          const sys = this.systems.get(address);
+          const parent = sys ? resolveBodyId(sys, this.currentBodyId) : null;
+          if (market !== undefined) {
+            merge(market, {
+              name: name ?? `Fleet Carrier ${market}`,
+              type: stationType,
+              distanceLs: num(ev.DistFromStarLS),
+              parentId: parent ?? undefined,
+              parentKnown: parent != null ? true : undefined,
+              transient: true,
+            });
+          }
+          break;
+        }
         const ls = num(ev.DistFromStarLS);
         if (!name) break;
         for (const p of this.systems.get(address)?.ports.values() ?? []) {
@@ -963,7 +986,7 @@ export class OrreryTracker {
         name: s.name,
         lastScanMs: s.lastScanMs,
         bodies: [...s.bodies.values()],
-        ports: [...s.ports.values()],
+        ports: [...s.ports.values()].filter((p) => !p.transient),
       })),
     };
   }

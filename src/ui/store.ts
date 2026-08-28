@@ -312,6 +312,7 @@ import { Speaker } from './tts.ts';
 import { MusicPlayer, type MusicState } from './music.ts';
 import { stationForChapter } from '../engine/stations.ts';
 import {
+  BOOZE_SYSTEM,
   WINE,
   creditsPerHour as boozeCreditsPerHour,
   etaMs as boozeEtaMs,
@@ -2376,27 +2377,56 @@ export class AppCore {
     resolvePorts(sys);
     const destRaw = this.statusTracker.current?.destination?.body;
     const destRawId = destRaw != null && /^\d+$/.test(destRaw) ? Number(destRaw) : null;
+    const destLabel = this.statusTracker.current?.destination?.name?.trim();
     // BOTH ends need resolving, not just the target. A leg's origin comes from
     // the last SupercruiseExit or Docked, and those report the STATION —
     // so undocking and flying somewhere, the commonest trip there is, produced
     // an origin no body table could place.
     const leg = this.orrery.leg;
+    const fromPortId = leg?.fromId != null && sys.ports.has(leg.fromId) ? leg.fromId : null;
+    // Status targets for carriers are inconsistent across game states: some
+    // snapshots report the carrier id, some only its host body id + name.
+    // Fall back to matching the callsign in the target name against the ports
+    // already learned this session.
+    const namedPortId = (() => {
+      if (!destLabel) return null;
+      const exact = [...sys.ports.values()].find((p) => p.name.toLowerCase() === destLabel.toLowerCase());
+      if (exact) return exact.id;
+      const callsign = destLabel.toUpperCase().match(/\b[A-Z0-9]{3}-[A-Z0-9]{3}\b/u)?.[0];
+      if (!callsign) return null;
+      return [...sys.ports.values()].find((p) => p.name.toUpperCase().includes(callsign))?.id ?? null;
+    })();
+    const destPortId = destRawId != null && sys.ports.has(destRawId) ? destRawId : namedPortId;
     const fromId = resolveBodyId(sys, leg?.fromId);
-    const destId = resolveBodyId(sys, destRawId);
+    const destId = resolveBodyId(sys, destPortId ?? destRawId);
     const destName =
-      destRawId != null
-        ? (sys.ports.get(destRawId)?.name ?? this.statusTracker.current?.destination?.name)
-        : undefined;
+      destPortId != null
+        ? (sys.ports.get(destPortId)?.name ?? destLabel)
+        : destRawId != null
+          ? (sys.ports.get(destRawId)?.name ?? destLabel)
+          : destLabel;
+    const sameAnchor =
+      fromId != null &&
+      destId != null &&
+      fromId === destId &&
+      !(fromPortId != null && destPortId != null && fromPortId !== destPortId);
     const ship =
-      leg && fromId != null && destId != null && destId !== fromId
-        ? { ...leg, fromId, toId: destId, destName }
+      leg && fromId != null && destId != null && !sameAnchor
+        ? {
+            ...leg,
+            fromId,
+            toId: destId,
+            destName,
+            fromPortId: fromPortId ?? undefined,
+            toPortId: destPortId ?? undefined,
+          }
         : null;
     // In supercruise toward somewhere the map cannot place — a station never
     // visited, a body never scanned. The line cannot be drawn, but silence
     // reads as a broken feature; say where the ship is going and why there is
     // no marker.
     const shipUnresolved =
-      !ship && leg != null && destRawId != null
+      !ship && leg != null && (destRawId != null || destPortId != null || !!destLabel)
         ? (destName ?? 'an unmapped destination')
         : null;
     // "You are here" has the same station problem the leg had: docked at
@@ -5269,6 +5299,16 @@ export class AppCore {
 
   setPlotTarget(target: string): void {
     this.plotTarget = target;
+    this.emit();
+  }
+
+  /** Booze tab: one click to prime the plotter for Rackham's Peak. */
+  boozeQuickNav(): void {
+    this.plotKind = 'ship';
+    this.plotTarget = BOOZE_SYSTEM;
+    this.plotError = null;
+    this.view = 'plotter';
+    this.pushFeed('system', `🧭 Booze Cruise quick nav set to ${BOOZE_SYSTEM}.`);
     this.emit();
   }
 

@@ -1509,6 +1509,17 @@ body {
   letter-spacing: 0.06em;
 }
 
+.booze-nav {
+  align-items: center;
+}
+
+.booze-nav-btn {
+  flex: none;
+  font-size: var(--fs-micro);
+  line-height: 1;
+  padding: 4px 7px;
+}
+
 .sp-val {
   flex: none;
   color: var(--text);

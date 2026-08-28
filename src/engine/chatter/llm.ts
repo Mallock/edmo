@@ -488,6 +488,12 @@ Write the transmission now.`,
         `matters, name it the way its owner would in one plain word and move straight on to ` +
         `what it costs somebody.\n\n` +
 
+        (req.channel === 'EMERGENCY'
+          ? `NO LEVITY. Keep this urgent: no jokes, no banter, no playful asides.\n\n`
+          : `NOT PURE BUSINESS EVERY TIME. When the moment allows it, let one line carry dry ` +
+            `humour, a light tease or a small human absurdity. Keep it brief, in character, and ` +
+            `tied to what the speakers are handling.\n\n`) +
+
         // The length rule, and the reason it is phrased as a SENTENCE and not
         // as a word cap. A hard "under twelve words" was tried once before and
         // reverted: it produced telegraphic command-fragments that read as code

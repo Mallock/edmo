@@ -62,7 +62,12 @@ interface Innards {
   bootstrapped: boolean;
   onLines(lines: string[], live: boolean): void;
   onSnapshotFile(name: string, text: string): void;
-  buildSnapshot(): { booze: null | { state: string; sellPerT: number | null; tally: { runs: number; tons: number; credits: number } } };
+  boozeQuickNav(): void;
+  buildSnapshot(): {
+    view: string;
+    plotter: { kind: string; target: string };
+    booze: null | { state: string; sellPerT: number | null; tally: { runs: number; tons: number; credits: number } };
+  };
 }
 
 async function bootedCore(history: string[], market?: string) {
@@ -122,4 +127,13 @@ test('a replayed journal does not count the same run twice', async () => {
   c.onLines([sale('20:10:00', 400, 110_000_000)], true);
   c.onLines([sale('20:10:00', 400, 110_000_000)], false); // replay, not live
   assert.equal(c.buildSnapshot().booze?.tally.runs, 1);
+});
+
+test('booze quick nav primes the plotter for HIP 58832', async () => {
+  const c = await bootedCore([DOCKED], marketJson(275_000));
+  c.boozeQuickNav();
+  const snap = c.buildSnapshot();
+  assert.equal(snap.view, 'plotter');
+  assert.equal(snap.plotter.kind, 'ship');
+  assert.equal(snap.plotter.target, 'HIP 58832');
 });

@@ -677,14 +677,29 @@ test('a station too far from anything scanned is left unplaced, not guessed', ()
   assert.equal(sys.ports.get(99)?.parentId, undefined, 'better absent than beside the wrong world');
 });
 
-test('fleet carriers are never pinned to a body, because they jump', () => {
+test('fleet carriers are tracked for this session, then dropped from persistence', () => {
   const t = portSystem();
   t.apply(ev({
-    timestamp: '2026-08-16T00:04:00Z', event: 'Location', StarSystem: 'HIP 71120',
-    SystemAddress: 83986911994, BodyID: 77, BodyType: 'Station', Body: 'V6W-TTJ',
-    StationName: 'V6W-TTJ', StationType: 'FleetCarrier', DistFromStarLS: 970,
+    timestamp: '2026-08-16T00:03:30Z', event: 'SupercruiseExit', StarSystem: 'HIP 71120',
+    SystemAddress: 83986911994, BodyID: 21, BodyType: 'Planet', Body: 'HIP 71120 2 b',
   }));
-  assert.equal(t.current()!.ports.has(77), false, 'this table is persisted; a carrier would go stale');
+  t.apply(ev({
+    timestamp: '2026-08-16T00:04:20Z', event: 'Docked', StationName: 'V6W-TTJ',
+    StationType: 'FleetCarrier', MarketID: 3712889600, StarSystem: 'HIP 71120',
+    SystemAddress: 83986911994, DistFromStarLS: 970.0,
+  }));
+  const sys = t.current()!;
+  const carrier = sys.ports.get(3712889600)!;
+  assert.equal(carrier.parentId, 21, 'anchored to the host body for in-session route drawing');
+  assert.equal(carrier.transient, true, 'and marked transient so it cannot fossilise');
+  assert.equal(resolveBodyId(sys, 3712889600), 21);
+
+  const back = OrreryTracker.fromJSON(JSON.parse(JSON.stringify(t.toJSON())));
+  assert.equal(
+    back.get('83986911994')?.ports.has(3712889600),
+    false,
+    'transient carrier docks are stripped from persisted state',
+  );
 });
 
 test('docking fills in the distance for a station first seen on a drop', () => {
