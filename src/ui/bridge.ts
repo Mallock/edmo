@@ -503,9 +503,19 @@ export interface ArdentMarketRow {
  * request returns every commodity at every station in the system.
  */
 export interface ArdentSystemRow extends ArdentMarketRow {
-  commodity: string;
+  /**
+   * Null on a construction site nobody has reported yet: the sweep still
+   * returns one row for the site, with every commodity field empty.
+   */
+  commodity: string | null;
   /** Supercruise distance from the star; the only "distance" inside a system. */
   distanceLs: number | null;
+  /**
+   * `SpaceConstructionDepot`, `PlanetaryConstructionDepot`, `Outpost`, … —
+   * passed through from Ardent uninterpreted. The only reliable way to tell a
+   * construction site from a station that merely sells things.
+   */
+  stationType: string | null;
 }
 
 /**

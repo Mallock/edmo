@@ -7,9 +7,9 @@ WHAT THIS IS
   index.html                              the page
   img/                                    screenshots + icons
   fonts/                                  the two webfonts, self-hosted
-  ED-Mission-Operator-1.9.3-setup.exe       the Windows installer (~132 MB)
-  ED-Mission-Operator-1.9.3-amd64.deb       Linux beta, Ubuntu/Debian (~147 MB)
-  ED-Mission-Operator-1.9.3-x86_64.AppImage Linux beta, any distro (~231 MB)
+  ED-Mission-Operator-1.9.4-setup.exe       the Windows installer (~132 MB)
+  ED-Mission-Operator-1.9.4-amd64.deb       Linux beta, Ubuntu/Debian (~147 MB)
+  ED-Mission-Operator-1.9.4-x86_64.AppImage Linux beta, any distro (~231 MB)
 
 HOW TO PUT IT ON YOUR WEB HOTEL
   1. Open your web hotel's File Manager (or connect with FTP, e.g. FileZilla).
@@ -22,7 +22,43 @@ NOTES
   * The installer is ~132 MB. Browser-based file managers sometimes limit
     uploads (often to 100 MB) — if the .exe upload fails, use FTP instead,
     or upload it to a file service and change the download link in
-    index.html (search for "ED-Mission-Operator-1.9.3-setup.exe").
+    index.html (search for "ED-Mission-Operator-1.9.4-setup.exe").
+  * 1.9.4 stops the build panel forgetting every site but the last one.
+
+    A colonisation system is not one build. Preae Aihm EH-D d12-64 holds
+    FORTY-TWO construction depots, and the panel remembered exactly one: dock
+    at the next site and the requirement, the progress and every ton already
+    delivered for the previous one were simply gone. Every site you dock at is
+    now kept under its own market ID, with the one under the ship marked as
+    active, and a contribution is credited to the site that received it rather
+    than to whichever was last on screen. About thirty-two are held, letting go
+    of finished builds first and never of the one you are standing in.
+
+    AND THE SITES YOU HAVE NOT DOCKED AT ARE LISTED TOO. The market sweep the
+    tab already runs returns every station in the system, construction sites
+    included — and those rows were being thrown away. They are now a roster:
+    which sites are here, what each is reported to accept, what its board paid,
+    its pad, its supercruise distance, and how old the report is. Load up and
+    the panel leads with the hold — what you are carrying, and who around here
+    takes it. No new source, no extra request, no new permission.
+
+    WHAT IT KNOWS AND WHAT IT DOES NOT. A site you have docked at carries
+    tonnage, because Elite's journal is the only place RequiredAmount and
+    ProvidedAmount exist. Community data carries a site's commodity list and
+    its price but reports demand as zero on every row — 160 of them checked
+    live. So a site nobody has docked at shows what it is REPORTED TO ACCEPT,
+    with nothing at all where tonnage would go, and it is never worded as
+    needed or outstanding. Reports carry their age; older than a week is shown
+    as a rumour rather than a destination, and the ones in that system were six
+    weeks old.
+
+    Also in 1.9.4: comms allow some light levity on non-emergency channels
+    while emergency traffic stays strict and procedural; the orrery draws
+    fleet-carrier travel properly (carrier docks are tracked as transient ports,
+    and a leg may run between two ports on the same body); carrier targets
+    resolve by callsign so they show up in live play; and a Booze Cruise
+    quick-nav plots HIP 58832 and opens the plotter in one click.
+
   * 1.9.3 makes the tower actually reach the air, and gives it some manners.
 
     1.9.2 stopped the tower talking out of turn but left it MUTE, which was a
@@ -672,7 +708,7 @@ NOTES
     ranges and payout estimates; and four opt-in community lookups the operator
     calls only when asked (Spansh routes, galaxy-wide markets via Ardent
     Insight, the EDAstro exploration catalogue, and the Galnet news wire).
-  * All three installers are 1.9.3.
+  * All three installers are 1.9.4.
 
     Windows:  npm run tauri build
               -> src-tauri/target/release/bundle/nsis/

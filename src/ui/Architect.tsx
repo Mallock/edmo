@@ -10,10 +10,24 @@
  * already in the hold, then the market under the ship, then the near cluster,
  * then whatever nobody around here stocks. Each row opens to show where to buy
  * it, how old that report is, and how many full holds the job takes.
+ *
+ * Below the tree sit the sites themselves, in two tiers that must never be
+ * allowed to look alike: the ones the commander has docked at, which carry
+ * tonnage read off the game's own contribution panel, and the ones known only
+ * through community data, which carry a commodity list and a price and NO
+ * TONNAGE — because nobody reports it. A number in the wrong column here is
+ * the difference between a plan and a wild guess.
  */
 import { useState } from 'react';
 import type { ArchitectView } from './store.ts';
-import type { Bucket, ShoppingItem, Source } from '../engine/architect.ts';
+import type {
+  Bucket,
+  DepotState,
+  HoldMatch,
+  ShoppingItem,
+  SiteListing,
+  Source,
+} from '../engine/architect.ts';
 
 const tons = (n: number): string => `${Math.round(n).toLocaleString('en-US')} t`;
 const cr = (n: number | null): string => (n == null ? '—' : `${Math.round(n).toLocaleString('en-US')} cr`);
@@ -148,6 +162,219 @@ function ItemRow({ item, capacity }: { item: ShoppingItem; capacity: number | nu
   );
 }
 
+/** Supercruise distance — inside one system, the whole journey. */
+const lsLabel = (n: number | null): string | null =>
+  n == null ? null : `${Math.round(n).toLocaleString('en-US')} Ls`;
+
+/** System · Ls · pad, in one line, skipping whatever is not known. */
+const whereLine = (system: string, distanceLs: number | null, pad: string | null): string => {
+  const bits = [system, lsLabel(distanceLs), padLabel(pad) && `pad ${padLabel(pad)}`];
+  return bits.filter(Boolean).join(' · ');
+};
+
+/**
+ * A site nobody in this cockpit has stood on.
+ *
+ * The tonnage column is DELIBERATELY EMPTY here. A first-hand depot shows tons
+ * outstanding in that position; community data does not carry the figure at
+ * all, so the row says what the site is reported to accept and stops. The
+ * moment a number appears here the commander will read it as a requirement.
+ */
+function SiteRow({ site }: { site: SiteListing }) {
+  const [open, setOpen] = useState(false);
+  const takes = site.commodities.length;
+  return (
+    <li className="arc-item">
+      <button
+        className="arc-item-head"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        title={
+          takes
+            ? `${site.station} was reported to accept ${takes} commodit${takes === 1 ? 'y' : 'ies'} — how much it still wants is not in community data`
+            : `${site.station} — nobody has reported this site's board`
+        }
+      >
+        <span className="arc-twist">{takes ? (open ? '▾' : '▸') : '·'}</span>
+        <span className="arc-name">{site.station}</span>
+        <span className="arc-takes">
+          {takes ? `takes ${takes}` : 'unreported'}
+        </span>
+        <span className={site.stale ? 'arc-age stale' : 'arc-age'}>{ageLabel(site.ageDays)}</span>
+      </button>
+      {open && (
+        <ul className="arc-srcs">
+          <li className="arc-site-where">{whereLine(site.system, site.distanceLs, site.pad)}</li>
+          {site.commodities.map((c) => (
+            <li className="arc-src" key={c.key}>
+              <span className="arc-src-where">{c.name}</span>
+              <span className="arc-src-num mono">{c.payment == null ? '—' : `${cr(c.payment)}/t`}</span>
+            </li>
+          ))}
+          <li className="arc-none">
+            Accepted here, as the community last read this board. How much it still wants is not
+            reported by anyone — only docking there says that.
+          </li>
+        </ul>
+      )}
+    </li>
+  );
+}
+
+/** A site the commander has stood on: first-hand, and it carries tonnage. */
+function KnownSiteRow({ depot, active }: { depot: DepotState; active: boolean }) {
+  const left = depot.resources.reduce((n, r) => n + r.remaining, 0);
+  return (
+    <li className="arc-item">
+      <div className={active ? 'arc-known here' : 'arc-known'}>
+        <span className="arc-twist">{active ? '◆' : '·'}</span>
+        <span className="arc-name">{depot.station ?? 'Construction site'}</span>
+        <span className="arc-need mono">
+          {depot.complete ? 'complete' : depot.failed ? 'failed' : tons(left)}
+        </span>
+        <span className="arc-age own">{active ? 'active' : 'you docked here'}</span>
+      </div>
+      <div className="arc-site-where">
+        {depot.system ?? '?'} · {Math.round(depot.progress * 1000) / 10}% built
+      </div>
+    </li>
+  );
+}
+
+/**
+ * Lead with the hold.
+ *
+ * "What am I carrying and who around here takes it" is the question a loaded
+ * hauler is actually asking, and it is answerable from the sweep the panel has
+ * already paid for. A commodity nobody here accepts gets said out loud rather
+ * than left as a gap — a blank reads as "not looked".
+ */
+function HoldBlock({ hold }: { hold: HoldMatch[] }) {
+  const taken = hold.filter((h) => h.sites.length);
+  const spare = hold.filter((h) => !h.sites.length);
+  if (!hold.length) return null;
+  return (
+    <section className="arc-group">
+      <div className="arc-group-head static" style={{ borderBottomColor: 'var(--green)' }}>
+        <span className="arc-group-title" style={{ color: 'var(--green)' }}>
+          Aboard — who here takes it
+        </span>
+        <span className="arc-group-count mono">
+          {tons(hold.reduce((n, h) => n + h.tons, 0))}
+        </span>
+      </div>
+      <ul className="arc-items">
+        {taken.map((h) => (
+          <li className="arc-item" key={h.key}>
+            <div className="arc-known">
+              <span className="arc-twist">·</span>
+              <span className="arc-name">{h.name}</span>
+              <span className="arc-need mono">{tons(h.tons)} aboard</span>
+            </div>
+            <ul className="arc-srcs">
+              {h.sites.slice(0, 4).map((s, i) => (
+                <li className="arc-src" key={`${s.station}-${i}`}>
+                  <span className="arc-src-where">{s.station}</span>
+                  <span className="arc-src-sys">{whereLine(s.system, s.distanceLs, s.pad)}</span>
+                  <span className="arc-src-num mono">
+                    {s.payment == null ? '—' : `${cr(s.payment)}/t`}
+                  </span>
+                  <span className={s.stale ? 'arc-age stale' : 'arc-age'}>{ageLabel(s.ageDays)}</span>
+                </li>
+              ))}
+            </ul>
+          </li>
+        ))}
+      </ul>
+      {spare.length > 0 && (
+        <div className="arc-hint">
+          {spare
+            .slice(0, 4)
+            .map((h) => h.name)
+            .join(', ')}
+          {spare.length > 4 ? ` and ${spare.length - 4} more` : ''} — no known site here accepts{' '}
+          {spare.length === 1 ? 'it' : 'them'}.
+        </div>
+      )}
+    </section>
+  );
+}
+
+/**
+ * The two tiers, side by side and never blurred.
+ *
+ * Sites the commander has docked at carry tonnage and are marked as their own;
+ * sites known only through EDDN carry a commodity list, a price and an age.
+ * The visual split is the whole point — reusing the green "you saw it" mark
+ * the source rows already use for first-hand knowledge.
+ */
+function SitesBlock({
+  depots,
+  activeId,
+  roster,
+  online,
+}: {
+  depots: DepotState[];
+  activeId: number;
+  roster: SiteListing[] | null;
+  online: boolean;
+}) {
+  const [shut, setShut] = useState(false);
+  const reported = (roster ?? []).filter((s) => s.commodities.length);
+  const quiet = (roster ?? []).filter((s) => !s.commodities.length);
+  const count = depots.length + (roster?.length ?? 0);
+  return (
+    <section className="arc-group">
+      <button
+        className="arc-group-head"
+        aria-expanded={!shut}
+        onClick={() => setShut((v) => !v)}
+        style={{ borderBottomColor: 'var(--cyan)' }}
+      >
+        <span className="arc-twist">{shut ? '▸' : '▾'}</span>
+        <span className="arc-group-title" style={{ color: 'var(--cyan)' }}>
+          Construction sites
+        </span>
+        <span className="arc-group-count mono">{count}</span>
+      </button>
+      {!shut && (
+        <>
+          <div className="arc-hint">
+            Sites you have docked at keep their tonnage. The rest is community data: what a site is
+            reported to accept, never how much it still wants.
+          </div>
+          <ul className="arc-items">
+            {depots.map((d) => (
+              <KnownSiteRow key={d.marketId} depot={d} active={d.marketId === activeId} />
+            ))}
+            {reported.map((s) => (
+              <SiteRow key={`${s.station}|${s.system}`} site={s} />
+            ))}
+          </ul>
+          {quiet.length > 0 && (
+            <div className="arc-hint">
+              {quiet.length} more site{quiet.length === 1 ? '' : 's'} here that nobody has reported
+              — the system holds them, but no board has been read.
+            </div>
+          )}
+          {roster == null && (
+            <div className="arc-hint">
+              {online
+                ? 'Sites nearby have not been looked for yet — rescan to sweep the system.'
+                : 'Community data is off, so only the sites you have docked at are known.'}
+            </div>
+          )}
+          {roster != null && !roster.length && (
+            <div className="arc-hint">
+              Swept — no construction sites here beyond the ones you have already docked at.
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
 /** Minutes-scale freshness — a market scan ages in minutes, not days. */
 const scanAge = (at: number | null, nowMs: number): string => {
   if (at == null) return 'Not scanned yet.';
@@ -201,6 +428,8 @@ export function ArchitectCard({
         </div>
       </div>
 
+      <HoldBlock hold={view.hold} />
+
       <div className="arc-tools">
         <button className="arc-scan" disabled={view.scanning || !view.online} onClick={onScan}>
           {view.scanning ? 'Scanning…' : 'Rescan markets'}
@@ -249,6 +478,13 @@ export function ArchitectCard({
           );
         })}
       </div>
+
+      <SitesBlock
+        depots={view.depots}
+        activeId={depot.marketId}
+        roster={view.roster}
+        online={view.online}
+      />
 
       <div className="arc-foot">
         {view.cargoCapacity

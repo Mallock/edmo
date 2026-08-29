@@ -334,6 +334,42 @@ before their parents. The traps and the additive parent-chain simplification are
 CMDR TerjeRu's MIT-licensed [Orrery](https://github.com/TerjeRu/orrery) — credit where it is due;
 the implementation here is this codebase's own.
 
+## The system architect — a colonisation build as a shopping run
+
+The game states a build's requirement exactly once, on the contribution panel at the site, as a
+column of alphabetical rows. Undock and it is gone. The 🏗 tab folds that panel out of the journal
+and keeps it, then orders it by what can be acted on: tons already in the hold, then the market
+under the ship, then the build's own system, then the near cluster, then whatever nobody stocks.
+
+**Every site you dock at is remembered.** A colonisation system is not one build — Preae Aihm EH-D
+d12-64 holds forty-two construction depots. Dock at the next one and the last one keeps its
+requirement, its progress and the tonnage you already delivered, filed under its own market ID.
+Contributions are credited to the site that received them and never to a sibling. The panel keeps
+about thirty-two of them, letting go of finished builds first and never of the one under the ship.
+
+**And the sites you have not docked at are listed too.** The market sweep the tab already runs for
+the build's own system returns every station in it, construction sites included — those rows used
+to be thrown away. They are now a roster: which sites are here, what each is reported to accept,
+what its board paid, its pad, its supercruise distance, and how old the report is. Load up and the
+panel leads with the hold: what you are carrying, and who around here takes it. No extra request,
+no new source — the same opt-in already covers it.
+
+**What the app knows about a site, and what it does not.**
+
+|  | A site you docked at | A site from community data |
+|--|--|--|
+| Where it is, what it accepts | yes | yes |
+| What it pays per ton | yes | yes, as last reported |
+| **Tons required, delivered, outstanding** | **yes** | **no — and never guessed** |
+
+That second column is a hard line, not an omission. Elite's journal is the only place
+`RequiredAmount` and `ProvidedAmount` exist; EDDN carries a construction depot's commodity list and
+price but reports its demand as zero on every row — 160 of them checked live. So a site nobody has
+docked at shows what it is **reported to accept**, with nothing where tonnage would go, and the
+panel never words it as needed or outstanding. Community rows also carry their age, and a report
+older than a week is shown as a rumour rather than a destination: the ones in that system were six
+weeks old when this was written.
+
 ## The heartbeat (proactive assist)
 
 | Rule | Fires when |
@@ -424,7 +460,10 @@ src/engine/          TypeScript mission intelligence (zero deps, Node 22.6+, 495
                        replay-safe fold, recall, gated proactive remarks,
                        LLM session-reflection prompt + JSON folding
   architect.ts         Colonisation shopping list — depot requirement folded
-                       into an ordered plan (hold / here / this system / galaxy)
+                       into an ordered plan (hold / here / this system / galaxy);
+                       every depot docked at kept by MarketID, plus a roster of
+                       sites known only through community data (no tonnage —
+                       EDDN does not carry it, so the app does not claim it)
   news.ts              Local wire — grounded brief, six desks, price memory,
                        persistent invented cast, fabrication guard
   plotter.ts           Neutron + fleet-carrier route plotting and tritium maths

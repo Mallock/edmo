@@ -81,10 +81,15 @@ import {
   coversFromMarket,
   describeCoverage,
   describeDepot,
+  holdAtSites,
+  isConstructionSiteType,
+  siteRoster,
   tonsRemaining,
   tonsRequired,
   type DepotState,
+  type HoldMatch,
   type ShoppingGroup,
+  type SiteListing,
 } from '../engine/architect.ts';
 import {
   acceptNews,
@@ -241,6 +246,7 @@ import {
   llmModels,
   ardentMarket,
   type ArdentMarketRow,
+  type ArdentSystemRow,
   ardentSystemCommodities,
   ardentTradeCandidates,
   ardentStationPads,
@@ -476,6 +482,19 @@ export interface BoozeView {
 /** Everything the Architect tab renders — data only; actions live on core. */
 export interface ArchitectView {
   depot: DepotState;
+  /**
+   * Every site docked at, the active one first. First-hand knowledge: these
+   * are the only records that carry tonnage.
+   */
+  depots: DepotState[];
+  /**
+   * Sites nobody in this cockpit has docked at, from the community sweep.
+   * Null means the sweep has not run; an empty array means it ran and this
+   * system holds no sites we have not already visited.
+   */
+  roster: SiteListing[] | null;
+  /** What is aboard, and who around here accepts it. */
+  hold: HoldMatch[];
   /** The prioritised tree: deliver-now, buy-here, nearby, unknown, done. */
   groups: ShoppingGroup[];
   totalRequired: number;
@@ -997,7 +1016,11 @@ export class AppCore {
   private construction = (() => {
     const c = new ConstructionTracker();
     try {
-      c.load(JSON.parse(localStorage.getItem('edmo.construction.v1') ?? 'null'));
+      // v2 holds every site docked at; v1 held only the last one. Read the new
+      // key first and fall back, so a commander mid-build keeps the site they
+      // are standing in across the version bump.
+      const v2 = localStorage.getItem('edmo.construction.v2');
+      c.load(JSON.parse(v2 ?? localStorage.getItem('edmo.construction.v1') ?? 'null'));
     } catch {
       /* the next depot event restates the whole list anyway */
     }
@@ -1005,6 +1028,12 @@ export class AppCore {
   })();
   /** Commodity key → where it can be bought, from the galaxy scan. */
   private architectSources = new Map<string, ArdentMarketRow[]>();
+  /**
+   * Construction sites nobody in this cockpit has docked at, from the same
+   * sweep. Null means the sweep has not run — which is not the same fact as
+   * "it ran and this system holds no sites".
+   */
+  private architectRoster: SiteListing[] | null = null;
   private architectScanning = false;
   private architectScannedAt: number | null = null;
   private architectScanError: string | null = null;
@@ -1016,6 +1045,8 @@ export class AppCore {
   private saidMarketCover = '';
   /** Commodity key → tons in the hold, from Cargo.json's Inventory. */
   private cargoManifest = new Map<string, number>();
+  /** Commodity key → the readable name the game wrote in the hold. */
+  private cargoNames = new Map<string, string>();
   /**
    * Wine sold at Rackham's Peak, one entry per load.
    *
@@ -2070,7 +2101,7 @@ export class AppCore {
       // scanned only when it happens live.
       if (this.construction.apply(ev)) {
         try {
-          localStorage.setItem('edmo.construction.v1', JSON.stringify(this.construction.toJSON()));
+          localStorage.setItem('edmo.construction.v2', JSON.stringify(this.construction.toJSON()));
         } catch {
           /* the list still stands for this session */
         }
@@ -3343,11 +3374,16 @@ export class AppCore {
         // The manifest, not just the tonnage: a construction site wants to know
         // that the 16 t aboard is water it is asking for, not bromellite.
         const manifest = new Map<string, number>();
+        const names = new Map<string, string>();
         for (const i of c.Inventory ?? []) {
           const key = commodityKey(i.Name ?? i.Name_Localised ?? '');
           if (key && typeof i.Count === 'number') manifest.set(key, (manifest.get(key) ?? 0) + i.Count);
+          // Ardent squashes commodity names down to their key; the hold spells
+          // them out. Keep the spelling so a site listing can be read aloud.
+          if (key && i.Name_Localised) names.set(key, i.Name_Localised);
         }
         this.cargoManifest = manifest;
+        this.cargoNames = names;
       } catch {
         /* keep last-good cargo */
       }
@@ -5086,8 +5122,12 @@ export class AppCore {
       sources: this.architectSources,
       cargoCapacity: capacity,
     });
+    const roster = this.architectRoster;
     return {
       depot,
+      depots: this.construction.all,
+      roster,
+      hold: roster ? holdAtSites(this.cargoManifest, roster, this.commodityNames()) : [],
       groups,
       totalRequired: tonsRequired(depot),
       totalRemaining: tonsRemaining(depot),
@@ -5202,16 +5242,13 @@ export class AppCore {
     const wanted = depot.resources.filter(
       (r) => r.remaining > 0 && !soldHere.has(r.key) && (this.cargoManifest.get(r.key) ?? 0) < r.remaining,
     );
-    if (!wanted.length) {
-      this.architectScannedAt = Date.now();
-      this.architectScanFrom = from;
-      this.emit();
-      return;
-    }
     this.architectScanning = true;
     this.architectScanError = null;
     this.emit();
     const found = new Map<string, ArdentMarketRow[]>();
+    // The construction sites in the same response. Free — they arrive whether
+    // we look at them or not, and used to be thrown away.
+    const siteRows: ArdentSystemRow[] = [];
     let failed = 0;
 
     // The build's OWN system first, in one request. The per-commodity lookup
@@ -5220,21 +5257,50 @@ export class AppCore {
     // 371,309 t of steel two hundred thousand Ls from the site, and routed the
     // commander 76 ly instead. One request covers every commodity here.
     const home = depot.system;
+    const sweep = async (system: string, sellers: boolean): Promise<void> => {
+      for (const row of await ardentSystemCommodities(system)) {
+        // A construction site is not a shop. Every one of its rows comes back
+        // with stock 0 and demand 0, so offering it as somewhere to buy would
+        // send the commander to an empty board — it goes to the roster instead.
+        if (isConstructionSiteType(row.stationType)) {
+          siteRows.push(row);
+          continue;
+        }
+        if (!sellers) continue;
+        const key = commodityKey(row.commodity);
+        if (!key) continue;
+        const at = found.get(key);
+        if (at) at.push(row);
+        else found.set(key, [row]);
+      }
+    };
     if (home) {
       try {
-        const rows = await ardentSystemCommodities(home);
-        for (const row of rows) {
-          const key = commodityKey(row.commodity);
-          if (!key) continue;
-          const at = found.get(key);
-          if (at) at.push(row);
-          else found.set(key, [row]);
-        }
+        await sweep(home, true);
       } catch {
         // Not fatal: the nearby sweep below still runs.
         this.architectScanError = `Could not read the markets in ${home} — showing out-of-system sellers only.`;
       }
     }
+    // The system the ship is actually standing in, when that is not the build's
+    // own. Its SELLERS are deliberately not folded in: the sweep reports
+    // distanceLy 0 for every row it returns, which is true of home and a lie
+    // about anywhere else, and would rank a 76 ly haul as no jump at all. Only
+    // the sites are taken — and those are the ones within reach right now.
+    if (from.toLowerCase() !== (home ?? '').toLowerCase()) {
+      try {
+        await sweep(from, false);
+      } catch {
+        /* the roster simply stays home-only */
+      }
+    }
+    // Replace wholesale rather than merge, exactly as the sources below do: a
+    // rescan from a new system must not leave the last one's sites under it.
+    this.architectRoster = siteRoster(siteRows, {
+      known: this.construction.all,
+      names: this.commodityNames(),
+      first: from,
+    });
 
     // Anything the home system already covers needs no galaxy search.
     const covered = new Set(
@@ -5254,7 +5320,7 @@ export class AppCore {
       }
     };
     try {
-      await Promise.all([worker(), worker(), worker()]);
+      if (searched) await Promise.all([worker(), worker(), worker()]);
       // Replace wholesale rather than merge: a rescan from a new system must
       // not leave last system's distances sitting under the new ones.
       this.architectSources = found;
@@ -5267,6 +5333,23 @@ export class AppCore {
       this.architectScanning = false;
       this.emit();
     }
+  }
+
+  /**
+   * Commodity key → the readable name the game itself wrote.
+   *
+   * Ardent squashes every commodity down to its key — `advancedcatalysers`,
+   * `liquidoxygen` — so the only place a spelling with spaces in it exists is
+   * the journal: the depot's `Name_Localised`, or the hold's. Without this a
+   * site listing reads like a database dump.
+   */
+  private commodityNames(): Map<string, string> {
+    const names = new Map<string, string>();
+    for (const d of this.construction.all) {
+      for (const r of d.resources) if (r.name) names.set(r.key, r.name);
+    }
+    for (const [k, n] of this.cargoNames) names.set(k, n);
+    return names;
   }
 
   private plotterView(): PlotterView {

@@ -1,6 +1,6 @@
 [package]
 name = "ed-mission-operator"
-version = "1.9.3"
+version = "1.9.4"
 description = "Elite Dangerous Mission Operator — always-on-top HUD with journal ingestion, LM Studio AI operator, and local Piper TTS"
 authors = ["Mika Leiman"]
 edition = "2021"

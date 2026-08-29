@@ -20,8 +20,11 @@ import {
   coversFromMarket,
   describeCoverage,
   describeDepot,
+  holdAtSites,
   isConstructionDepot,
+  siteRoster,
   tonsRemaining,
+  type SystemCommodityRow,
 } from '../src/engine/architect.ts';
 import type { MarketLookupRow } from '../src/engine/tools.ts';
 import type { JournalEvent } from '../src/engine/types.ts';
@@ -522,4 +525,470 @@ test('the model is handed the plan, and told when its sources are rumours', () =
   assert.match(facts, /CONSTRUCTION: Orbital Construction Site: Perga's Progress in HIP 71120/);
   assert.match(facts, /Steel 2,542 t — Old Yard \(Stale, 9 ly\) at 100 cr/);
   assert.match(facts, /1 of these sources are community reports over 7 days old/);
+});
+
+// ---------------------------------------------------------------- many depots
+
+const site = (id: number, name: string) => ({
+  event: 'Docked',
+  StationName: name,
+  StationType: 'SpaceConstructionDepot',
+  StarSystem: 'Preae Aihm EH-D d12-64',
+  MarketID: id,
+  StationServices: ['dock', 'commodities', 'colonisationcontribution'],
+});
+
+/** Nth hour of the build week, so eviction order is unambiguous. */
+const hour = (n: number): string =>
+  new Date(Date.parse('2026-08-01T09:00:00Z') + n * 3_600_000).toISOString();
+
+/** Dock at a site and read its board, in the order the game writes them. */
+const visit = (
+  t: ConstructionTracker,
+  id: number,
+  name: string,
+  iso: string,
+  o: { complete?: boolean; steel?: number; given?: number } = {},
+): void => {
+  t.apply(at(iso, site(id, name)));
+  t.apply(
+    at(iso, {
+      event: 'ColonisationConstructionDepot',
+      MarketID: id,
+      ConstructionProgress: 0.1,
+      ConstructionComplete: o.complete ?? false,
+      ResourcesRequired: [res('$steel_name;', 'Steel', o.steel ?? 1000, o.given ?? 0, 5000)],
+    }),
+  );
+};
+
+test('docking at a second site does not forget the first', () => {
+  const t = new ConstructionTracker();
+  visit(t, 3800001, 'Orbital Construction Site: Perga’s Progress', hour(1), { steel: 2542 });
+  visit(t, 3800002, 'Orbital Construction Site: Forsberg Sanctuary', hour(9), { steel: 900 });
+  assert.equal(t.all.length, 2);
+  // The one under the ship is the active one, and it is the second.
+  assert.equal(t.depot?.marketId, 3800002);
+  assert.equal(t.all[0].marketId, 3800002);
+  const first = t.all.find((d) => d.marketId === 3800001)!;
+  assert.equal(first.resources[0].remaining, 2542);
+  assert.equal(first.station, 'Orbital Construction Site: Perga’s Progress');
+});
+
+test('docking again at a remembered site makes it the active one', () => {
+  const t = new ConstructionTracker();
+  visit(t, 3800001, 'Site One', hour(1));
+  visit(t, 3800002, 'Site Two', hour(9));
+  t.apply(at(hour(20), site(3800001, 'Site One')));
+  assert.equal(t.depot?.marketId, 3800001);
+  assert.equal(t.all.length, 2);
+});
+
+test('docking somewhere whose board we have never opened keeps the last list', () => {
+  // ColonisationConstructionDepot is written when the contribution panel is
+  // opened, not when the ship lands — so a docking on its own must never take
+  // a requirement off the screen.
+  const t = new ConstructionTracker();
+  visit(t, 3800001, 'Site One', hour(1), { steel: 1000 });
+  t.apply(at(hour(9), site(3800002, 'Site Two')));
+  assert.equal(t.depot?.marketId, 3800001);
+  assert.equal(t.depot?.resources[0].remaining, 1000);
+  // And the moment its board IS opened, it takes over.
+  t.apply(
+    at(hour(10), {
+      event: 'ColonisationConstructionDepot',
+      MarketID: 3800002,
+      ConstructionProgress: 0.2,
+      ResourcesRequired: [res('$titanium_name;', 'Titanium', 1525, 0, 4000)],
+    }),
+  );
+  assert.equal(t.depot?.marketId, 3800002);
+  assert.equal(t.depot?.station, 'Site Two');
+});
+
+test('a contribution is credited to its own site, never to a sibling', () => {
+  const t = new ConstructionTracker();
+  visit(t, 3800001, 'Site One', hour(1), { steel: 1000 });
+  visit(t, 3800002, 'Site Two', hour(9), { steel: 1000 });
+  t.apply(
+    at(hour(10), {
+      event: 'ColonisationContribution',
+      MarketID: 3800002,
+      Contributions: [{ Name: '$Steel_name;', Amount: 400 }],
+    }),
+  );
+  const one = t.all.find((d) => d.marketId === 3800001)!;
+  const two = t.all.find((d) => d.marketId === 3800002)!;
+  assert.equal(one.resources[0].provided, 0);
+  assert.equal(one.resources[0].remaining, 1000);
+  assert.equal(two.resources[0].provided, 400);
+  assert.equal(two.resources[0].remaining, 600);
+});
+
+test('re-reading a known board replaces it, and does not add a second entry', () => {
+  const t = new ConstructionTracker();
+  visit(t, 3800001, 'Site One', hour(1), { steel: 1000 });
+  visit(t, 3800001, 'Site One', hour(40), { steel: 1000, given: 640 });
+  assert.equal(t.all.length, 1);
+  assert.equal(t.depot?.resources[0].provided, 640);
+  assert.equal(t.depot?.resources[0].remaining, 360);
+});
+
+test('a finished build is the first memory to go when the cap is reached', () => {
+  const t = new ConstructionTracker();
+  // Site 20 is done — and done is the least useful thing to remember.
+  for (let i = 1; i <= 32; i++) visit(t, i, `Site ${i}`, hour(i), { complete: i === 20 });
+  assert.equal(t.all.length, 32);
+  visit(t, 33, 'Site 33', hour(100));
+  assert.equal(t.all.length, 32);
+  assert.ok(!t.all.some((d) => d.marketId === 20), 'the completed build was evicted');
+  // The oldest outstanding one is still there: finished beats old.
+  assert.ok(t.all.some((d) => d.marketId === 1));
+  assert.ok(t.all.some((d) => d.marketId === 33));
+});
+
+test('the site under the ship is never the one forgotten', () => {
+  const t = new ConstructionTracker();
+  for (let i = 1; i <= 32; i++) visit(t, i, `Site ${i}`, hour(i));
+  // Dock at the first site again, logged as the oldest docking of all — now
+  // the active site is also the one eviction would otherwise reach for.
+  t.apply(at(hour(-500), site(1, 'Site 1')));
+  assert.equal(t.depot?.marketId, 1);
+  // A thirty-third board read, without undocking from site 1.
+  t.apply(
+    at(hour(100), {
+      event: 'ColonisationConstructionDepot',
+      MarketID: 33,
+      ConstructionProgress: 0.1,
+      ResourcesRequired: [res('$steel_name;', 'Steel', 1000, 0, 5000)],
+    }),
+  );
+  assert.equal(t.all.length, 32);
+  assert.equal(t.depot?.marketId, 1, 'the active site survived');
+  assert.ok(!t.all.some((d) => d.marketId === 2), 'the oldest other one went instead');
+});
+
+test('the old single-depot save loads with its tonnage intact', () => {
+  const t = new ConstructionTracker();
+  // Exactly the shape every version up to 1.9.3 wrote.
+  t.load({
+    depot: {
+      marketId: 3955029250,
+      station: 'Orbital Construction Site: Perga’s Progress',
+      system: 'HIP 71120',
+      progress: 0.002678,
+      complete: false,
+      failed: false,
+      at: '2026-08-10T20:45:41Z',
+      resources: [
+        { key: 'steel', name: 'Steel', required: 2542, provided: 12, remaining: 2530, payment: 5000 },
+      ],
+    },
+  });
+  assert.equal(t.all.length, 1);
+  assert.equal(t.depot?.marketId, 3955029250);
+  assert.equal(t.depot?.resources[0].remaining, 2530);
+});
+
+test('the many-depot save round-trips, active site and all', () => {
+  const t = new ConstructionTracker();
+  visit(t, 3800001, 'Site One', hour(1), { steel: 1000 });
+  visit(t, 3800002, 'Site Two', hour(9), { steel: 500 });
+  const back = new ConstructionTracker();
+  back.load(JSON.parse(JSON.stringify(t.toJSON())));
+  assert.equal(back.all.length, 2);
+  assert.equal(back.depot?.marketId, 3800002);
+  assert.equal(back.all.find((d) => d.marketId === 3800001)?.resources[0].remaining, 1000);
+});
+
+test('an unreadable save leaves the tracker empty rather than throwing', () => {
+  const bad = [
+    null,
+    {},
+    { depot: null },
+    { depot: { marketId: 1, resources: 'not an array' } },
+    { depots: [{ marketId: 0, resources: [] }], activeId: 99 },
+    { depots: 'nope' },
+  ] as unknown as Array<Parameters<ConstructionTracker['load']>[0]>;
+  for (const d of bad) {
+    const t = new ConstructionTracker();
+    assert.doesNotThrow(() => t.load(d));
+    assert.equal(t.all.length, 0);
+    assert.equal(t.depot, null);
+  }
+});
+
+// ---------------------------------------------------------------- the roster
+
+/**
+ * A real whole-system sweep, captured from
+ * api.ardent-insight.com/v2/system/name/Preae%20Aihm%20EH-D%20d12-64/commodities
+ * on 2026-08-29 and trimmed exactly the way spansh.test.ts trims a route: the
+ * fields the Rust mapper forwards, every construction site in the system, and
+ * at most three of each site's commodity rows.
+ *
+ * The numbers below are the point of the fixture. 42 stations in this ONE
+ * system are construction depots; twelve of them have ever been reported, and
+ * thirty are known to exist and nothing more. And on every single row, across
+ * all 160 in the untrimmed capture, `demand` is 0 — which is why a SiteListing
+ * carries no tonnage.
+ */
+const SWEPT = Date.parse('2026-08-29T12:00:00Z');
+const PREAE = 'Preae Aihm EH-D d12-64';
+
+const r = (
+  commodity: string | null,
+  station: string,
+  stationType: string,
+  price: number | null,
+  pad: string | null,
+  distanceLs: number | null,
+  updatedAt: string | null,
+): SystemCommodityRow => ({
+  commodity,
+  station,
+  system: PREAE,
+  stationType,
+  price,
+  pad,
+  distanceLs,
+  updatedAt,
+});
+
+const SWEEP: SystemCommodityRow[] = [
+  r(null, 'Orbital Construction Site: Coney Platform', 'SpaceConstructionDepot', null, '2', 11413, null),
+  r(null, 'Orbital Construction Site: Mattingly\'s Inheritance', 'SpaceConstructionDepot', null, '2', 11413, null),
+  r(null, 'Orbital Construction Site: Polya Sanctuary', 'SpaceConstructionDepot', null, '2', 11762, null),
+  r(null, 'Orbital Construction Site: Coolidge\'s Inheritance', 'SpaceConstructionDepot', null, '2', 11437, null),
+  r(null, 'Orbital Construction Site: Horrocks Vista', 'SpaceConstructionDepot', null, '2', 0, null),
+  r(null, 'Orbital Construction Site: Oja Depot', 'SpaceConstructionDepot', null, '2', 140, null),
+  r(null, 'Orbital Construction Site: Pordenone Vista', 'SpaceConstructionDepot', null, '2', 11461, null),
+  r(null, 'Orbital Construction Site: Fincke Terminal', 'SpaceConstructionDepot', null, '2', 11436, null),
+  r(null, 'Orbital Construction Site: Balfonheim Smeltery', 'SpaceConstructionDepot', null, '2', 11451, null),
+  r(null, 'Orbital Construction Site: Vlaicu Point', 'SpaceConstructionDepot', null, '2', 11428, null),
+  r(null, 'Orbital Construction Site: Jean Reach', 'SpaceConstructionDepot', null, '2', 11413, null),
+  r(null, 'Goldbart Legacy', 'PlanetaryConstructionDepot', null, '3', 11416, null),
+  r(null, 'Freud Terminal', 'PlanetaryConstructionDepot', null, '3', 11414, null),
+  r(null, 'Zulawski Terminal', 'PlanetaryConstructionDepot', null, '3', 11414, null),
+  r(null, 'Avogadro City', 'PlanetaryConstructionDepot', null, '3', 11414, null),
+  r(null, 'Orbital Construction Site: Galtea\'s Forge', 'SpaceConstructionDepot', null, '2', 11418, null),
+  r(null, 'Orbital Construction Site: Snow City', 'SpaceConstructionDepot', null, '2', 11762, null),
+  r(null, 'Orbital Construction Site: McGuire Enterprise', 'SpaceConstructionDepot', null, '2', 11760, null),
+  r(null, 'Orbital Construction Site: Stebbins Town', 'SpaceConstructionDepot', null, '2', 11760, null),
+  r(null, 'Orbital Construction Site: Trimble Relay', 'SpaceConstructionDepot', null, '2', 0, null),
+  r(null, 'Orbital Construction Site: Shapley City', 'SpaceConstructionDepot', null, '2', 11440, null),
+  r(null, 'Orbital Construction Site: Weizsacker\'s Inheritance', 'SpaceConstructionDepot', null, '2', 11429, null),
+  r(null, 'Orbital Construction Site: Shear\'s Progress', 'SpaceConstructionDepot', null, '2', 140, null),
+  r(null, 'Orbital Construction Site: Creighton Vista', 'SpaceConstructionDepot', null, '2', 138, null),
+  r(null, 'Orbital Construction Site: OrtizMoreno\'s Folly', 'SpaceConstructionDepot', null, '2', 11453, null),
+  r(null, 'Orbital Construction Site: Baille Hub', 'SpaceConstructionDepot', null, '2', 11774, null),
+  r(null, 'Dukaj Terminal', 'PlanetaryConstructionDepot', null, '3', 11457, null),
+  r(null, 'Orbital Construction Site: Siodmak Gateway', 'SpaceConstructionDepot', null, '2', 11783, null),
+  r(null, 'Orbital Construction Site: Marcos Prospect', 'SpaceConstructionDepot', null, '2', 11962, null),
+  r(null, 'Orbital Construction Site: Winterbottom Vista', 'SpaceConstructionDepot', null, '2', 11546, null),
+  r('advancedcatalysers', 'Crevenna Town', 'PlanetaryConstructionDepot', 1986, '3', 11772, '2026-07-15T12:39:38Z'),
+  r('evacuationshelter', 'Crevenna Town', 'PlanetaryConstructionDepot', 218, '3', 11772, '2026-07-15T12:39:38Z'),
+  r('fruitandvegetables', 'Crevenna Town', 'PlanetaryConstructionDepot', 218, '3', 11772, '2026-07-15T12:39:38Z'),
+  r('aluminium', 'Orbital Construction Site: Forsberg Sanctuary', 'SpaceConstructionDepot', 1738, '2', 11737, '2026-07-14T12:41:09Z'),
+  r('basicmedicines', 'Orbital Construction Site: Forsberg Sanctuary', 'SpaceConstructionDepot', 218, '2', 11737, '2026-07-14T11:58:12Z'),
+  r('ceramiccomposites', 'Orbital Construction Site: Forsberg Sanctuary', 'SpaceConstructionDepot', 118, '2', 11737, '2026-07-14T12:09:35Z'),
+  r('aluminium', 'Orbital Construction Site: Balfonheim City', 'SpaceConstructionDepot', 1738, '2', 11959, '2026-07-15T15:50:41Z'),
+  r('cmmcomposite', 'Orbital Construction Site: Balfonheim City', 'SpaceConstructionDepot', 4193, '2', 11959, '2026-07-15T16:38:50Z'),
+  r('liquidoxygen', 'Orbital Construction Site: Balfonheim City', 'SpaceConstructionDepot', 565, '2', 11959, '2026-07-15T11:13:24Z'),
+  r('aluminium', 'Orbital Construction Site: Revin Depot', 'SpaceConstructionDepot', 1738, '2', 11737, '2026-07-14T14:06:53Z'),
+  r('ceramiccomposites', 'Orbital Construction Site: Revin Depot', 'SpaceConstructionDepot', 118, '2', 11737, '2026-07-14T13:52:36Z'),
+  r('computercomponents', 'Orbital Construction Site: Revin Depot', 'SpaceConstructionDepot', 371, '2', 11737, '2026-07-14T14:39:20Z'),
+  r('aluminium', 'Orbital Construction Site: Bohnhoff Enterprise', 'SpaceConstructionDepot', 1701, '2', 11774, '2026-07-13T01:18:02Z'),
+  r('ceramiccomposites', 'Orbital Construction Site: Bohnhoff Enterprise', 'SpaceConstructionDepot', 108, '2', 11774, '2026-07-13T01:55:38Z'),
+  r('computercomponents', 'Orbital Construction Site: Bohnhoff Enterprise', 'SpaceConstructionDepot', 351, '2', 11774, '2026-07-13T01:55:38Z'),
+  r('aluminium', 'Orbital Construction Site: Grego\'s Inheritance', 'SpaceConstructionDepot', 1738, '2', 11777, '2026-07-13T13:45:44Z'),
+  r('basicmedicines', 'Orbital Construction Site: Grego\'s Inheritance', 'SpaceConstructionDepot', 213, '2', 11777, '2026-07-13T13:15:23Z'),
+  r('buildingfabricators', 'Orbital Construction Site: Grego\'s Inheritance', 'SpaceConstructionDepot', 1510, '2', 11777, '2026-07-13T13:15:23Z'),
+  r('basicmedicines', 'Orbital Construction Site: Brorsen Beacon', 'SpaceConstructionDepot', 213, '2', 11777, '2026-07-13T13:16:58Z'),
+  r('buildingfabricators', 'Orbital Construction Site: Brorsen Beacon', 'SpaceConstructionDepot', 1510, '2', 11777, '2026-07-13T13:16:58Z'),
+  r('ceramiccomposites', 'Orbital Construction Site: Brorsen Beacon', 'SpaceConstructionDepot', 118, '2', 11777, '2026-07-13T14:43:01Z'),
+  r('basicmedicines', 'Orbital Construction Site: Sutcliffe Sanctuary', 'SpaceConstructionDepot', 213, '2', 11777, '2026-07-13T13:18:25Z'),
+  r('buildingfabricators', 'Orbital Construction Site: Sutcliffe Sanctuary', 'SpaceConstructionDepot', 1510, '2', 11777, '2026-07-13T13:18:25Z'),
+  r('copper', 'Orbital Construction Site: Sutcliffe Sanctuary', 'SpaceConstructionDepot', 324, '2', 11777, '2026-07-13T13:18:25Z'),
+  r('ceramiccomposites', 'Orbital Construction Site: Eisenstein Hub', 'SpaceConstructionDepot', 110, '2', 11774, '2026-07-13T01:59:05Z'),
+  r('computercomponents', 'Orbital Construction Site: Eisenstein Hub', 'SpaceConstructionDepot', 356, '2', 11774, '2026-07-13T01:59:05Z'),
+  r('copper', 'Orbital Construction Site: Eisenstein Hub', 'SpaceConstructionDepot', 316, '2', 11774, '2026-07-13T01:59:05Z'),
+  r('ceramiccomposites', 'Orbital Construction Site: Murakami Gateway', 'SpaceConstructionDepot', 118, '2', 11412, '2026-07-15T12:01:49Z'),
+  r('cmmcomposite', 'Orbital Construction Site: Murakami Gateway', 'SpaceConstructionDepot', 4193, '2', 11412, '2026-07-15T11:56:36Z'),
+  r('fish', 'Orbital Construction Site: Murakami Gateway', 'SpaceConstructionDepot', 284, '2', 11412, '2026-07-15T11:03:48Z'),
+  r('ceramiccomposites', 'Orbital Construction Site: Wandrei Point', 'SpaceConstructionDepot', 118, '2', 11548, '2026-07-16T04:45:58Z'),
+  r('cmmcomposite', 'Orbital Construction Site: Wandrei Point', 'SpaceConstructionDepot', 4193, '2', 11548, '2026-07-16T04:46:03Z'),
+  r('copper', 'Orbital Construction Site: Wandrei Point', 'SpaceConstructionDepot', 331, '2', 11548, '2026-07-16T04:45:58Z'),
+  r('steel', 'Orbital Construction Site: The Rock At Balfonheim', 'SpaceConstructionDepot', 2985, '2', 11460, '2026-07-16T06:51:48Z'),
+  r('advancedcatalysers', 'Trimble Relay', 'Outpost', 2523, '2', 14, '2026-08-10T12:23:34Z'),
+  r('fruitandvegetables', 'V8Z-4XK', 'FleetCarrier', 483, '3', 0, '2026-07-08T01:40:17Z'),
+  r('agriculturalmedicines', 'Balfonheim Productions', 'CraterOutpost', 982, '3', 11410, '2026-08-17T19:00:48Z'),
+];
+
+test('the sweep already in hand names every construction site in the system', () => {
+  const roster = siteRoster(SWEEP, { first: PREAE, nowMs: SWEPT });
+  assert.equal(roster.length, 42, 'every construction depot in the system');
+  const reported = roster.filter((s) => s.commodities.length);
+  const unreported = roster.filter((s) => !s.commodities.length);
+  assert.equal(reported.length, 12);
+  // Dropping these would say the system holds twelve sites when it holds 42.
+  assert.equal(unreported.length, 30);
+  // Sites with something known about them lead; the unreported ones follow.
+  assert.ok(roster.slice(0, 12).every((s) => s.commodities.length));
+  // The outpost, the carrier and the crater outpost in the same response are
+  // not construction sites and must not appear.
+  assert.ok(!roster.some((s) => s.station === 'Trimble Relay'));
+  assert.ok(!roster.some((s) => s.station === 'V8Z-4XK'));
+  assert.ok(!roster.some((s) => s.station === 'Balfonheim Productions'));
+});
+
+test('a site listing carries its commodities, its pad and its distance', () => {
+  const roster = siteRoster(SWEEP, { first: PREAE, nowMs: SWEPT });
+  const forsberg = roster.find((s) => s.station.endsWith('Forsberg Sanctuary'))!;
+  assert.equal(forsberg.stationType, 'SpaceConstructionDepot');
+  assert.equal(forsberg.pad, '2');
+  assert.equal(forsberg.distanceLs, 11737);
+  assert.deepEqual(
+    forsberg.commodities.map((c) => c.key),
+    ['aluminium', 'basicmedicines', 'ceramiccomposites'],
+  );
+  assert.equal(forsberg.commodities.find((c) => c.key === 'aluminium')?.payment, 1738);
+});
+
+test('a site listing carries no tonnage, ever', () => {
+  // Structural, not a spot check: EDDN reports demand 0 for every construction
+  // depot row, so any field here that could be read as "how much it wants" is
+  // a figure the app invented. A missing field cannot be misread.
+  const forbidden = [
+    'required',
+    'provided',
+    'remaining',
+    'demand',
+    'stock',
+    'tons',
+    'tonnage',
+    'amount',
+    'quantity',
+    'needed',
+    'outstanding',
+  ];
+  const roster = siteRoster(SWEEP, { first: PREAE, nowMs: SWEPT });
+  assert.ok(roster.length > 0);
+  for (const s of roster) {
+    for (const k of Object.keys(s)) assert.ok(!forbidden.includes(k.toLowerCase()), `${k} on a listing`);
+    for (const c of s.commodities) {
+      for (const k of Object.keys(c)) assert.ok(!forbidden.includes(k.toLowerCase()), `${k} on a commodity`);
+    }
+  }
+});
+
+test('a six-week-old board is shown as a rumour, not a destination', () => {
+  const roster = siteRoster(SWEEP, { first: PREAE, nowMs: SWEPT });
+  const forsberg = roster.find((s) => s.station.endsWith('Forsberg Sanctuary'))!;
+  // Reported 2026-07-14, swept 2026-08-29.
+  assert.equal(forsberg.ageDays, 45);
+  assert.equal(forsberg.stale, true);
+  // A site nobody has ever reported has no age at all — and "undated" is not
+  // "fresh", so it is never allowed to sit above a dated report.
+  const quiet = roster.find((s) => !s.commodities.length)!;
+  assert.equal(quiet.updatedAt, null);
+  assert.equal(quiet.ageDays, null);
+  assert.equal(quiet.stale, true);
+});
+
+test('a site we have docked at appears once, as our own, not twice', () => {
+  const t = new ConstructionTracker();
+  t.apply(
+    at('2026-08-29T08:00:00Z', {
+      event: 'Docked',
+      StationName: 'Orbital Construction Site: Forsberg Sanctuary',
+      StationType: 'SpaceConstructionDepot',
+      StarSystem: PREAE,
+      MarketID: 3800077,
+    }),
+  );
+  t.apply(
+    at('2026-08-29T08:00:10Z', {
+      event: 'ColonisationConstructionDepot',
+      MarketID: 3800077,
+      ConstructionProgress: 0.4,
+      ResourcesRequired: [res('$aluminium_name;', 'Aluminium', 1322, 300, 1738)],
+    }),
+  );
+  const roster = siteRoster(SWEEP, { known: t.all, first: PREAE, nowMs: SWEPT });
+  assert.equal(roster.length, 41, 'the visited site left the community list');
+  assert.ok(!roster.some((s) => s.station.endsWith('Forsberg Sanctuary')));
+  // And the first-hand record is the one that survives — with its tonnage.
+  assert.equal(t.all[0].resources[0].remaining, 1022);
+});
+
+test('the current system leads, and the build system follows', () => {
+  const elsewhere = SWEEP.filter((row) => row.station.endsWith('Wandrei Point')).map((row) => ({
+    ...row,
+    system: 'HIP 71120',
+  }));
+  const roster = siteRoster([...elsewhere, ...SWEEP], { first: 'HIP 71120', nowMs: SWEPT });
+  assert.equal(roster[0].system, 'HIP 71120');
+  assert.ok(roster.slice(1).every((s) => s.system === PREAE));
+});
+
+// ------------------------------------------------------------------- the hold
+
+test('what is aboard is matched to who takes it, however it is spelled', () => {
+  const roster = siteRoster(SWEEP, { first: PREAE, nowMs: SWEPT });
+  // The hold says 'liquidoxygen'; a depot would say '$LiquidOxygen_name;'.
+  // Both have to land on the same site listing or the panel says nothing.
+  const cargo = new Map([[commodityKey('$LiquidOxygen_name;'), 96]]);
+  const [match] = holdAtSites(cargo, roster);
+  assert.equal(match.key, 'liquidoxygen');
+  assert.equal(match.tons, 96);
+  assert.equal(match.note, null);
+  assert.equal(match.sites.length, 1);
+  assert.equal(match.sites[0].station, 'Orbital Construction Site: Balfonheim City');
+  assert.equal(match.sites[0].payment, 565);
+  assert.equal(match.sites[0].pad, '2');
+  assert.equal(match.sites[0].distanceLs, 11959);
+  assert.equal(match.sites[0].ageDays, 44);
+});
+
+test('several sites taking the same thing are all named, best paid first', () => {
+  const roster = siteRoster(SWEEP, { first: PREAE, nowMs: SWEPT });
+  const match = holdAtSites(new Map([['ceramiccomposites', 40]]), roster)[0];
+  assert.equal(match.sites.length, 7);
+  assert.deepEqual(
+    match.sites.map((s) => s.payment),
+    [118, 118, 118, 118, 118, 110, 108],
+  );
+});
+
+test('nothing here taking it is said out loud, not left blank', () => {
+  const roster = siteRoster(SWEEP, { first: PREAE, nowMs: SWEPT });
+  const match = holdAtSites(new Map([['tritium', 300]]), roster)[0];
+  assert.equal(match.sites.length, 0);
+  assert.match(match.note ?? '', /no known site here accepts this/i);
+});
+
+test('the name a site listing shows is the one the game wrote', () => {
+  // Ardent squashes it to 'liquidoxygen'; the hold spells it out. Where the
+  // journal has given us a spelling, that is the one on the panel.
+  const names = new Map([['liquidoxygen', 'Liquid oxygen']]);
+  const roster = siteRoster(SWEEP, { names, first: PREAE, nowMs: SWEPT });
+  const balfonheim = roster.find((s) => s.station.endsWith('Balfonheim City'))!;
+  assert.equal(balfonheim.commodities.find((c) => c.key === 'liquidoxygen')?.name, 'Liquid oxygen');
+  // And where it has not, the key is shown as it is rather than guessed at.
+  assert.equal(balfonheim.commodities.find((c) => c.key === 'cmmcomposite')?.name, 'Cmmcomposite');
+});
+
+test('a fresher report leads a stale one, whatever it pays', () => {
+  const rows: SystemCommodityRow[] = [
+    r('steel', 'Old Site', 'SpaceConstructionDepot', 9000, '3', 100, '2026-06-01T00:00:00Z'),
+    r('steel', 'New Site', 'SpaceConstructionDepot', 3000, '3', 900, '2026-08-28T00:00:00Z'),
+  ];
+  const roster = siteRoster(rows, { first: PREAE, nowMs: SWEPT });
+  const match = holdAtSites(new Map([['steel', 700]]), roster)[0];
+  // 9,000 cr/t is a better price and a three-month-old rumour. It does not lead.
+  assert.deepEqual(
+    match.sites.map((s) => s.station),
+    ['New Site', 'Old Site'],
+  );
 });

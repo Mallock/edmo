@@ -2330,6 +2330,51 @@ body {
   font-size: var(--fs-micro);
 }
 
+/* ------------------------------------------------- the sites, in two tiers
+   A site the commander has DOCKED at reads as their own knowledge — the same
+   green the source rows use for "you saw it" — and shows tons outstanding.
+   A site known only through EDDN shows what it is reported to accept and an
+   age, and nothing at all in the tonnage column. The gap is the message. */
+.arc-known {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px;
+  font-size: var(--fs-meta);
+}
+
+.arc-known.here .arc-twist,
+.arc-known.here .arc-name {
+  color: var(--green);
+}
+
+/* Where a site is: system, supercruise distance, pad. Indented under its row
+   like a source line, because that is what it is — detail, not a heading. */
+.arc-site-where {
+  padding: 2px 4px 3px 22px;
+  color: var(--dim);
+  font-size: var(--fs-micro);
+}
+
+/* "takes 21" — a count of commodities, never a tonnage. Deliberately not
+   monospaced and not in the numeric column, so it cannot be mistaken for the
+   tons-outstanding figure a first-hand depot shows in that position. */
+.arc-takes {
+  margin-left: auto;
+  color: var(--dim);
+  font-size: var(--fs-micro);
+  white-space: nowrap;
+}
+
+/* A section head that is a heading rather than a control. */
+.arc-group-head.static {
+  cursor: default;
+}
+
+.arc-group-head.static:hover {
+  background: transparent;
+}
+
 /* "+2" — this stop also covers two other lines of the build. */
 .arc-stop {
   color: var(--green);

@@ -40,7 +40,7 @@ const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v)
  * "Fruit and Vegetables" (Ardent) must all collapse onto the same string or the
  * list silently double-counts and the hold never matches the requirement.
  */
-export function commodityKey(name: string): string {
+export function commodityKey(name: string | null | undefined): string {
   return String(name ?? '')
     .toLowerCase()
     .replace(/^\$/, '')
@@ -71,6 +71,12 @@ export interface DepotState {
   /** ISO timestamp of the depot event this was folded from. */
   at: string;
   resources: DepotResource[];
+  /**
+   * ISO timestamp of the last docking here. Null for a depot restored from the
+   * single-depot save, which never recorded one. Only ever used to decide
+   * which memory to let go of first.
+   */
+  lastDockedAt?: string | null;
 }
 
 /** A construction site is the only station type that asks for contributions. */
@@ -97,19 +103,69 @@ export function isConstructionDepot(ev: JournalEvent): boolean {
  */
 
 /**
- * Folds the depot events into one state.
+ * Past this many remembered depots, the oldest memory goes.
+ *
+ * A `DepotState` is a few hundred bytes; thirty-two of them is nothing against
+ * any storage limit. The cap exists so a career-long colonisation hauler does
+ * not accumulate an unbounded list in localStorage, not because the data is
+ * large.
+ */
+const MAX_DEPOTS = 32;
+
+/**
+ * Folds the depot events into what the commander knows first-hand.
  *
  * The depot event itself carries no station name — only a MarketID — so the
  * Docked event is what gives the list a place. Without pairing them the panel
  * can tell the commander what to buy but not where to bring it.
+ *
+ * TWO TIERS OF KNOWLEDGE LIVE IN THIS MODULE, AND THEY MUST NOT BLUR.
+ *
+ *   First-hand  — `DepotState`, folded from the journal of a site the commander
+ *                 actually docked at. Carries TONNAGE: RequiredAmount and
+ *                 ProvidedAmount, which exist nowhere else in the galaxy.
+ *   Third-hand  — `SiteListing`, folded from community data about a site nobody
+ *                 in this cockpit has visited. Carries the commodity set and a
+ *                 price, and NO TONNAGE FIELD AT ALL.
+ *
+ * They are separate types rather than one type with optional fields precisely
+ * so the second can never be mistaken for the first. EDDN reports `demand: 0`
+ * on every construction-depot row — verified across 160 live rows in Preae Aihm
+ * EH-D d12-64 — so any tonnage attached to a `SiteListing` would be invented.
+ * A missing field cannot be misread; an `undefined` one can.
+ *
+ * Every site the commander has docked at is remembered, keyed by MarketID.
+ * Docking at the next one does not erase the last: a colonisation system holds
+ * dozens of sites (42 in that same system), and a commander working a build
+ * area moves between them all day.
  */
 export class ConstructionTracker {
-  private depotState: DepotState | null = null;
+  /** Every site docked at, keyed by MarketID. The docked one is `activeId`. */
+  private depots = new Map<number, DepotState>();
+  private activeId: number | null = null;
   /** Where each MarketID was docked, so a depot event can be given a name. */
-  private places = new Map<number, { station: string; system: string }>();
+  private places = new Map<number, { station: string; system: string; at: string | null }>();
 
+  /**
+   * The site under the ship — or the last one we actually read a board at.
+   *
+   * The fallback matters: `ColonisationConstructionDepot` is written when the
+   * commander opens the contribution panel, NOT when they dock. Docking at a
+   * site whose board has never been opened must not blank a requirement we are
+   * still holding for somewhere else.
+   */
   get depot(): DepotState | null {
-    return this.depotState;
+    return (this.activeId != null ? this.depots.get(this.activeId) : undefined) ?? this.all[0] ?? null;
+  }
+
+  /** Every remembered site, the active one first, then most recent docking. */
+  get all(): DepotState[] {
+    const when = (d: DepotState): number => Date.parse(d.lastDockedAt ?? d.at) || 0;
+    return [...this.depots.values()].sort(
+      (a, b) =>
+        Number(b.marketId === this.activeId) - Number(a.marketId === this.activeId) ||
+        when(b) - when(a),
+    );
   }
 
   /** True when this event changed the list — the caller may want to react. */
@@ -119,17 +175,32 @@ export class ConstructionTracker {
         if (!isConstructionDepot(ev)) return false;
         const marketId = num(ev.MarketID);
         if (!marketId) return false;
-        this.places.set(marketId, {
+        const at = str(ev.timestamp) || null;
+        const place = {
           station: str(ev.StationName) || 'Construction site',
           system: str(ev.StarSystem) || '?',
-        });
-        // A depot event we already hold gains its name the moment we dock.
-        if (this.depotState?.marketId === marketId) {
-          const at = this.places.get(marketId)!;
-          this.depotState = { ...this.depotState, station: at.station, system: at.system };
+          at,
+        };
+        this.places.set(marketId, place);
+        const was = this.activeId;
+        this.activeId = marketId;
+        // A depot event we already hold gains its name the moment we dock —
+        // and becomes the active one again, without losing its siblings.
+        const held = this.depots.get(marketId);
+        if (held) {
+          this.depots.set(marketId, {
+            ...held,
+            station: place.station,
+            system: place.system,
+            lastDockedAt: at ?? held.lastDockedAt ?? null,
+          });
           return true;
         }
-        return false;
+        // No requirement read here yet. The place is remembered so the depot
+        // event that follows lands with a name on it; deliberately NO entry is
+        // created, because a DepotState with no resources would render as a
+        // build that wants nothing — a lie, rather than an empty state.
+        return was !== marketId;
       }
       case 'ColonisationConstructionDepot': {
         const marketId = num(ev.MarketID);
@@ -153,41 +224,51 @@ export class ConstructionTracker {
         }
         if (!resources.length) return false;
         const at = this.places.get(marketId);
-        this.depotState = {
+        const held = this.depots.get(marketId);
+        // Replaced in place: a re-read of a known site updates that site and
+        // never becomes a second entry for the same MarketID.
+        this.depots.set(marketId, {
           marketId,
-          station: at?.station ?? this.depotState?.station ?? null,
-          system: at?.system ?? this.depotState?.system ?? null,
+          station: at?.station ?? held?.station ?? null,
+          system: at?.system ?? held?.system ?? null,
           progress: num(ev.ConstructionProgress),
           complete: ev.ConstructionComplete === true,
           failed: ev.ConstructionFailed === true,
           at: str(ev.timestamp) || new Date(0).toISOString(),
           resources,
-        };
+          lastDockedAt: at?.at ?? held?.lastDockedAt ?? null,
+        });
+        if (this.activeId == null) this.activeId = marketId;
+        this.evict();
         return true;
       }
       case 'ColonisationContribution': {
         // The depot event normally follows a contribution, but not always
         // before the commander undocks and flies away — so credit the delivery
         // immediately rather than showing them a list they have already filled.
+        //
+        // Scoped by MarketID: a contribution at one site must never be credited
+        // against a sibling site's requirement.
         const marketId = num(ev.MarketID);
+        const held = marketId ? this.depots.get(marketId) : undefined;
         const given = Array.isArray(ev.Contributions) ? ev.Contributions : [];
-        if (!this.depotState || this.depotState.marketId !== marketId || !given.length) return false;
+        if (!held || !given.length) return false;
         const by = new Map<string, number>();
         for (const c of given as Array<Record<string, unknown>>) {
           const key = commodityKey(str(c.Name) || str(c.Name_Localised));
           if (key) by.set(key, (by.get(key) ?? 0) + num(c.Amount));
         }
         if (!by.size) return false;
-        this.depotState = {
-          ...this.depotState,
-          at: str(ev.timestamp) || this.depotState.at,
-          resources: this.depotState.resources.map((r) => {
+        this.depots.set(marketId, {
+          ...held,
+          at: str(ev.timestamp) || held.at,
+          resources: held.resources.map((r) => {
             const add = by.get(r.key);
             if (!add) return r;
             const provided = Math.min(r.required, r.provided + add);
             return { ...r, provided, remaining: Math.max(0, r.required - provided) };
           }),
-        };
+        });
         return true;
       }
       default:
@@ -195,17 +276,326 @@ export class ConstructionTracker {
     }
   }
 
-  toJSON(): { depot: DepotState | null } {
-    return { depot: this.depotState };
-  }
-
-  load(d: { depot?: DepotState | null } | null): void {
-    if (!d?.depot || !Array.isArray(d.depot.resources)) return;
-    this.depotState = d.depot;
-    if (d.depot.marketId && d.depot.station && d.depot.system) {
-      this.places.set(d.depot.marketId, { station: d.depot.station, system: d.depot.system });
+  /**
+   * Let go of the oldest memory, never the site under the ship.
+   *
+   * A build the commander finished is the one they need least, so those go
+   * first, oldest docking first. Only when every remembered site is still
+   * outstanding does an unfinished one get dropped.
+   */
+  private evict(): void {
+    const when = (d: DepotState): number => Date.parse(d.lastDockedAt ?? d.at) || 0;
+    while (this.depots.size > MAX_DEPOTS) {
+      const spare = [...this.depots.values()].filter((d) => d.marketId !== this.activeId);
+      if (!spare.length) return;
+      const finished = spare.filter((d) => d.complete || d.failed);
+      const pool = finished.length ? finished : spare;
+      const oldest = pool.reduce((a, b) => (when(a) <= when(b) ? a : b));
+      this.depots.delete(oldest.marketId);
     }
   }
+
+  toJSON(): { depots: DepotState[]; activeId: number | null } {
+    return { depots: [...this.depots.values()], activeId: this.activeId };
+  }
+
+  /**
+   * Read either save shape.
+   *
+   * `{ depot }` is what every version up to 1.9.3 wrote. A commander mid-build
+   * must not lose the site they are standing in to a version bump, so the old
+   * shape loads as a one-entry map with that site active. Absent, malformed or
+   * resource-less input leaves the tracker empty rather than throwing — the
+   * next depot event restates the whole list anyway.
+   */
+  load(
+    d: { depot?: DepotState | null; depots?: DepotState[]; activeId?: number | null } | null,
+  ): void {
+    if (!d || typeof d !== 'object') return;
+    const keep = (dep: unknown): number | null => {
+      if (!dep || typeof dep !== 'object') return null;
+      const s = dep as DepotState;
+      const marketId = num(s.marketId);
+      if (!marketId || !Array.isArray(s.resources)) return null;
+      this.depots.set(marketId, { ...s, lastDockedAt: s.lastDockedAt ?? null });
+      if (s.station && s.system) {
+        this.places.set(marketId, {
+          station: s.station,
+          system: s.system,
+          at: s.lastDockedAt ?? null,
+        });
+      }
+      return marketId;
+    };
+    if (Array.isArray(d.depots)) {
+      for (const dep of d.depots) keep(dep);
+      const active = num(d.activeId);
+      this.activeId = active && this.depots.has(active) ? active : null;
+      return;
+    }
+    this.activeId = keep(d.depot);
+  }
+}
+
+// -------------------------------------------------------------- the site roster
+
+/**
+ * One row of the whole-system commodity sweep, as this module needs it.
+ *
+ * Declared structurally rather than imported from the UI bridge so the engine
+ * stays a pure, testable module with no view layer above it — the same
+ * discipline `spansh.ts` keeps while its network call lives in Rust.
+ * `ArdentSystemRow` satisfies this shape.
+ */
+export interface SystemCommodityRow {
+  /** Null on a site nobody has reported: one row, every commodity field empty. */
+  commodity?: string | null;
+  station: string;
+  system: string;
+  stationType?: string | null;
+  price?: number | null;
+  pad?: string | null;
+  distanceLs?: number | null;
+  updatedAt?: string | null;
+}
+
+/**
+ * The two station types the game gives a colonisation site.
+ *
+ * The only reliable way to tell a construction site from a station. Names are
+ * no help: a site can be called "Orbital Construction Site: Coney Platform" or
+ * simply "Crevenna Town", and both are building.
+ */
+const CONSTRUCTION_TYPES = new Set(['spaceconstructiondepot', 'planetaryconstructiondepot']);
+
+export const isConstructionSiteType = (stationType: string | null | undefined): boolean =>
+  CONSTRUCTION_TYPES.has(String(stationType ?? '').toLowerCase());
+
+/**
+ * Ardent squashes a commodity to its key — `advancedcatalysers`, `liquidoxygen`
+ * — so a readable name can only come from somewhere the game wrote one: the
+ * depot's `Name_Localised`, or the hold. Failing both, the key is shown as it
+ * is rather than guessed at.
+ */
+const label = (raw: string): string => (raw ? raw.charAt(0).toUpperCase() + raw.slice(1) : raw);
+
+/** One commodity a site is reported to take, and what its board paid for it. */
+export interface SiteCommodity {
+  key: string;
+  name: string;
+  /**
+   * Credits per ton, as the community last read this site's board.
+   *
+   * A price, not a quantity. Nothing here says how much the site still wants.
+   */
+  payment: number | null;
+}
+
+/**
+ * A construction site the commander has NOT stood on: third-hand knowledge.
+ *
+ * THERE IS NO TONNAGE FIELD ON THIS TYPE, AND ONE MUST NEVER BE ADDED.
+ *
+ * EDDN reports `demand: 0` on every construction-depot row — 160 of them
+ * checked live — so "how much does this site still want" simply is not in
+ * community data. It exists only in the journal of a commander who docked
+ * there, which is what `DepotState` is for. An optional `remaining?: number`
+ * here would be `undefined` for every listing and every consumer would have to
+ * remember that; one missed guard renders an invented figure.
+ *
+ * @see tests/architect.test.ts — "a site listing carries no tonnage, ever"
+ */
+export interface SiteListing {
+  station: string;
+  system: string;
+  /** `SpaceConstructionDepot` or `PlanetaryConstructionDepot`, as reported. */
+  stationType: string;
+  /** Supercruise distance from the star — inside one system, the whole journey. */
+  distanceLs: number | null;
+  pad: string | null;
+  /** What the site is reported to accept. Empty when nobody has reported it. */
+  commodities: SiteCommodity[];
+  /** When the community last saw this site's board. Null if never. */
+  updatedAt: string | null;
+  ageDays: number | null;
+  /**
+   * Too old to fly on — or never dated at all. An unreported site is not
+   * fresh, so it does not get to sit above one that was read this week.
+   */
+  stale: boolean;
+}
+
+export interface RosterInput {
+  /** Sites the commander has docked at. First-hand wins; these are suppressed. */
+  known?: readonly DepotState[];
+  /** Commodity key → the readable name the game wrote, when we have one. */
+  names?: ReadonlyMap<string, string>;
+  /** Sites in this system lead — usually where the ship is standing. */
+  first?: string | null;
+  nowMs?: number;
+}
+
+/**
+ * The construction sites of a system, from the sweep already fetched.
+ *
+ * A fold, not a fetch. `architectScan` asks Ardent for every commodity at every
+ * station in the system and keeps the rows that are selling; the construction
+ * sites in that same response — the stations that would TAKE what is in the
+ * hold — used to be dropped on the floor. This picks them back up. No extra
+ * request, no new host, nothing beyond the opt-in already granted.
+ *
+ * A site with a null commodity name is kept, with an empty commodity list.
+ * Preae Aihm EH-D d12-64 holds 42 sites and only twelve have ever been
+ * reported; dropping the other thirty would tell the commander the system has
+ * twelve sites when it has forty-two.
+ */
+export function siteRoster(
+  rows: readonly SystemCommodityRow[],
+  input: RosterInput = {},
+): SiteListing[] {
+  const nowMs = input.nowMs ?? Date.now();
+  const at = (station: string | null, system: string | null): string =>
+    `${station ?? ''}|${system ?? ''}`.toLowerCase();
+  // Somewhere we have docked is somewhere we know precisely. Showing the
+  // community's July price beside tonnage read this morning invites the
+  // commander to compare them, and the older one always loses.
+  const mine = new Set(
+    (input.known ?? []).filter((d) => d.station && d.system).map((d) => at(d.station, d.system)),
+  );
+  const sites = new Map<string, SiteListing>();
+  const listed = new Map<string, Set<string>>();
+  for (const row of rows) {
+    if (!isConstructionSiteType(row.stationType)) continue;
+    const station = String(row.station ?? '').trim();
+    const system = String(row.system ?? '').trim();
+    if (!station || !system) continue;
+    const id = at(station, system);
+    if (mine.has(id)) continue;
+    let site = sites.get(id);
+    if (!site) {
+      site = {
+        station,
+        system,
+        stationType: String(row.stationType ?? ''),
+        distanceLs: row.distanceLs ?? null,
+        pad: row.pad ?? null,
+        commodities: [],
+        updatedAt: null,
+        ageDays: null,
+        stale: true,
+      };
+      sites.set(id, site);
+      listed.set(id, new Set());
+    }
+    const key = commodityKey(row.commodity);
+    if (!key) continue;
+    const already = listed.get(id)!;
+    if (already.has(key)) continue;
+    already.add(key);
+    site.commodities.push({
+      key,
+      name: input.names?.get(key) ?? label(String(row.commodity ?? key)),
+      payment: row.price ?? null,
+    });
+    // A site is as fresh as the newest row anybody reported for it.
+    if (row.updatedAt && (!site.updatedAt || row.updatedAt > site.updatedAt)) {
+      site.updatedAt = row.updatedAt;
+    }
+  }
+  const out = [...sites.values()];
+  for (const s of out) {
+    s.commodities.sort((a, b) => a.name.localeCompare(b.name));
+    s.ageDays = reportAgeDays(s.updatedAt, nowMs);
+    s.stale = s.ageDays == null || s.ageDays > STALE_DAYS;
+  }
+  const home = (input.first ?? '').toLowerCase();
+  const near = (s: SiteListing): number => (home && s.system.toLowerCase() === home ? 0 : 1);
+  out.sort(
+    (a, b) =>
+      near(a) - near(b) ||
+      Number(!a.commodities.length) - Number(!b.commodities.length) ||
+      Number(a.stale) - Number(b.stale) ||
+      (a.distanceLs ?? Infinity) - (b.distanceLs ?? Infinity) ||
+      a.station.localeCompare(b.station),
+  );
+  return out;
+}
+
+/** One site that takes something aboard, and the terms it was last seen on. */
+export interface HoldSite {
+  station: string;
+  system: string;
+  payment: number | null;
+  pad: string | null;
+  distanceLs: number | null;
+  ageDays: number | null;
+  stale: boolean;
+}
+
+/** What is in the hold, and who around here will take it. */
+export interface HoldMatch {
+  key: string;
+  name: string;
+  /** Tons aboard right now — first-hand, straight off Cargo.json. */
+  tons: number;
+  sites: HoldSite[];
+  /** Said out loud when nothing here takes it, rather than shown as a blank. */
+  note: string | null;
+}
+
+/**
+ * Lead with the hold: what is aboard, and who here accepts it.
+ *
+ * The keying is the whole trick, as everywhere else in this module — the hold
+ * says `liquidoxygen` and Ardent says `liquidoxygen` but a depot says
+ * `$LiquidOxygen_name;`, so everything collapses through `commodityKey` first.
+ *
+ * A commodity nobody here takes gets a sentence, not an empty list. "No result"
+ * and "we looked and the answer is nobody" read identically on a panel, and
+ * only one of them is worth acting on.
+ */
+export function holdAtSites(
+  cargo: ReadonlyMap<string, number>,
+  listings: readonly SiteListing[],
+  names?: ReadonlyMap<string, string>,
+): HoldMatch[] {
+  const out: HoldMatch[] = [];
+  for (const [rawKey, tons] of cargo) {
+    const key = commodityKey(rawKey);
+    if (!key || tons <= 0) continue;
+    const sites: HoldSite[] = [];
+    let name = names?.get(key) ?? null;
+    for (const l of listings) {
+      const c = l.commodities.find((x) => x.key === key);
+      if (!c) continue;
+      name ??= c.name;
+      sites.push({
+        station: l.station,
+        system: l.system,
+        payment: c.payment,
+        pad: l.pad,
+        distanceLs: l.distanceLs,
+        ageDays: l.ageDays,
+        stale: l.stale,
+      });
+    }
+    // Best paid first, but never a rumour above a current report: a six-week
+    // old board is a reason to look, not a reason to fly.
+    sites.sort(
+      (a, b) =>
+        Number(a.stale) - Number(b.stale) ||
+        (b.payment ?? -1) - (a.payment ?? -1) ||
+        (a.distanceLs ?? Infinity) - (b.distanceLs ?? Infinity),
+    );
+    out.push({
+      key,
+      name: name ?? label(key),
+      tons,
+      sites,
+      note: sites.length ? null : 'No known site here accepts this.',
+    });
+  }
+  return out.sort((a, b) => b.sites.length - a.sites.length || b.tons - a.tons);
 }
 
 // ------------------------------------------------------------ the shopping list

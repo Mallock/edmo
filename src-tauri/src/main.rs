@@ -2099,12 +2099,26 @@ async fn ardent_system_commodities(system: String) -> Result<String, String> {
 
     // A busy system answers with thousands of rows covering every commodity in
     // both directions; only things actually ON SALE can be bought for a build.
+    //
+    // Construction sites are the one exception, and they have to be one: EDDN
+    // reports them with `stock` 0 AND `demand` 0 on every row, and a site
+    // nobody has reported yet arrives as a single row with a null commodity.
+    // Filtering on stock alone threw away every construction site in the
+    // system — the very stations that would TAKE what is in the hold.
+    let is_construction = |r: &serde_json::Value| {
+        r["stationType"]
+            .as_str()
+            .map(|t| t.to_ascii_lowercase().contains("constructiondepot"))
+            .unwrap_or(false)
+    };
     let out: Vec<serde_json::Value> = body
         .as_array()
         .map(|a| a.to_vec())
         .unwrap_or_default()
         .into_iter()
-        .filter(|r| r["stock"].as_i64().unwrap_or(0) > 0 && !r["commodityName"].is_null())
+        .filter(|r| {
+            is_construction(r) || (r["stock"].as_i64().unwrap_or(0) > 0 && !r["commodityName"].is_null())
+        })
         .map(|r| {
             json!({
                 "commodity": r["commodityName"],
@@ -2118,6 +2132,9 @@ async fn ardent_system_commodities(system: String) -> Result<String, String> {
                 "pad": r["maxLandingPadSize"],
                 "distanceLs": r["distanceToArrival"],
                 "carrier": r["stationType"].as_str().map(|t| t.eq_ignore_ascii_case("FleetCarrier")).unwrap_or(false),
+                // Passed through uninterpreted: what a station IS lives in the
+                // tested TypeScript, not here.
+                "stationType": r["stationType"],
                 "updatedAt": r["updatedAt"],
             })
         })
