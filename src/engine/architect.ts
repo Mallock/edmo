@@ -425,6 +425,18 @@ export interface SiteListing {
   stale: boolean;
 }
 
+/**
+ * More commodities than any construction site could be asking for.
+ *
+ * Real requirement lists are small: seventeen at HIP 71120, one to twenty-seven
+ * across the twenty reported sites in Pueloi VY-S d3-94, twenty-one at each
+ * Preae Aihm site. Past this, the rows are not a requirement — they are a
+ * whole price table that was reported once and never expired.
+ *
+ * @see pruneCatalogueDump
+ */
+const CATALOGUE_MAX = 40;
+
 export interface RosterInput {
   /** Sites the commander has docked at. First-hand wins; these are suppressed. */
   known?: readonly DepotState[];
@@ -433,6 +445,37 @@ export interface RosterInput {
   /** Sites in this system lead — usually where the ship is standing. */
   first?: string | null;
   nowMs?: number;
+}
+
+/**
+ * Throw away a stale price table masquerading as a requirement.
+ *
+ * Ardent keeps the union of everything ever reported about a station and never
+ * expires a row, so a site can arrive carrying two unrelated readings at once.
+ * "Orbital Construction Site: Archades Hammer" returned 371 commodities: 364
+ * dated 2026-07-01 — the entire game catalogue, `advert1` and
+ * `albinoquechuamammoth` included — and seven dated 2026-08-25/26 that are the
+ * actual outpost list (aluminium, insulating membrane, liquid oxygen, polymers,
+ * steel, titanium, water). Taking the union told the commander the site accepted
+ * tritium at 39,501 cr, which it does not accept at all: exactly the invented
+ * knowledge this module exists to refuse.
+ *
+ * So when a site's list is implausibly long, only its most recent reporting
+ * window is believed. The trade is deliberate and one-directional: a real
+ * commodity reported weeks before the newest row is dropped along with the
+ * junk, so the site is under-claimed rather than over-claimed. It only ever
+ * fires on a list no construction site could have — nineteen of the twenty
+ * reported sites in that system are untouched.
+ */
+function pruneCatalogueDump(list: Array<SiteCommodity & { at: string | null }>): void {
+  if (list.length <= CATALOGUE_MAX) return;
+  const newest = list.reduce<number>((n, c) => Math.max(n, Date.parse(c.at ?? '') || 0), 0);
+  if (!newest) return;
+  // Same horizon as a stale report, measured from the site's own newest row
+  // rather than from now: one reporting window, not one moment.
+  const cut = newest - STALE_DAYS * 86_400_000;
+  const kept = list.filter((c) => (Date.parse(c.at ?? '') || 0) >= cut);
+  if (kept.length) list.splice(0, list.length, ...kept);
 }
 
 /**
@@ -463,7 +506,10 @@ export function siteRoster(
     (input.known ?? []).filter((d) => d.station && d.system).map((d) => at(d.station, d.system)),
   );
   const sites = new Map<string, SiteListing>();
-  const listed = new Map<string, Set<string>>();
+  // Commodities are collected with the date of the row they came from, so a
+  // second reading of the same board can replace the first and an ancient
+  // price table can be told apart from this week's requirement.
+  const listed = new Map<string, Map<string, SiteCommodity & { at: string | null }>>();
   for (const row of rows) {
     if (!isConstructionSiteType(row.stationType)) continue;
     const station = String(row.station ?? '').trim();
@@ -485,26 +531,34 @@ export function siteRoster(
         stale: true,
       };
       sites.set(id, site);
-      listed.set(id, new Set());
+      listed.set(id, new Map());
     }
     const key = commodityKey(row.commodity);
     if (!key) continue;
     const already = listed.get(id)!;
-    if (already.has(key)) continue;
-    already.add(key);
-    site.commodities.push({
+    const held = already.get(key);
+    // The newest reading of a commodity wins, not the first one in the array:
+    // where a board has been read twice, the later price is the true one.
+    if (held && (Date.parse(held.at ?? '') || 0) >= (Date.parse(row.updatedAt ?? '') || 0)) continue;
+    already.set(key, {
       key,
       name: input.names?.get(key) ?? label(String(row.commodity ?? key)),
       payment: row.price ?? null,
+      at: row.updatedAt ?? null,
     });
-    // A site is as fresh as the newest row anybody reported for it.
-    if (row.updatedAt && (!site.updatedAt || row.updatedAt > site.updatedAt)) {
-      site.updatedAt = row.updatedAt;
-    }
   }
   const out = [...sites.values()];
   for (const s of out) {
-    s.commodities.sort((a, b) => a.name.localeCompare(b.name));
+    const list = [...listed.get(at(s.station, s.system))!.values()];
+    pruneCatalogueDump(list);
+    s.commodities = list
+      .map(({ key, name, payment }) => ({ key, name, payment }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    // A site is as fresh as the newest row still believed about it.
+    s.updatedAt = list.reduce<string | null>(
+      (n, c) => (c.at && (!n || c.at > n) ? c.at : n),
+      null,
+    );
     s.ageDays = reportAgeDays(s.updatedAt, nowMs);
     s.stale = s.ageDays == null || s.ageDays > STALE_DAYS;
   }

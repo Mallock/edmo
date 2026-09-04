@@ -5,7 +5,10 @@
     "resources": ["resources/tts-linux"],
     "linux": {
       "deb": {
-        "depends": ["fonts-noto-color-emoji"]
+        "depends": [
+          "fonts-noto-color-emoji",
+          "gstreamer1.0-libav"
+        ]
       }
     }
   }

@@ -114,6 +114,7 @@ const STATE: OperatorState = {
   location: { system: 'Ratraii' },
   docked: true,
   activeMissions: [],
+  carriedPassengers: [],
   lastActivityAt: '2026-07-19T12:00:00Z',
 };
 

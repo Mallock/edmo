@@ -119,7 +119,7 @@ function printSummary(entries: ReplayEntry[], state: MissionStateManager): void 
 // --- Live LM Studio enrichment at a few marquee moments -----------------------
 
 function fakeState(m: Mission, loc: OperatorState['location'], now: string): OperatorState {
-  return { now, location: loc, docked: false, activeMissions: [m], lastActivityAt: now };
+  return { now, location: loc, docked: false, activeMissions: [m], carriedPassengers: [], lastActivityAt: now };
 }
 
 function questionFor(m: Mission): string {

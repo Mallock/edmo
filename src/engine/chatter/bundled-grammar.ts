@@ -793,4 +793,83 @@ CREW establish
 [crew:ops] You have forty minutes.
 [crew:engineering] Then I will do forty minutes of complaining.
 
+# ---------------------------------------------------------------------------
+# Manifest and contract — the commander's own business, overheard.
+#
+# Every fact token here comes from an ACCEPTED mission (manifestBrief /
+# contractBrief in briefs.ts): head-counts, employer, target faction,
+# destination, deadline. Nothing about what a station's board is offering —
+# the journal has no event for that, so no template may pretend to know.
+# And no rewards, no step lists, no progress: the private Operator briefs the
+# contract; these people just live near it. <paxvip> and <paxwanted> are
+# presence-gated — the token exists only when the flag is true, so a template
+# naming one simply never fires for an ordinary charter.
+# ---------------------------------------------------------------------------
+
+STATION establish (manifest)
+[control] Pad crews, heads up. Charter on the pads is boarding <paxcount> <paxtypes>. Give the lifts a minute.
+[hauler] Copy. Staying out of the way.
+
+STATION establish (manifest)
+[control] <ShipNamePool>, expect a slow taxi lane. We are walking <paxcount> <paxtypes> across the deck.
+[hauler] Understood. No hurry on my fuel bill.
+
+STATION complicate (manifest)
+[patrol] Flag on the charter manifest at the pads. Papers say <paxtypes>. Scanner has an opinion.
+[control] Take it up with the broker, patrol. Not our desk.
+
+STATION texture (manifest)
+[control] Passenger lifts are reserved this rotation. <paxcount> <paxtypes> and every one of them brought luggage.
+
+CONCOURSE establish (manifest)
+[pa] Attention concourse. Porters to the passenger lifts, please. We have a full charter on the pads: <paxcount> <paxtypes>.
+
+CONCOURSE texture (manifest)
+[pa] The premium lounge is reserved for a <paxvip> party this shift. Members are thanked for their understanding.
+
+CONCOURSE texture (manifest)
+[pa] Passengers of the <employer> charter are reminded that luggage allowances are per person, not per opinion.
+
+CREW establish (manifest)
+[crew:ops] Cabin report. <paxcount> <paxtypes> aboard and every call button works, unfortunately.
+[crew:comms] I heard. Repeatedly.
+
+CREW establish (manifest)
+[crew:comms] One of the <paxtypes> is asking how long to <destport>.
+[crew:ops] Tell them again. Politely.
+
+CREW complicate (manifest)
+[crew:ops] The <paxvip> cabin wants the viewport side. We do not have a viewport side.
+[crew:comms] We do now. I moved the sign.
+
+CREW complicate (manifest)
+[crew:ops] Keep the <paxtypes> clear of the scanners when we make <destport>. They are <paxwanted>.
+[crew:helm] Then they can be wanted quietly and strapped in.
+
+CREW establish (manifest)
+[crew:engineering] <cargoqty> tonnes of <cargo> in the hold and every strap is singing.
+[crew:helm] Then I will fly like it is my own furniture.
+
+TOWER texture (contract)
+[control] Departure logged. <employer> flight plan to <destsystem> on file. Lanes are yours.
+
+TOWER texture (contract)
+[control] Tower here. Your <employer> paperwork cleared before you did. Somebody upstairs likes you. Safe run to <destport>.
+
+LOCAL establish (contract)
+[hauler] <employer> is signing charters out of here like it is a boom year.
+[hauler2] Somebody has to fly them.
+
+LOCAL establish (contract)
+[hauler] Word is <employer> wants that run to <destport> done in <timeleft>.
+[hauler2] Then somebody had better stop chatting and burn.
+
+LOCAL complicate (contract)
+[patrol] Heard there is paper out against <targetfaction> again. Somebody in-system is working it.
+[hauler] Long as it is not me they are working, good luck to them.
+
+LOCAL complicate (contract)
+[hauler2] <targetfaction> crews are flying angry this week. Somebody has been thinning them out.
+[miner] Angry is fine. Angry misses.
+
 `;

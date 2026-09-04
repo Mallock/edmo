@@ -283,3 +283,87 @@ test('candidates returns nothing when the brief cannot fill anything', () => {
   const found = candidates(bundled, 'DEEP', 'reverse', textureBrief('t'));
   assert.deepEqual(found, []);
 });
+
+// ---------------------------------------------------------------------------
+// Manifest and contract templates — the commander's business, overheard
+// ---------------------------------------------------------------------------
+
+import { contractBrief, manifestBrief } from '../src/engine/chatter/briefs.ts';
+import type { Mission } from '../src/engine/types.ts';
+
+const paxMission = (over: Partial<Mission> = {}): Mission => ({
+  id: 7,
+  internalName: 'Mission_PassengerBulk',
+  title: '80 Tourists Seeking Transport',
+  category: 'PassengerBulk',
+  faction: 'Explorer on Tour',
+  destination: { system: 'HIP 71120', station: "Wood's Pride" },
+  reward: 1_837_840,
+  wing: false,
+  expiry: '2026-08-31T12:00:00Z',
+  acceptedAt: '2026-08-30T10:00:00Z',
+  passengers: { count: 80, type: 'Tourist', vip: false, wanted: false },
+  steps: [],
+  state: 'ACTIVE',
+  redirected: false,
+  killProgress: 0,
+  raw: { timestamp: '2026-08-30T10:00:00Z', event: 'MissionAccepted' },
+  ...over,
+});
+
+test('manifest templates exist for STATION, CONCOURSE and CREW and bind a real brief', () => {
+  const b = manifestBrief([paxMission()])!;
+  for (const ch of ['STATION', 'CONCOURSE', 'CREW'] as const) {
+    const fit = bundled.templates.filter(
+      (t) => t.channel === ch && t.kinds.includes('manifest') && canBind(t, b, bundled.pools),
+    );
+    assert.ok(fit.length > 0, `no bindable manifest template for ${ch}`);
+    const scene = render(fit[0], b, bundled.pools, () => 0.5, 't', 60_000);
+    assert.ok(scene);
+    assert.match(sceneText(scene!), /80 Tourists/);
+  }
+});
+
+test('contract templates exist for TOWER and LOCAL and bind a real brief', () => {
+  const atDest = { location: { system: 'HIP 71120', station: "Wood's Pride" }, docked: true };
+  const b = contractBrief(paxMission(), atDest, Date.parse('2026-08-30T12:00:00Z'))!;
+  for (const ch of ['TOWER', 'LOCAL'] as const) {
+    const fit = bundled.templates.filter(
+      (t) => t.channel === ch && t.kinds.includes('contract') && canBind(t, b, bundled.pools),
+    );
+    assert.ok(fit.length > 0, `no bindable contract template for ${ch}`);
+    const scene = render(fit[0], b, bundled.pools, () => 0.5, 't', 60_000);
+    assert.ok(scene);
+    assert.match(sceneText(scene!), /Explorer on Tour/);
+  }
+});
+
+test('VIP- and WANTED-gated templates are skipped for an ordinary charter', () => {
+  const plain = manifestBrief([paxMission()])!;
+  const gated = bundled.templates.filter((t) =>
+    tokensOf(t).some((n) => n === 'paxvip' || n === 'paxwanted'),
+  );
+  assert.ok(gated.length >= 2, 'expected gated templates in the bundle');
+  for (const t of gated) {
+    assert.equal(canBind(t, plain, bundled.pools), false, `line ${t.line} bound without the flag`);
+  }
+  const hot = manifestBrief([
+    paxMission({ passengers: { count: 4, type: 'Refugee', vip: true, wanted: true } }),
+  ])!;
+  assert.ok(gated.some((t) => canBind(t, hot, bundled.pools)));
+});
+
+test('the local grievance line binds only when a target faction exists', () => {
+  const atDest = { location: { system: 'HIP 71120' }, docked: false };
+  const now = Date.parse('2026-08-30T12:00:00Z');
+  const courier = contractBrief(paxMission(), atDest, now)!;
+  const massacre = contractBrief(
+    paxMission({ category: 'Massacre', targetFaction: "Brian's Thugs" }),
+    atDest,
+    now,
+  )!;
+  const grievance = bundled.templates.filter((t) => tokensOf(t).includes('targetfaction'));
+  assert.ok(grievance.length > 0);
+  for (const t of grievance) assert.equal(canBind(t, courier, bundled.pools), false);
+  assert.ok(grievance.some((t) => canBind(t, massacre, bundled.pools)));
+});

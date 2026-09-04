@@ -611,8 +611,18 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
               Radio Paradise
             </a>
             , listener-supported too; country, classic rock and hip hop from 181.FM; Galaxy News
-            Radio from Fallout.FM. This is the app's only continuous internet connection;
-            everything else stays on this machine.
+            Radio from Fallout.FM. At the bottom of the dial sits the Finnish block, led by{' '}
+            <a href="https://yle.fi" target="_blank" rel="noopener">
+              Yle
+            </a>
+            , the public broadcaster — Klassinen, Radio 1, YleX, X3M, Vega, Sámi and Radio Suomi,
+            advert-free and paid for by the Yle tax. Then{' '}
+            <a href="https://www.radiohelsinki.fi" target="_blank" rel="noopener">
+              Radio Helsinki
+            </a>
+            , Järviradio, and Radio City, Suomirock, Bassoradio and the decade channels from Bauer
+            Media Finland — those come through Bauer's ad service and carry their adverts. This is
+            the app's only continuous internet connection; everything else stays on this machine.
           </div>
         </section>
 

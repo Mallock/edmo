@@ -177,12 +177,15 @@ import { ChatterEngine, type ChatterSource, type Transmission } from '../engine/
 import { parseGrammar, mergeGrammar } from '../engine/chatter/grammar.ts';
 import { BUNDLED_GRAMMAR } from '../engine/chatter/bundled-grammar.ts';
 import {
+  contractBrief,
   factionBrief,
   constructionBrief,
   geographyBrief,
+  manifestBrief,
   systemBrief,
   towerBrief,
 } from '../engine/chatter/briefs.ts';
+import { rotateWindow } from '../engine/rotate.ts';
 import { textureBrief, type Brief, type BriefKind, type FactSource } from '../engine/chatter/brief.ts';
 import type { ArcSubject } from '../engine/chatter/cast.ts';
 import { chooseFunction, nextBeatFor, pickBrief } from '../engine/chatter/director.ts';
@@ -4079,6 +4082,19 @@ export class AppCore {
 
     const build = constructionBrief(this.construction.depot, this.briefSeq);
     if (build) out.push(build);
+
+    // The commander's own business — what is aboard, and ONE live contract at
+    // a time. Both builders speak only about accepted work (the journal has no
+    // event for a station's board, so the radio cannot know it), and the
+    // contract rotates among whichever are relevant this moment so a stacked
+    // charter list takes turns instead of flooding the pool and the dossier.
+    const op = this.sm.getState();
+    const load = manifestBrief(op.activeMissions, op.carriedPassengers, this.briefSeq);
+    if (load) out.push(load);
+    const live = op.activeMissions
+      .map((m) => contractBrief(m, op, nowMs))
+      .filter((c): c is Brief => !!c);
+    if (live.length) out.push(rotateWindow(live, 1, this.briefSeq).shown[0]);
 
     return out;
   }

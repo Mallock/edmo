@@ -361,7 +361,11 @@ export function scoreBrief(
   let s = 1;
   if (brief.kind === 'market') s += 1.2;
   if (brief.kind === 'event') s += 1.5;
+  // A live contract is moment-bound and perishable, like an event; the
+  // manifest is a standing condition, like a build in progress.
+  if (brief.kind === 'contract') s += 1.4;
   if (brief.kind === 'construction') s += 0.8;
+  if (brief.kind === 'manifest') s += 0.7;
   if (brief.kind === 'faction') s += 0.6;
   if (brief.kind === 'texture') s -= 0.5;
 

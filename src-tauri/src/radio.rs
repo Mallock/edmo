@@ -201,4 +201,86 @@ mod tests {
         assert_eq!(percent_decode("http://x/%zz"), "http://x/%zz");
         assert_eq!(percent_decode("http://plain/url"), "http://plain/url");
     }
+
+    /// Live network: the stations a field report named, pulled through the
+    /// REAL relay — reqwest/hyper, not a stand-in. A Node stand-in and Edge
+    /// played every one of them, which left this stack as the only thing the
+    /// stand-in could not vouch for: Radio City's edge answers `HTTP/1.0`, and
+    /// two Yle channels were reported as playing the same audio. Ignored by
+    /// default because it needs the internet:
+    /// `cargo test relays_the -- --ignored --nocapture`.
+    #[tokio::test]
+    #[ignore]
+    async fn relays_the_field_reported_stations() {
+        use tokio::io::AsyncReadExt;
+        use tokio::net::{TcpListener, TcpStream};
+        use tokio::io::AsyncWriteExt;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let (sock, _) = listener.accept().await.unwrap();
+                tokio::spawn(async move {
+                    let _ = super::serve(sock).await;
+                });
+            }
+        });
+
+        let enc = |u: &str| u.replace(':', "%3A").replace('/', "%2F");
+        let mut bodies: Vec<(&str, Vec<u8>)> = Vec::new();
+        for url in [
+            "https://streaming.radioplay.fi/fi_radiocity_128.mp3",
+            "https://icecast.live.yle.fi/radio/YleKlassinen/icecast.audio",
+            "https://icecast.live.yle.fi/radio/YleX/icecast.audio",
+        ] {
+            let mut c = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+            // What the webview sends: Chromium's media loader always asks for a range.
+            c.write_all(
+                format!(
+                    "GET /play?url={} HTTP/1.1\r\nHost: 127.0.0.1\r\nRange: bytes=0-\r\n\r\n",
+                    enc(url)
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+
+            let mut got = Vec::new();
+            let mut buf = [0u8; 8192];
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(6);
+            loop {
+                let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if left.is_zero() {
+                    break;
+                }
+                match tokio::time::timeout(left, c.read(&mut buf)).await {
+                    Ok(Ok(n)) if n > 0 => got.extend_from_slice(&buf[..n]),
+                    _ => break,
+                }
+            }
+
+            let head_end = got
+                .windows(4)
+                .position(|w| w == b"\r\n\r\n")
+                .unwrap_or_else(|| panic!("{url}: no header block in {} bytes", got.len()));
+            let head = String::from_utf8_lossy(&got[..head_end]).to_string();
+            let body = got[head_end + 4..].to_vec();
+            eprintln!("{url}\n  {}\n  body bytes in 6s: {}", head.replace("\r\n", " | "), body.len());
+            assert!(head.starts_with("HTTP/1.1 200 OK"), "{url}: {head}");
+            assert!(head.contains("Content-Type: audio/"), "{url}: {head}");
+            assert!(
+                body.len() > 32_000,
+                "{url}: only {} body bytes in 6s — the relay is not streaming it",
+                body.len()
+            );
+            bodies.push((url, body));
+        }
+
+        // "Every Yle channel plays the same thing": if the relay were handing
+        // one channel's bytes to another's request, these would match.
+        let klassinen = &bodies[1].1[..4096];
+        let ylex = &bodies[2].1[..4096];
+        assert_ne!(klassinen, ylex, "two Yle channels arrived as the same bytes");
+    }
 }

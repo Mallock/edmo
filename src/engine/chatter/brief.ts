@@ -28,6 +28,11 @@ export type FactSource =
   | { kind: 'construction'; site: string }
   | { kind: 'geography'; system: string }
   | { kind: 'event'; at: string }
+  /** A fact about a mission the commander has ACCEPTED — the id is the
+   *  journal's own handle, so attribution survives redirects and renames.
+   *  Never a fact about a station's board: the journal does not record
+   *  unaccepted offers, so no such fact can exist. */
+  | { kind: 'mission'; missionId: number }
   /** An invented person or place the app has COMMITTED to (see cast.ts).
    *  Invented, but stable — which is why it may be named. */
   | { kind: 'cast' };
@@ -50,6 +55,13 @@ export type BriefKind =
   | 'construction'
   | 'geography'
   | 'event'
+  /** What is aboard THIS ship — passengers and mission cargo. A standing
+   *  condition: true continuously while the cabins are full. */
+  | 'manifest'
+  /** An accepted mission as a working relationship — employer, target,
+   *  destination, deadline. Moment-bound: only built when the contract is
+   *  live in the current moment (see contractRelevance). */
+  | 'contract'
   | 'texture';
 
 /**

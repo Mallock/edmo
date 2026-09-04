@@ -992,3 +992,96 @@ test('a fresher report leads a stale one, whatever it pays', () => {
     ['New Site', 'Old Site'],
   );
 });
+
+// ------------------------------------------------- a price table is not a list
+
+/**
+ * Ardent never expires a row, so one station can arrive carrying two unrelated
+ * readings at once. Captured from Pueloi VY-S d3-94 on 2026-08-29, where the
+ * Galtean bridge was building: "Orbital Construction Site: Archades Hammer"
+ * returned 371 commodities — 364 of them the entire game catalogue, dated
+ * 2026-07-01, and seven dated 2026-08-25/26 that are the real outpost list.
+ */
+const HUB = 'Pueloi VY-S d3-94';
+const HAMMER = 'Orbital Construction Site: Archades Hammer';
+const READ = Date.parse('2026-08-29T12:00:00Z');
+
+const hub = (
+  commodity: string | null,
+  station: string,
+  price: number | null,
+  updatedAt: string | null,
+): SystemCommodityRow => ({
+  commodity,
+  station,
+  system: HUB,
+  stationType: 'SpaceConstructionDepot',
+  price,
+  pad: '2',
+  distanceLs: 18840,
+  updatedAt,
+});
+
+// The July dump, in miniature: real commodities beside things no station has
+// ever asked a hauler for.
+const JULY = [
+  'advert1',
+  'albinoquechuamammoth',
+  'alieneggs',
+  'alexandrite',
+  'tritium',
+  'steel',
+  'gold',
+  'imperialslaves',
+  'wine',
+  'painite',
+  'bauxite',
+  'coffee',
+];
+
+test('a stale price table is not mistaken for a requirement', () => {
+  const rows: SystemCommodityRow[] = [
+    // 364 rows in the wild; enough here to cross the threshold.
+    ...Array.from({ length: 60 }, (_, i) =>
+      hub(JULY[i % JULY.length] + (i < JULY.length ? '' : `filler${i}`), HAMMER, 39501, '2026-07-01T00:00:00Z'),
+    ),
+    // What the site actually asked for, read this week.
+    ...['aluminium', 'insulatingmembrane', 'liquidoxygen', 'polymers', 'steel', 'titanium', 'water'].map(
+      (c) => hub(c, HAMMER, 2985, '2026-08-26T09:00:00Z'),
+    ),
+  ];
+  const [site] = siteRoster(rows, { first: HUB, nowMs: READ });
+  assert.deepEqual(
+    site.commodities.map((c) => c.key),
+    ['aluminium', 'insulatingmembrane', 'liquidoxygen', 'polymers', 'steel', 'titanium', 'water'],
+  );
+  // The junk is gone, and with it the claim that this site takes tritium.
+  const match = holdAtSites(new Map([['tritium', 300]]), [site])[0];
+  assert.equal(match.sites.length, 0);
+  assert.match(match.note ?? '', /no known site here accepts this/i);
+  // And the site now reads as freshly reported rather than seven weeks old.
+  assert.equal(site.ageDays, 3);
+  assert.equal(site.stale, false);
+});
+
+test('a long requirement reported over weeks is left alone', () => {
+  // Baily Landing's real shape: 27 commodities whose rows trickled in between
+  // 2026-07-30 and 2026-08-23. Nothing here is implausible, so nothing is cut.
+  const days = ['2026-07-30', '2026-08-01', '2026-08-14', '2026-08-22', '2026-08-23'];
+  const rows = Array.from({ length: 27 }, (_, i) =>
+    hub(`commodity${i}`, 'Orbital Construction Site: Baily Landing', 500 + i, `${days[i % days.length]}T00:00:00Z`),
+  );
+  const [site] = siteRoster(rows, { first: HUB, nowMs: READ });
+  assert.equal(site.commodities.length, 27);
+});
+
+test('the newest reading of a board beats the first one in the array', () => {
+  const rows: SystemCommodityRow[] = [
+    hub('steel', HAMMER, 9999, '2026-07-01T00:00:00Z'),
+    hub('steel', HAMMER, 2985, '2026-08-26T09:00:00Z'),
+  ];
+  const [site] = siteRoster(rows, { first: HUB, nowMs: READ });
+  assert.equal(site.commodities.length, 1);
+  assert.equal(site.commodities[0].payment, 2985);
+  assert.equal(site.ageDays, 3);
+});

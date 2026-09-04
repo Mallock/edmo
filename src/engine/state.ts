@@ -10,6 +10,7 @@ import type {
   Location,
   Mission,
   OperatorState,
+  PassengerManifestEntry,
   SystemIntel,
 } from './types.ts';
 import { detectBgsState, detectCategory } from './detectType.ts';
@@ -113,6 +114,8 @@ function humanizeMissionName(name: string): string {
 
 export class MissionStateManager {
   private missions = new Map<number, Mission>();
+  /** Who is physically in the cabins, by mission — from the `Passengers` event. */
+  private manifest = new Map<number, PassengerManifestEntry>();
   location: Location = { system: 'unknown' };
   docked = false;
   lastActivityAt = '';
@@ -139,6 +142,7 @@ export class MissionStateManager {
       location: { ...this.location },
       docked: this.docked,
       activeMissions: this.activeMissions(),
+      carriedPassengers: [...this.manifest.values()],
       lastActivityAt: this.lastActivityAt,
       system: { ...this.systemIntel, signals: [...this.systemIntel.signals] },
       cmdr: this.commanderName || undefined,
@@ -201,6 +205,13 @@ export class MissionStateManager {
         // Missions.json. Vital when the game is closed and the snapshot file
         // has been removed: without this a fresh launch shows zero missions.
         this.reconcile(ev);
+        break;
+      case 'Passengers':
+        // Written at login while passengers are aboard (never with an empty
+        // manifest). The only source that says who is in the cabins after a
+        // restart — MissionAccepted does not replay, and the Missions snapshot
+        // names missions without their passenger blocks.
+        this.onPassengers(ev);
         break;
       case 'CommunityGoal':
         this.onCommunityGoal(ev);
@@ -277,6 +288,45 @@ export class MissionStateManager {
     for (const m of this.missions.values()) {
       if ((m.state === 'ACTIVE' || m.state === 'REDIRECTED') && !seen.has(m.id)) {
         if (snapMs >= Date.parse(m.acceptedAt)) m.state = 'ABANDONED';
+      }
+    }
+  }
+
+  /**
+   * Fold the `Passengers` manifest: replace wholesale, summing split rows —
+   * the game reports one mission as several rows (cabin by cabin), and a row
+   * count is not the mission's head-count until they are added up.
+   *
+   * Reconciliation, not a second source of truth: a known mission that lacks
+   * its passenger block (restored from a `Missions` snapshot, which names
+   * missions but not who is aboard) gets the detail; a block that came from
+   * `MissionAccepted` is authoritative and is left alone.
+   */
+  private onPassengers(ev: JournalEvent): void {
+    if (!Array.isArray(ev.Manifest)) return;
+    this.manifest.clear();
+    for (const row of ev.Manifest as Array<Record<string, unknown>>) {
+      const id = num(row.MissionID);
+      const count = num(row.Count);
+      if (id == null || count == null) continue;
+      const prev = this.manifest.get(id);
+      this.manifest.set(id, {
+        missionId: id,
+        count: (prev?.count ?? 0) + count,
+        type: prev?.type ?? str(row.Type) ?? 'Passengers',
+        vip: (prev?.vip ?? false) || row.VIP === true,
+        wanted: (prev?.wanted ?? false) || row.Wanted === true,
+      });
+    }
+    for (const entry of this.manifest.values()) {
+      const m = this.missions.get(entry.missionId);
+      if (m && !m.passengers) {
+        m.passengers = {
+          count: entry.count,
+          type: entry.type,
+          vip: entry.vip,
+          wanted: entry.wanted,
+        };
       }
     }
   }
@@ -451,6 +501,10 @@ export class MissionStateManager {
     state: Mission['state'],
     kind: StateChange['kind'],
   ): StateChange[] {
+    // The cabins empty whether or not the mission is known — deliberately
+    // before the early return, so a completion for a mission we never saw
+    // accepted still clears its manifest row.
+    this.manifest.delete(num(ev.MissionID) ?? -1);
     const m = this.missions.get(num(ev.MissionID) ?? -1);
     if (!m) return [];
     m.state = state;

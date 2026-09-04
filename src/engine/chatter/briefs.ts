@@ -16,7 +16,12 @@
 import type { DepotState } from '../architect.ts';
 import type { MarketRecord } from '../trade.ts';
 import type { OrreryPort, OrrerySystem } from '../orrery.ts';
-import type { SystemIntel } from '../types.ts';
+import type {
+  Location,
+  Mission,
+  PassengerManifestEntry,
+  SystemIntel,
+} from '../types.ts';
 import {
   freshnessOf,
   type Brief,
@@ -315,6 +320,226 @@ export function constructionBrief(depot: DepotState | null, rotate = 0): Brief |
     summary:
       `${site} (${Math.round(depot.progress * 100)}% built) is buying ${short.name} for the ` +
       `build — a construction site's shopping list, routine dock business any hauler can sell into`,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Manifest and contract briefs — the commander's own business, overheard
+// ---------------------------------------------------------------------------
+//
+// Both builders speak ONLY about work already accepted. The journal never
+// records what a station's board is offering — no such event exists — so no
+// brief may imply the radio knows. And neither carries the reward, the step
+// list or a progress counter: briefing and chasing a contract is the private
+// Operator's job, and a lounge attendant who quotes your fee is a lounge
+// attendant reading your mail.
+
+/** "Tourist" → "Tourists"; count 1 keeps the singular. */
+const paxPlural = (type: string, count: number): string =>
+  count === 1 ? type : /s$/i.test(type) ? type : `${type}s`;
+
+/** "a Colonia Council charter", "an Explorer on Tour charter". Initial U is
+ *  treated as a consonant — "a Ukraine…", "a United…" — because the yoo-sound
+ *  names dominate that letter. */
+const article = (word: string): string => (/^[aeio]/i.test(word) ? 'an' : 'a');
+
+/**
+ * Time-to-expiry as words a person would say, never digits — number words
+ * under twenty assert nothing the verifier polices, and "due in 47 minutes"
+ * is the Operator's register, not the radio's.
+ */
+const SMALL_WORDS = [
+  '', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine',
+  'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen',
+  'seventeen', 'eighteen', 'nineteen',
+];
+export function timeLeftPhrase(expiry: string | null, nowMs: number): string | undefined {
+  if (!expiry) return undefined;
+  const ms = Date.parse(expiry) - nowMs;
+  if (Number.isNaN(ms) || ms <= 0) return undefined;
+  const hours = ms / 3_600_000;
+  if (hours < 1) return 'under an hour';
+  if (hours < 2) return 'about an hour';
+  if (hours < 20) return `about ${SMALL_WORDS[Math.round(hours)]} hours`;
+  if (hours < 36) return 'about a day';
+  const days = Math.round(hours / 24);
+  return days < 20 ? `about ${SMALL_WORDS[days]} days` : 'weeks yet';
+}
+
+/**
+ * What is aboard THIS ship: passengers first, mission cargo when the cabins
+ * are empty, nothing when the hold is. One mission's load per call, rotated,
+ * so a commander stacking eight charters does not put all eight on the air.
+ *
+ * `manifest` fills the gap where a mission survived a restart without its
+ * passenger block and reconciliation has not yet decorated it; a manifest row
+ * whose mission is unknown is never aired.
+ */
+export function manifestBrief(
+  missions: readonly Mission[],
+  manifest: readonly PassengerManifestEntry[] = [],
+  rotate = 0,
+): Brief | null {
+  const byId = new Map(manifest.map((e) => [e.missionId, e]));
+  const live = missions.filter((m) => m.state === 'ACTIVE' || m.state === 'REDIRECTED');
+
+  const carrying = live
+    .map((m) => ({ m, pax: m.passengers ?? byId.get(m.id) }))
+    .filter((x): x is { m: Mission; pax: NonNullable<Mission['passengers']> } => !!x.pax);
+  if (carrying.length) {
+    const { m, pax } = rotateWindow(carrying, 1, rotate).shown[0];
+    const src: FactSource = { kind: 'mission', missionId: m.id };
+    const nouns: BriefNoun[] = [];
+    if (m.faction) nouns.push(noun(m.faction, src));
+    if (m.destination?.station) nouns.push(noun(m.destination.station, src));
+    if (m.destination?.system) nouns.push(noun(m.destination.system, src));
+
+    const tokens: Record<string, string> = {
+      paxcount: String(pax.count),
+      paxtype: pax.type,
+      paxtypes: paxPlural(pax.type, pax.count),
+    };
+    // Presence-gated: a template naming <paxvip> or <paxwanted> binds only
+    // when the flag is true, so the false case costs nothing to author around.
+    if (pax.vip) tokens.paxvip = 'VIP';
+    if (pax.wanted) tokens.paxwanted = 'wanted';
+    if (m.faction) tokens.employer = m.faction;
+    if (m.destination?.station) tokens.destport = m.destination.station;
+    if (m.destination?.system) tokens.destsystem = m.destination.system;
+
+    const bound = m.destination?.station ?? m.destination?.system;
+    return {
+      kind: 'manifest',
+      nouns,
+      figures: [figure(pax.count, src)],
+      tokens,
+      subjectKey: `manifest:${m.id}`,
+      summary:
+        `aboard right now: ${pax.count} ${paxPlural(pax.type, pax.count).toLowerCase()}` +
+        (pax.vip ? ' (VIP cabins)' : '') +
+        (bound ? `, bound for ${bound}` : '') +
+        (m.faction ? ` — ${article(m.faction)} ${m.faction} charter` : '') +
+        (pax.wanted ? '; they are WANTED, and they know it' : ''),
+    };
+  }
+
+  // No passengers: mission cargo physically in the hold is still a load.
+  const hauling = live.filter(
+    (m) => m.commodity && m.cargo && m.cargo.collected > m.cargo.delivered,
+  );
+  if (!hauling.length) return null;
+  const m = rotateWindow(hauling, 1, rotate).shown[0];
+  const src: FactSource = { kind: 'mission', missionId: m.id };
+  const aboard = m.cargo!.collected - m.cargo!.delivered;
+  const tokens: Record<string, string> = {
+    cargo: m.commodity!.localised,
+    cargoqty: String(aboard),
+  };
+  if (m.faction) tokens.employer = m.faction;
+  if (m.destination?.station) tokens.destport = m.destination.station;
+  if (m.destination?.system) tokens.destsystem = m.destination.system;
+  const nouns: BriefNoun[] = [noun(m.commodity!.localised, src)];
+  if (m.faction) nouns.push(noun(m.faction, src));
+  if (m.destination?.station) nouns.push(noun(m.destination.station, src));
+  return {
+    kind: 'manifest',
+    nouns,
+    figures: [figure(aboard, src)],
+    tokens,
+    subjectKey: `manifest:${m.id}`,
+    summary:
+      `in the hold: ${aboard} t of ${m.commodity!.localised} under contract` +
+      (m.faction ? ` for ${m.faction}` : '') +
+      (m.destination?.station ? `, headed to ${m.destination.station}` : ''),
+  };
+}
+
+/**
+ * Is this contract live in the CURRENT moment? Docked where it starts or
+ * ends, standing in its destination system, or inside the last hour before
+ * expiry. Anywhere else, an off-moment contract line is worse than silence —
+ * so the brief is never built, rather than built and ranked low.
+ */
+export function contractRelevance(
+  m: Mission,
+  where: { location: Location; docked: boolean },
+  nowMs: number,
+): boolean {
+  if (m.state !== 'ACTIVE' && m.state !== 'REDIRECTED') return false;
+  const eq = (a?: string, b?: string): boolean =>
+    !!a && !!b && a.toLowerCase() === b.toLowerCase();
+
+  if (where.docked && eq(where.location.station, m.origin?.station)) return true;
+  if (where.docked && eq(where.location.station, m.destination?.station)) return true;
+  if (eq(where.location.system, m.destination?.system)) return true;
+
+  if (m.expiry) {
+    const left = Date.parse(m.expiry) - nowMs;
+    if (!Number.isNaN(left) && left > 0 && left <= 3_600_000) return true;
+  }
+  return false;
+}
+
+/** One line of category colour for the contract summary — never the briefing. */
+function contractWork(m: Mission): string {
+  switch (m.category) {
+    case 'Courier': return 'a courier run';
+    case 'Delivery':
+    case 'DeliveryWing': return 'a delivery';
+    case 'PassengerBulk': return 'a passenger charter';
+    case 'PassengerVIP': return 'a VIP charter';
+    case 'Sightseeing': return 'a sightseeing tour';
+    case 'LongDistanceExpedition': return 'a long-haul expedition';
+    case 'Massacre':
+    case 'Assassinate': return 'contract work';
+    case 'Salvage': return 'a salvage job';
+    case 'Mining': return 'a mining contract';
+    case 'Rescue': return 'a rescue run';
+    case 'Smuggle': return 'a quiet delivery';
+    default: return 'a contract';
+  }
+}
+
+/**
+ * An accepted mission as a working relationship: who hired the commander,
+ * against whom, to where, by when. Deliberately no reward, no steps, no
+ * progress — that is the Operator's desk. Null whenever the contract is not
+ * live in the current moment (see contractRelevance).
+ */
+export function contractBrief(
+  m: Mission,
+  where: { location: Location; docked: boolean },
+  nowMs: number,
+): Brief | null {
+  if (!contractRelevance(m, where, nowMs)) return null;
+  const src: FactSource = { kind: 'mission', missionId: m.id };
+  const nouns: BriefNoun[] = [];
+  if (m.faction) nouns.push(noun(m.faction, src));
+  if (m.targetFaction) nouns.push(noun(m.targetFaction, src));
+  if (m.destination?.system) nouns.push(noun(m.destination.system, src));
+  if (m.destination?.station) nouns.push(noun(m.destination.station, src));
+
+  const tokens: Record<string, string> = {};
+  if (m.faction) tokens.employer = m.faction;
+  if (m.targetFaction) tokens.targetfaction = m.targetFaction;
+  if (m.destination?.station) tokens.destport = m.destination.station;
+  if (m.destination?.system) tokens.destsystem = m.destination.system;
+  const left = timeLeftPhrase(m.expiry, nowMs);
+  if (left) tokens.timeleft = left;
+
+  const dest = m.destination?.station ?? m.destination?.system;
+  return {
+    kind: 'contract',
+    nouns,
+    figures: [], // no reward, ever — see the module comment
+    tokens,
+    subjectKey: `contract:${m.id}`,
+    summary:
+      `the commander is working ${contractWork(m)}` +
+      (m.faction ? ` for ${m.faction}` : '') +
+      (m.targetFaction ? ` against ${m.targetFaction}` : '') +
+      (dest ? `, bound for ${dest}` : '') +
+      (left ? `, due in ${left}` : ''),
   };
 }
 

@@ -153,12 +153,32 @@ export interface SystemIntel {
   coords?: { x: number; y: number; z: number };
 }
 
+/**
+ * One mission's worth of passengers physically in the cabins, from the
+ * `Passengers` journal event. The event splits a mission across several
+ * manifest rows; this is the summed view, keyed by mission.
+ *
+ * Why it exists beside `Mission.passengers`: `MissionAccepted` does not replay
+ * across sessions, and the login `Missions` snapshot names missions without
+ * their passenger blocks — so after a restart mid-contract this event is the
+ * only source that says who is actually aboard.
+ */
+export interface PassengerManifestEntry {
+  missionId: number;
+  count: number;
+  type: string; // "Tourist", "Refugee", ...
+  vip: boolean;
+  wanted: boolean;
+}
+
 /** Snapshot of the whole player situation the operator reasons over. */
 export interface OperatorState {
   now: string; // ISO timestamp of the latest tick/event
   location: Location;
   docked: boolean;
   activeMissions: Mission[];
+  /** Passengers currently in the cabins, one entry per mission. */
+  carriedPassengers: PassengerManifestEntry[];
   /** Timestamp of the last "progress" event (jump/dock/undock/kill/cargo). */
   lastActivityAt: string;
   /** Local-system knowledge (from FSDJump/Location + FSS signals), if any. */

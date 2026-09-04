@@ -31,6 +31,7 @@ function state(p: Partial<OperatorState>): OperatorState {
     location: { system: 'NJ', station: 'Caro Depot' },
     docked: true,
     activeMissions: [],
+    carriedPassengers: [],
     lastActivityAt: at(0),
     ...p,
   };

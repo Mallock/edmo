@@ -20,7 +20,20 @@
 import type { AppSettings } from './settings.ts';
 import type { RadioBus } from './radio.ts';
 import { isTauri, radioRelayPort } from './bridge.ts';
-import { STATIONS, stationById, type RadioStation } from '../engine/stations.ts';
+import {
+  ADSWIZZ_REGISTER_URL,
+  STATIONS,
+  adswizzUrl,
+  parseAdswizzListenerId,
+  stationById,
+  syntheticListenerId,
+  type RadioStation,
+} from '../engine/stations.ts';
+
+/** Where the AdsWizz listener id is kept between launches. */
+const LISTENER_KEY = 'edmo.adswizz.listener.v1';
+/** How long a registered listener id is trusted before re-registering. */
+const LISTENER_MAX_AGE_MS = 24 * 3_600_000;
 
 /** How often an unrouted station re-checks the duck level. */
 const DUCK_POLL_MS = 150;
@@ -54,6 +67,14 @@ export class MusicPlayer {
   private gestureArmed = false;
   /** Loopback relay port, once the Rust side has one open. */
   private relayPort: number | null = null;
+  /**
+   * The AdsWizz listener id, for stations whose stream is served only to an
+   * ad-insertion session (stations.ts, `adswizz`). Registered once through
+   * the relay and kept for a day; the same id rides every request so the
+   * session is one listener, not one per retune.
+   */
+  private listenerId: string | null = null;
+  private listenerPending: Promise<string | null> | null = null;
   private state: MusicState = {
     stationId: null,
     label: null,
@@ -84,6 +105,64 @@ export class MusicPlayer {
     } catch {
       this.relayPort = null; // fall back to playing the station directly
     }
+    // If the dial was left on a gated station, register now so the boot
+    // resume does not spend the first play waiting on an ad network.
+    const saved = this.getSettings().music?.station;
+    if (saved && stationById(saved)?.adswizz) void this.ensureListenerId();
+  }
+
+  /**
+   * The listener id an AdsWizz-gated station needs, registering if there is
+   * no fresh one. Through the relay, because synchrobox publishes no CORS
+   * header and the answer is a JavaScript snippet, not JSON — the relay
+   * passes the body through untouched, so the snippet arrives as text.
+   *
+   * Cached for a day in localStorage. If registration cannot be reached, a
+   * synthetic id of the same shape is used instead — the edge accepts one
+   * (stations.ts, adswizzUrl) — so an ad network being down does not take
+   * the station down with it. Only a synthetic id is retried next launch.
+   */
+  private ensureListenerId(): Promise<string | null> {
+    if (this.listenerId) return Promise.resolve(this.listenerId);
+    if (this.listenerPending) return this.listenerPending;
+    try {
+      const raw = localStorage.getItem(LISTENER_KEY);
+      if (raw) {
+        const saved = JSON.parse(raw) as { id?: string; at?: number; synthetic?: boolean };
+        if (
+          saved.id &&
+          !saved.synthetic &&
+          typeof saved.at === 'number' &&
+          Date.now() - saved.at < LISTENER_MAX_AGE_MS
+        ) {
+          this.listenerId = saved.id;
+          return Promise.resolve(saved.id);
+        }
+      }
+    } catch {
+      /* storage unavailable or corrupt — register afresh */
+    }
+    const remember = (id: string, synthetic: boolean): void => {
+      this.listenerId = id;
+      try {
+        localStorage.setItem(LISTENER_KEY, JSON.stringify({ id, at: Date.now(), synthetic }));
+      } catch {
+        /* keep it for this session only */
+      }
+    };
+    this.listenerPending = fetch(this.viaRelay(ADSWIZZ_REGISTER_URL))
+      .then((r) => (r.ok ? r.text() : ''))
+      .then((body) => parseAdswizzListenerId(body))
+      .catch(() => null)
+      .then((id) => {
+        if (id) remember(id, false);
+        else remember(syntheticListenerId(), true);
+        return this.listenerId;
+      })
+      .finally(() => {
+        this.listenerPending = null;
+      });
+    return this.listenerPending;
   }
 
   /**
@@ -93,9 +172,14 @@ export class MusicPlayer {
    * User-Agent (which is the difference between 200 and 403 on SomaFM), and
    * it answers with permissive CORS, so every station — including the ones
    * that publish none — can be routed into the graph and ducked properly.
+   *
+   * A gated station gets its AdsWizz session appended first; without it the
+   * same URL plays a notice on a loop, and play() never gets here without
+   * the id in hand.
    */
   private streamUrl(station: RadioStation): string {
-    return this.viaRelay(station.url);
+    const url = station.adswizz && this.listenerId ? adswizzUrl(station, this.listenerId) : station.url;
+    return this.viaRelay(url);
   }
 
   /**
@@ -141,6 +225,25 @@ export class MusicPlayer {
     const station = stationById(stationId) ?? STATIONS.find((s) => s.id === stationId);
     if (!station) return;
     if (this.current?.id === station.id && this.state.playing) return;
+
+    // A gated station without a session yet: register, then come back. The
+    // graph is woken NOW, inside the gesture that started this, so the
+    // retry is not the first thing to touch a suspended context; on Windows
+    // autoplay is off anyway, and on Linux a lost gesture is reported and
+    // re-armed by the same path as any other blocked start.
+    if (station.adswizz && !this.listenerId) {
+      this.getBus().wake();
+      this.stop({ keepState: true });
+      this.current = station;
+      this.state = { stationId: station.id, label: station.label, playing: false, nowPlaying: null, error: null };
+      this.onChange();
+      // ensureListenerId always yields an id — registered or synthetic — so
+      // the only way not to continue is the commander having moved the dial.
+      void this.ensureListenerId().then((id) => {
+        if (id && this.current?.id === station.id) this.play(station.id);
+      });
+      return;
+    }
     this.stop({ keepState: true });
 
     // With the relay in front of it, EVERY station answers with permissive

@@ -345,8 +345,9 @@ export function RadioCard({ music, settings }: { music: MusicState | null; setti
 
       <div className="empty-hint">
         Drag the dial, click a name, or use the arrow keys. Ducks under the operator, thins under
-        comms traffic. Streams from SomaFM, Radio Paradise, Nightride FM, 181.FM and Fallout.FM —
-        the only part of this app that stays connected.
+        comms traffic. Streams from SomaFM, Radio Paradise, Nightride FM, 181.FM, Fallout.FM and the
+        Finnish dial at the bottom — Yle, Radio Helsinki, Järviradio and the commercial stations,
+        adverts included. The only part of this app that stays connected.
       </div>
     </div>
   );
