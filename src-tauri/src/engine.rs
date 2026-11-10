@@ -606,7 +606,7 @@ fn extract_runtime_zip(bytes: &[u8], dir: &Path) -> Result<(), String> {
         if f.is_dir() {
             continue;
         }
-        let name = f.name().rsplit('/').next().unwrap_or("").to_string();
+        let name = f.name().map_err(|e| e.to_string())?.rsplit('/').next().unwrap_or("").to_string();
         let keep = name == "llama-server"
             || name == "llama-server.exe"
             || name.ends_with(".dll")

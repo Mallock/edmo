@@ -1448,7 +1448,7 @@ async fn stt_download(app: AppHandle) -> Result<(), String> {
             .map_err(|e| format!("bad archive: {e}"))?;
         for i in 0..archive.len() {
             let mut f = archive.by_index(i).map_err(|e| e.to_string())?;
-            let name = f.name().rsplit('/').next().unwrap_or("").to_string();
+            let name = f.name().map_err(|e| e.to_string())?.rsplit('/').next().unwrap_or("").to_string();
             // Only the CLI and its runtime DLLs — not the demo/test binaries.
             let keep = name == "whisper-cli.exe"
                 || name == "whisper.dll"
