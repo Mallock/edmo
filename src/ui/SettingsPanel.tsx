@@ -11,6 +11,15 @@ import { PIPER_VOICE_CATALOG } from './voices.ts';
 import { STATIONS } from '../engine/stations.ts';
 import { RADIO_PROFILE_NAMES } from '../engine/chatter/profiles.ts';
 import { MAX_MARKET_RADIUS_LY } from '../engine/tools.ts';
+import {
+  DEFAULT_HOTKEYS,
+  HOTKEY_ACTIONS,
+  actionLabel,
+  displayCombo,
+  recordCombo,
+  usedBy,
+  type HotkeyAction,
+} from './hotkeys.ts';
 
 /** Screen glances are GDI-based; on Linux the section shows as unavailable. */
 const IS_LINUX = typeof navigator !== 'undefined' && navigator.userAgent.includes('Linux');
@@ -441,7 +450,7 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
               type="checkbox"
               checked={s.voiceInput.enabled}
               onChange={(e) =>
-                set({ ...s, voiceInput: { enabled: e.target.checked } })
+                set({ ...s, voiceInput: { ...s.voiceInput, enabled: e.target.checked } })
               }
             />
             Voice input — talk to the operator (push-to-talk)
@@ -460,13 +469,37 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
                 </button>
               ) : (
                 <div className="hint">
-                  🎤 Ready. Hold <span className="mono">Ctrl+Shift+Space</span> (works in-game) or
+                  🎤 Ready. Hold{' '}
+                  {snap.hotkeys.ptt ? (
+                    <>
+                      <span className="mono">{displayCombo(snap.hotkeys.ptt)}</span> (works
+                      in-game) or{' '}
+                    </>
+                  ) : null}
                   the mic button, speak, release. The operator remembers the conversation —
                   follow-up questions work.
                 </div>
               )}
+              {snap.hotkeyErrors.ptt && (
+                <div className="hint warn-hint">
+                  Push-to-talk key {snap.hotkeyErrors.ptt}. Pick another under HUD → Shortcuts.
+                </div>
+              )}
+              <label>
+                Words it should know (comma separated)
+                <input
+                  type="text"
+                  placeholder="e.g. Colonia, Jaques, Hutton Orbital, my squadron's name"
+                  value={s.voiceInput.words}
+                  onChange={(e) =>
+                    set({ ...s, voiceInput: { ...s.voiceInput, words: e.target.value } })
+                  }
+                />
+              </label>
               <div className="hint">
                 Recognition runs on a local Whisper model — your voice never leaves this machine.
+                It already expects the game's words and the system, station and carrier you are
+                at; add names it still gets wrong.
               </div>
             </>
           )}
@@ -1263,7 +1296,11 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
               checked={s.hud.clickThrough}
               onChange={(e) => set({ ...s, hud: { ...s.hud, clickThrough: e.target.checked } })}
             />
-            Click-through (HUD ignores mouse — Ctrl+Shift+T to toggle back!)
+            Click-through (HUD ignores mouse
+            {snap.hotkeys.clickthrough
+              ? ` — ${displayCombo(snap.hotkeys.clickthrough)} to toggle back!`
+              : ' — set a click-through shortcut first, or you cannot toggle it back'}
+            )
           </label>
 
           <div className="tint-label">Instrument colour</div>
@@ -1362,12 +1399,121 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
 
         <section data-cat="hud" data-last>
           <h3>Shortcuts (global)</h3>
-          <div className="hint">
-            Ctrl+Shift+M show/hide · Ctrl+Shift+H ask AI · Ctrl+Shift+V voice ·{' '}
-            Ctrl+Shift+J cycle mission · Ctrl+Shift+K collapse · Ctrl+Shift+T click-through
-          </div>
+          <ShortcutList snap={snap} />
         </section>
       </div>
     </div>
+  );
+}
+
+/**
+ * The global shortcuts, rebindable (GitHub issue #2): click a combo, press
+ * the new one. While listening, every global shortcut is released so the
+ * press reaches this page instead of firing whatever it used to do.
+ */
+function ShortcutList({ snap }: { snap: AppSnapshot }) {
+  const [recording, setRecording] = useState<HotkeyAction | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const bindings = snap.hotkeys;
+
+  useEffect(() => {
+    if (!recording) return undefined;
+    core.suspendHotkeys(true);
+    let saved = false;
+    const onKey = (e: KeyboardEvent) => {
+      // Capture phase, so App's own Esc-collapses never sees the press.
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.repeat) return;
+      if (e.code === 'Escape') {
+        setNote(null);
+        setRecording(null);
+        return;
+      }
+      const r = recordCombo(e);
+      if ('waiting' in r) return;
+      if ('error' in r) {
+        setNote(r.error);
+        return;
+      }
+      const other = usedBy(bindings, r.combo, recording);
+      if (other) {
+        setNote(`${displayCombo(r.combo)} is already ${actionLabel(other).toLowerCase()}.`);
+        return;
+      }
+      saved = true;
+      setNote(null);
+      void core.setHotkey(recording, r.combo);
+      setRecording(null);
+    };
+    // Alt-tabbing back to the game mid-recording must not leave it without its keys.
+    const onBlur = () => {
+      setNote(null);
+      setRecording(null);
+    };
+    window.addEventListener('keydown', onKey, true);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      window.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('blur', onBlur);
+      // Saving re-claims every shortcut by itself; otherwise give them back here.
+      if (!saved) core.suspendHotkeys(false);
+    };
+  }, [recording, bindings]);
+
+  const atDefaults = HOTKEY_ACTIONS.every(({ id }) => bindings[id] === DEFAULT_HOTKEYS[id]);
+
+  return (
+    <>
+      <div className="hotkeys">
+        {HOTKEY_ACTIONS.map(({ id, label }) => {
+          const listening = recording === id;
+          const err = snap.hotkeyErrors[id];
+          return (
+            <div key={id}>
+              <div className="hotkey-row">
+                <span className="hotkey-label">{label}</span>
+                <button
+                  className={`btn hotkey-combo mono${listening ? ' listening' : err ? ' bad' : ''}`}
+                  aria-label={`${label}: ${displayCombo(bindings[id])}. Change`}
+                  title="Click, then press the new combination"
+                  onClick={(e) => {
+                    // Unfocused, so a recorded Space or Enter cannot click it again.
+                    e.currentTarget.blur();
+                    setNote(null);
+                    setRecording(listening ? null : id);
+                  }}
+                >
+                  {listening ? 'press keys…' : displayCombo(bindings[id])}
+                </button>
+                <button
+                  className="icon-btn"
+                  aria-label={`Turn off ${label}`}
+                  title="Turn off"
+                  disabled={!bindings[id] || recording !== null}
+                  onClick={() => void core.setHotkey(id, '')}
+                >
+                  ✕
+                </button>
+              </div>
+              {err && !listening && <div className="hint warn-hint">Not active: {err}.</div>}
+            </div>
+          );
+        })}
+      </div>
+      {note && <div className="hint warn-hint">{note}</div>}
+      <div className="hint">
+        {recording
+          ? 'Press the new combination. Esc cancels.'
+          : 'Click a combination to change it. Needs Ctrl or Alt, except F1–F24, Pause, Scroll Lock and Insert, which can stand alone. A HOTAS button mapped to F13–F24 gives push-to-talk a key the game never sees.'}
+      </div>
+      <button
+        className="btn hotkey-reset"
+        disabled={atDefaults || recording !== null}
+        onClick={() => void core.resetHotkeys()}
+      >
+        Reset to defaults
+      </button>
+    </>
   );
 }

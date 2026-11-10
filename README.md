@@ -440,12 +440,15 @@ Settings panel warns when the active model doesn't have one.
   answers, *and its own remarks* (stories, warnings, memory call-outs). Follow-ups like *"and how
   far is that?"* or *"what did you mean?"* resolve against what was actually said. Threads go
   stale after 15 minutes of silence; long stories are recalled as a gist.
-- **Voice input (opt-in)** — hold `Ctrl+Shift+Space` (works while the game has focus) or the 🎤
-  button, speak, release. Recording is captured natively (cpal) and transcribed by a local
-  **whisper.cpp** sidecar (base.en model, one-time ~150 MB download on your click — same pattern
-  as the extra Piper voices). Pressing push-to-talk also silences the operator mid-sentence
-  (barge-in), Jarvis-style. Your voice never leaves the machine; clips are transcribed from a
-  temp file that is deleted immediately.
+- **Voice input (opt-in)** — hold the push-to-talk key (`Ctrl+Shift+Space` by default,
+  rebindable; works while the game has focus) or the 🎤 button, speak, release. Recording is
+  captured natively (cpal) and transcribed by a local **whisper.cpp** sidecar (base.en model,
+  one-time ~150 MB download on your click — same pattern as the extra Piper voices). Each clip is
+  primed with the game's vocabulary (fleet carrier, FSD, tritium…) plus the system, station,
+  carrier and route names the journal knows, so "carrier" stops coming back as "carry her";
+  Settings → Audio takes extra words of your own. Pressing push-to-talk also silences the
+  operator mid-sentence (barge-in), Jarvis-style. Your voice never leaves the machine; clips are
+  transcribed from a temp file that is deleted immediately.
 
 ## Global shortcuts
 
@@ -458,6 +461,13 @@ Settings panel warns when the active model doesn't have one.
 | `Ctrl+Shift+K` | Collapse / expand |
 | `Ctrl+Shift+T` | Toggle click-through (HUD ignores the mouse) |
 | `Ctrl+Shift+Space` *(hold)* | Push-to-talk — speak to the operator (needs Voice input enabled) |
+
+These are the defaults. Every one is rebindable (or can be turned off) in **Settings → HUD →
+Shortcuts**: click a combination and press the new one. A combination needs `Ctrl` or `Alt`,
+except `F1`–`F24`, `Pause`, `Scroll Lock` and `Insert`, which can stand alone, so a HOTAS button
+mapped to `F13`–`F24` makes a push-to-talk the game never sees. If another app or Windows
+already holds a combination, the HUD says so at launch instead of failing silently. Bindings are
+saved in `shortcuts.json` in the app's config directory.
 
 In-window: `Esc` collapses, `Ctrl+Tab` cycles missions, `Enter` sends chat.
 (The spec's `Ctrl+M`/`Ctrl+Tab` global bindings were deliberately shifted to `Ctrl+Shift+…` so the

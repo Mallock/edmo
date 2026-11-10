@@ -1106,6 +1106,54 @@ body {
   background: rgba(240, 160, 48, 0.07);
 }
 
+/* Global shortcut rebinding (Settings → HUD). */
+.hotkeys {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.hotkey-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hotkey-label {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-body);
+  color: var(--text);
+}
+
+.btn.hotkey-combo {
+  min-width: 10em;
+  padding: 3px 9px;
+  text-align: center;
+}
+
+.btn.hotkey-combo.listening {
+  border-style: dashed;
+  background: rgba(var(--phos-rgb), 0.3);
+}
+
+/* Saved but not live: the reason is spelled out underneath. */
+.btn.hotkey-combo.bad {
+  text-decoration: line-through;
+  opacity: 0.7;
+}
+
+.hotkey-row .icon-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.btn.hotkey-reset:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 /* --- Live ship-status strip (Status.json) --------------------------------- */
 .status-strip {
   display: flex;

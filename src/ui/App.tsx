@@ -16,6 +16,7 @@ import { remaining as plotRemaining } from '../engine/plotter.ts';
 import { fmtClock, phaseOf as jumpPhaseOf } from '../engine/carrierjump.ts';
 import { Feed } from './Feed.tsx';
 import { SettingsPanel } from './SettingsPanel.tsx';
+import { displayCombo } from './hotkeys.ts';
 import { categoryColor, countdown } from './util.ts';
 import type { HudShipStatus, CampaignHudView } from './store.ts';
 import type { ShipPanel } from '../engine/shippanel.ts';
@@ -379,7 +380,14 @@ export function App() {
                       large panel of nothing. Show the ship instead. */}
                   <ShipPanelCard panel={snap.shipPanel} />
                   <div className="empty-hint">
-                    No active missions · <span className="mono">Ctrl+Shift+H</span> asks the operator
+                    No active missions
+                    {snap.hotkeys.ask && (
+                      <>
+                        {' '}
+                        · <span className="mono">{displayCombo(snap.hotkeys.ask)}</span> asks the
+                        operator
+                      </>
+                    )}
                   </div>
                 </>
               ) : (
@@ -607,7 +615,11 @@ export function App() {
             {s.voiceInput.enabled && (
               <button
                 className={snap.listening ? 'btn voice listening' : 'btn voice'}
-                title="Hold to talk to the operator (or hold Ctrl+Shift+Space)"
+                title={
+                  snap.hotkeys.ptt
+                    ? `Hold to talk to the operator (or hold ${displayCombo(snap.hotkeys.ptt)})`
+                    : 'Hold to talk to the operator'
+                }
                 aria-label="Hold to talk"
                 onMouseDown={() => core.pttDown()}
                 onMouseUp={() => core.pttUp()}
@@ -645,7 +657,9 @@ export function App() {
             </button>
             <button
               className={s.voice.enabled ? 'btn voice on' : 'btn voice'}
-              title="Toggle voice (Ctrl+Shift+V)"
+              title={
+                snap.hotkeys.voice ? `Toggle voice (${displayCombo(snap.hotkeys.voice)})` : 'Toggle voice'
+              }
               aria-label="Toggle voice"
               onClick={() => core.toggleVoice()}
             >

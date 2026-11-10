@@ -7,7 +7,7 @@ WHAT THIS IS
   index.html                              the page
   img/                                    screenshots + icons
   fonts/                                  the two webfonts, self-hosted
-  ED-Mission-Operator-1.9.6-setup.exe       the Windows installer (~132 MB)
+  ED-Mission-Operator-1.9.7-setup.exe       the Windows installer (~132 MB)
   ED-Mission-Operator-1.9.6-amd64.deb       Linux beta, Ubuntu/Debian (~147 MB)
   ED-Mission-Operator-1.9.6-x86_64.AppImage Linux beta, any distro (~232 MB)
 
@@ -22,7 +22,31 @@ NOTES
   * The installer is ~132 MB. Browser-based file managers sometimes limit
     uploads (often to 100 MB) — if the .exe upload fails, use FTP instead,
     or upload it to a file service and change the download link in
-    index.html (search for "ED-Mission-Operator-1.9.6-setup.exe").
+    index.html (search for "ED-Mission-Operator-1.9.7-setup.exe").
+  * 1.9.7 answers the first issue anyone filed (GitHub #2): your keys, and
+    a recogniser that knows the word "carrier".
+
+    YOUR KEYS. The seven global shortcuts were hard-coded, and a combination
+    another program already held failed in silence. Ctrl+Shift+Space clashes
+    with the Windows input-method switcher and with in-game binds, so for some
+    players push-to-talk simply never fired and nothing said why. Every
+    shortcut is now rebindable, or can be switched off, in Settings → HUD →
+    Shortcuts: click it, press the new combination. A combination needs Ctrl
+    or Alt, except F1–F24, Pause, Scroll Lock and Insert, which can stand
+    alone. That makes a HOTAS button mapped to F13–F24 a push-to-talk the game
+    never sees. A combination that cannot be claimed is named in the feed at
+    launch and marked in Settings with the reason.
+
+    THE WORD "CARRIER". Voice input runs Whisper's small English model, which
+    had never been told it was listening to a commander, so "carrier" kept
+    coming back as "carry her". Every clip is now primed with the game's
+    vocabulary plus the system, station, carrier and route names the journal
+    already knows how to spell. Settings → Audio takes extra words of your
+    own: a squadron, a friend, a home system. Still entirely local.
+
+    Also: the dependency updates Dependabot proposed (postcss, browserslist,
+    baseline-browser-mapping, zip 9, vite, rustls, source-map-js).
+
   * 1.9.5 makes the comms channel mostly not about you.
 
     Nearly every written radio beat was anchored to whatever you were doing:
@@ -739,7 +763,8 @@ NOTES
     ranges and payout estimates; and four opt-in community lookups the operator
     calls only when asked (Spansh routes, galaxy-wide markets via Ardent
     Insight, the EDAstro exploration catalogue, and the Galnet news wire).
-  * All three installers are 1.9.6.
+  * The Windows installer is 1.9.7. The two Linux packages are still 1.9.6
+    (they have not been rebuilt for 1.9.7 yet).
 
     Windows:  npm run tauri build
               -> src-tauri/target/release/bundle/nsis/

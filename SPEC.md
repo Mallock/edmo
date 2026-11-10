@@ -432,6 +432,9 @@ win.set_position(LogicalPosition::new(1200.0, 100.0))?; // NOTE: position, not s
 - **Keyboard shortcuts** (global, via Tauri global-shortcut):
   - `Ctrl+M` toggle HUD · `Ctrl+Shift+H` "what should I do?" · `Ctrl+Shift+V` toggle voice ·
     `Ctrl+Tab` cycle active mission · `Esc` collapse · `Enter` send chat.
+  - *As built:* the global set ships as `Ctrl+Shift+…` (README) and every one is rebindable in
+    Settings → HUD → Shortcuts. Bindings live Rust-side in app-config `shortcuts.json`, not in
+    the §7 settings object, so they apply before the webview loads (GitHub #2).
 - **Resizing**: min 320×480.
 
 ### 3.5 Mission Assistance Features

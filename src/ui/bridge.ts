@@ -5,6 +5,7 @@
  */
 import { invoke } from '@tauri-apps/api/core';
 import type { MarketRow } from '../engine/traderoute.ts';
+import type { HotkeyAction, HotkeyBindings } from './hotkeys.ts';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 export const isTauri =
@@ -662,14 +663,37 @@ export async function sttStart(): Promise<void> {
   await invoke('stt_start');
 }
 
-/** Stop recording and transcribe; '' when too short / no speech. */
-export async function sttStop(): Promise<string> {
-  return invoke<string>('stt_stop');
+/** Stop recording and transcribe; '' when too short / no speech. `prompt`
+ *  is the vocabulary Whisper should lean toward (engine/voicevocab.ts). */
+export async function sttStop(prompt?: string): Promise<string> {
+  return invoke<string>('stt_stop', { prompt: prompt ?? null });
 }
 
 /** Discard an in-flight recording. */
 export async function sttCancel(): Promise<void> {
   await invoke('stt_cancel');
+}
+
+// ------------------------------------------------------------ global shortcuts
+
+/** The saved bindings and, per action, why one is not live. */
+export interface HotkeyReport {
+  bindings: HotkeyBindings;
+  errors: Partial<Record<HotkeyAction, string>>;
+}
+
+export async function hotkeysGet(): Promise<HotkeyReport> {
+  return invoke<HotkeyReport>('hotkeys_get');
+}
+
+/** Rebind and save; the report says which bindings did not take. */
+export async function hotkeysSet(bindings: HotkeyBindings): Promise<HotkeyReport> {
+  return invoke<HotkeyReport>('hotkeys_set', { bindings });
+}
+
+/** Release every shortcut while Settings records one (true), reclaim them (false). */
+export async function hotkeysSuspend(suspended: boolean): Promise<void> {
+  await invoke('hotkeys_suspend', { suspended });
 }
 
 export async function llmCancel(id: string): Promise<void> {

@@ -13,6 +13,7 @@
 
 mod edgetts;
 mod engine;
+mod hotkeys;
 mod radio;
 
 use std::collections::{HashMap, HashSet};
@@ -28,7 +29,7 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager, State};
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use tauri_plugin_global_shortcut::ShortcutState;
 
 const SNAPSHOT_FILES: [&str; 11] = [
     "Missions.json",
@@ -1602,9 +1603,14 @@ fn stt_start(ctl: State<SttCtl>) -> Result<(), String> {
 }
 
 /// Stop capturing and transcribe (push-to-talk released). Empty string when
-/// the clip was too short or contained no speech.
+/// the clip was too short or contained no speech. `prompt` is the vocabulary
+/// Whisper should lean toward (src/engine/voicevocab.ts).
 #[tauri::command]
-async fn stt_stop(app: AppHandle, ctl: State<'_, SttCtl>) -> Result<String, String> {
+async fn stt_stop(
+    app: AppHandle,
+    ctl: State<'_, SttCtl>,
+    prompt: Option<String>,
+) -> Result<String, String> {
     let Some(active) = ctl.rec.lock().unwrap().take() else {
         return Ok(String::new());
     };
@@ -1654,6 +1660,11 @@ async fn stt_stop(app: AppHandle, ctl: State<'_, SttCtl>) -> Result<String, Stri
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
+        // base.en has never heard of a fleet carrier; the initial prompt is
+        // how it learns which "carrier" / "carry her" this commander means.
+        if let Some(p) = prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+            cmd.arg("--prompt").arg(p);
+        }
         if let Some(dir) = exe.parent() {
             sidecar_env(&mut cmd, dir);
         }
@@ -2863,22 +2874,16 @@ fn emit_shortcut(app: &AppHandle, action: &str) {
 // ------------------------------------------------------------------------ main
 
 fn main() {
-    let sc = |code: Code| Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), code);
-    let sc_hud = sc(Code::KeyM);
-    let sc_ask = sc(Code::KeyH);
-    let sc_voice = sc(Code::KeyV);
-    let sc_cycle = sc(Code::KeyJ);
-    let sc_collapse = sc(Code::KeyK);
-    let sc_clickthrough = sc(Code::KeyT);
-    let sc_ptt = sc(Code::Space);
-
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, shortcut, event| {
+                    let Some(action) = hotkeys::action_for(app, shortcut) else {
+                        return;
+                    };
                     // Push-to-talk is hold-shaped: both edges matter.
-                    if shortcut == &sc_ptt {
+                    if action == "ptt" {
                         emit_shortcut(
                             app,
                             if event.state() == ShortcutState::Pressed { "ptt-down" } else { "ptt-up" },
@@ -2888,20 +2893,14 @@ fn main() {
                     if event.state() != ShortcutState::Pressed {
                         return;
                     }
-                    if shortcut == &sc_hud {
-                        toggle_visibility(app);
-                    } else if shortcut == &sc_ask {
-                        emit_shortcut(app, "ask");
-                    } else if shortcut == &sc_voice {
-                        emit_shortcut(app, "voice");
-                    } else if shortcut == &sc_cycle {
-                        emit_shortcut(app, "cycle");
-                    } else if shortcut == &sc_collapse {
-                        emit_shortcut(app, "collapse");
-                    } else if shortcut == &sc_clickthrough {
-                        let ct: State<ClickThrough> = app.state();
-                        let next = !ct.0.load(Ordering::SeqCst);
-                        let _ = set_click_through(app.clone(), app.state(), next);
+                    match action {
+                        "hud" => toggle_visibility(app),
+                        "clickthrough" => {
+                            let ct: State<ClickThrough> = app.state();
+                            let next = !ct.0.load(Ordering::SeqCst);
+                            let _ = set_click_through(app.clone(), app.state(), next);
+                        }
+                        other => emit_shortcut(app, other),
                     }
                 })
                 .build(),
@@ -2911,6 +2910,7 @@ fn main() {
         .manage(SttCtl { rec: Mutex::new(None) })
         .manage(engine::EngineCtl::default())
         .manage(radio::RadioCtl::default())
+        .manage(hotkeys::HotkeyCtl::default())
         .manage(ClickThrough(AtomicBool::new(false)))
         .manage(GeomState {
             cur: Mutex::new(None),
@@ -2968,7 +2968,10 @@ fn main() {
             engine::engine_start,
             engine::engine_stop,
             engine::engine_alive,
-            engine::engine_log
+            engine::engine_log,
+            hotkeys::hotkeys_get,
+            hotkeys::hotkeys_set,
+            hotkeys::hotkeys_suspend
         ])
         .setup(move |app| {
             // A previous run that was force-killed (Task Manager, crash) cannot
@@ -2987,10 +2990,9 @@ fn main() {
                     }
                 }
             }
-            for shortcut in [sc_hud, sc_ask, sc_voice, sc_cycle, sc_collapse, sc_clickthrough, sc_ptt] {
-                // A conflict with another app must not be fatal.
-                let _ = app.global_shortcut().register(shortcut);
-            }
+            // A conflict with another app must not be fatal — it is recorded
+            // and shown in Settings instead.
+            hotkeys::init(&handle);
             Ok(())
         })
         .on_window_event(|window, event| {

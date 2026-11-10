@@ -1,7 +1,7 @@
 /**
  * App settings — persisted in localStorage, shape mirrors SPEC.md §7 (subset
- * that is actually wired). Geometry is persisted Rust-side; shortcuts are
- * fixed (see README).
+ * that is actually wired). Geometry and global shortcuts are persisted
+ * Rust-side (see src-tauri/src/hotkeys.rs).
  */
 
 export type TtsEngine = 'piper' | 'system' | 'edge';
@@ -244,6 +244,9 @@ export interface AppSettings {
   };
   voiceInput: {
     enabled: boolean; // push-to-talk via the local whisper.cpp sidecar
+    /** Extra words recognition should expect (comma separated): a friend's
+     *  name, a squadron, a home system. See engine/voicevocab.ts. */
+    words: string;
   };
 }
 
@@ -379,6 +382,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   voiceInput: {
     // Off by default — enabling offers the one-time whisper.cpp download.
     enabled: false,
+    words: '',
   },
 };
 

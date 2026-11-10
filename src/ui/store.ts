@@ -283,6 +283,14 @@ import {
   type ReactionTier,
 } from '../engine/copilot.ts';
 import { ConvoBuffer, cleanTranscript, toolExchangeOf } from '../engine/convo.ts';
+import { buildSttPrompt, isPromptEcho, splitVocabulary } from '../engine/voicevocab.ts';
+import {
+  DEFAULT_HOTKEYS,
+  actionLabel,
+  displayCombo,
+  type HotkeyAction,
+  type HotkeyBindings,
+} from './hotkeys.ts';
 import { MAX_MARKET_RADIUS_LY, TOOL_SCHEMAS, runTool, type ToolContext } from '../engine/tools.ts';
 import type { ChatMessage } from '../engine/lmstudio.ts';
 import type { JournalEvent, Mission, OperatorState } from '../engine/types.ts';
@@ -335,6 +343,9 @@ import {
   piperVoices,
   edgeVoices,
   copyText,
+  hotkeysGet,
+  hotkeysSet,
+  hotkeysSuspend,
   setClickThrough,
   spanshTradeRoute,
   spanshShipRoute,
@@ -744,6 +755,9 @@ export interface AppSnapshot {
   sttOk: boolean;
   sttDownloading: boolean;
   listening: boolean;
+  /** Global shortcuts as Rust holds them, and why any are not live. */
+  hotkeys: HotkeyBindings;
+  hotkeyErrors: Partial<Record<HotkeyAction, string>>;
   version: number;
 }
 
@@ -981,6 +995,8 @@ export class AppCore {
   private sttDownloading = false;
   private listening = false;
   private sttHintShown = false;
+  private hotkeys: HotkeyBindings = { ...DEFAULT_HOTKEYS };
+  private hotkeyErrors: Partial<Record<HotkeyAction, string>> = {};
 
   /** Speak AND remember having said it, so "what did you mean?" resolves. */
   private speak(text: string): void {
@@ -1825,6 +1841,8 @@ export class AppCore {
       sttOk: this.sttOk,
       sttDownloading: this.sttDownloading,
       listening: this.listening,
+      hotkeys: this.hotkeys,
+      hotkeyErrors: this.hotkeyErrors,
       version: this.version,
     };
   }
@@ -2125,7 +2143,7 @@ export class AppCore {
           };
           saveSettings(this.settings);
           this.pushFeed('system', p.enabled
-            ? 'Click-through ON — HUD ignores the mouse. Ctrl+Shift+T to restore.'
+            ? `Click-through ON — HUD ignores the mouse. ${displayCombo(this.hotkeys.clickthrough)} to restore.`
             : 'Click-through off.');
         }),
         onLlmToken((p) => this.onAiToken(p.id, p.token)),
@@ -2148,6 +2166,26 @@ export class AppCore {
       sttAvailable()
         .then((ok) => {
           this.sttOk = ok;
+          this.emit();
+        })
+        .catch(() => undefined);
+
+      hotkeysGet()
+        .then((r) => {
+          this.applyHotkeyReport(r);
+          // A combo another app holds used to fail in silence: push-to-talk
+          // just never fired. Say so once, at launch, with the way out.
+          const failed = (Object.keys(r.errors) as HotkeyAction[]).map(
+            (a) => `${displayCombo(r.bindings[a])} (${actionLabel(a).toLowerCase()})`,
+          );
+          if (failed.length) {
+            this.pushFeed(
+              'system',
+              `⌨ ${failed.join(', ')} could not be claimed. Another app or Windows already uses ${
+                failed.length > 1 ? 'them' : 'it'
+              }. Rebind in Settings → HUD → Shortcuts.`,
+            );
+          }
           this.emit();
         })
         .catch(() => undefined);
@@ -8250,16 +8288,39 @@ ${missionContext(mission, state)}`);
     if (!this.listening) return;
     this.listening = false;
     this.emit();
-    sttStop()
+    const prompt = this.sttVocabulary();
+    sttStop(prompt)
       .then((raw) => {
         const text = cleanTranscript(raw);
         if (!text) return; // a tap or silence — stay quiet, no nagging
+        if (isPromptEcho(text, prompt)) return; // Whisper read back its word list
         this.ask(text, 'voice');
       })
       .catch((e) => {
         this.pushFeed('system', `🎤 Transcription failed: ${String(e)}`);
         this.emit();
       });
+  }
+
+  /**
+   * What Whisper should expect to hear: the game's vocabulary plus the names
+   * the journal knows right now, most useful first. The short location names
+   * lead because they change every jump and nothing else would teach them.
+   */
+  private sttVocabulary(): string {
+    const loc = this.sm.location;
+    return buildSttPrompt([
+      loc.system,
+      loc.station,
+      this.carrier.snapshot().callsign ?? this.carrierHold.snapshot().callsign,
+      ...splitVocabulary(this.settings.voiceInput.words),
+      this.navRouteDest,
+      this.memory.shipName,
+      this.memory.cmdr,
+      ...this.sm
+        .activeMissions()
+        .flatMap((m) => [m.destination?.system, m.destination?.station]),
+    ]);
   }
 
   /** Abort a capture without transcribing (Esc / window close). */
@@ -8280,7 +8341,7 @@ ${missionContext(mission, state)}`);
       this.sttOk = await sttAvailable();
       this.pushFeed(
         'system',
-        '🎤 Voice input installed. Hold Ctrl+Shift+Space (or the mic button) and talk to me, commander.',
+        `🎤 Voice input installed. Hold ${displayCombo(this.hotkeys.ptt)} (or the mic button) and talk to me, commander.`,
       );
       this.speak('Voice input is live. Hold the push to talk key and speak, commander.');
     } catch (e) {
@@ -8289,6 +8350,39 @@ ${missionContext(mission, state)}`);
       this.sttDownloading = false;
       this.emit();
     }
+  }
+
+  // ---------------------------------------------------------- global shortcuts
+  private applyHotkeyReport(r: { bindings: HotkeyBindings; errors: Partial<Record<HotkeyAction, string>> }): void {
+    this.hotkeys = { ...DEFAULT_HOTKEYS, ...r.bindings };
+    this.hotkeyErrors = r.errors;
+  }
+
+  /** Rebind one action ('' = off). Rust saves it and says if it did not take. */
+  async setHotkey(action: HotkeyAction, combo: string): Promise<void> {
+    await this.saveHotkeys({ ...this.hotkeys, [action]: combo });
+  }
+
+  async resetHotkeys(): Promise<void> {
+    await this.saveHotkeys({ ...DEFAULT_HOTKEYS });
+  }
+
+  private async saveHotkeys(next: HotkeyBindings): Promise<void> {
+    if (!isTauri) return;
+    try {
+      this.applyHotkeyReport(await hotkeysSet(next));
+    } catch (e) {
+      // Nothing was re-registered; Settings may have released the keys to
+      // record this one, so claim the old set back.
+      this.suspendHotkeys(false);
+      this.pushFeed('system', `⌨ Could not save shortcuts: ${String(e)}`);
+    }
+    this.emit();
+  }
+
+  /** Settings is listening for a combo: let the keys reach the page. */
+  suspendHotkeys(suspended: boolean): void {
+    if (isTauri) void hotkeysSuspend(suspended).catch(() => undefined);
   }
 
   /**
