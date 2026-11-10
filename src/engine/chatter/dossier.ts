@@ -73,6 +73,18 @@ export interface DossierInput {
    * over a counter; see rotate.ts.
    */
   rotate?: number;
+  /**
+   * Scenery only: leave the commander out of it.
+   *
+   * An ambient beat is about somebody else's business, and a briefing that
+   * says where the commander is and what they are carrying is an invitation
+   * to make it about them anyway — the writer obeys the data over the
+   * instruction every time. So the "The commander:" row and the brief
+   * summaries (manifest, contract, greeting, ledger) are omitted; the system,
+   * its people and its places stay, because a place name dropped in passing
+   * is what makes an overheard argument belong to THIS system.
+   */
+  scenery?: boolean;
 }
 
 const plus = (more: number): string => (more ? ` (+${more} more)` : '');
@@ -415,7 +427,7 @@ export function buildDossier(input: DossierInput): string {
         : input.supercruise
           ? 'in supercruise'
           : 'in normal space');
-  lines.push(`The commander: ${where}`);
+  if (!input.scenery) lines.push(`The commander: ${where}`);
 
   // Anything the briefs know that the intel does not. Summaries only: the nouns
   // and figures underneath them were the fence, and are not wanted here.
@@ -424,7 +436,7 @@ export function buildDossier(input: DossierInput): string {
   // shortfall anchor three scenes running. One brief now sits each call OUT,
   // rotating which, so every fact gets scenes it is absent from — absence is
   // the only rotation a model actually notices.
-  const extras = (input.extra ?? [])
+  const extras = (input.scenery ? [] : input.extra ?? [])
     .map((s) => s.trim())
     .filter((s) => s && s !== 'atmosphere')
     // An extra that carries a hot noun sits out too — the campaign patron

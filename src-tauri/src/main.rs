@@ -2142,16 +2142,15 @@ async fn ardent_system_commodities(system: String) -> Result<String, String> {
     serde_json::to_string(&out).map_err(|e| e.to_string())
 }
 
-/// Ardent Insight — galaxy-wide commodity markets built from crowdsourced EDDN
-/// data (AGPL, anonymous). OPT-IN ONLY — sends the system name and commodity
-/// being asked about, nothing else. `side`: "sell" finds importers paying the
-/// most, "buy" finds exporters with stock.
+/// Galactic coordinates for one system, so an old market reading can be placed.
 ///
-/// NOTE: api.ardent-industry.com/v1 now 302s to api.ardent-insight.com/v2; we
-/// call the current host directly rather than rely on the redirect.
+/// The star map is built from `StarPos` on arrival, which means it only knows
+/// systems visited since it existed. A commander's market memory is far older
+/// than that, so their own readings — the ones marked "you saw it" — had no
+/// distance at all, and five sellers 15,114 ly away in the bubble rendered
+/// exactly like five sellers next door. Sends only the system name.
 #[tauri::command]
-async fn ardent_market(system: String, commodity: String, side: String) -> Result<String, String> {
-    let want = if side == "buy" { "exports" } else { "imports" };
+async fn ardent_system_coords(system: String) -> Result<String, String> {
     let enc = |s: &str| {
         s.trim()
             .replace(' ', "%20")
@@ -2160,10 +2159,80 @@ async fn ardent_market(system: String, commodity: String, side: String) -> Resul
             .replace('#', "")
     };
     let url = format!(
-        "https://api.ardent-insight.com/v2/system/name/{}/commodity/name/{}/nearby/{}",
+        "https://api.ardent-insight.com/v2/system/name/{}",
+        enc(&system)
+    );
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(8))
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let body: serde_json::Value = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Ardent unreachable: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("Ardent error: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("Ardent returned unusable data: {e}"))?;
+    // A system Ardent has never heard of answers with no coordinates rather
+    // than an error, and "null" is the honest reply to pass back.
+    let (x, y, z) = (
+        body["systemX"].as_f64(),
+        body["systemY"].as_f64(),
+        body["systemZ"].as_f64(),
+    );
+    match (x, y, z) {
+        (Some(x), Some(y), Some(z)) => {
+            serde_json::to_string(&json!({ "system": body["systemName"], "x": x, "y": y, "z": z }))
+                .map_err(|e| e.to_string())
+        }
+        _ => Ok("null".to_string()),
+    }
+}
+
+/// Ardent Insight — galaxy-wide commodity markets built from crowdsourced EDDN
+/// data (AGPL, anonymous). OPT-IN ONLY — sends the system name and commodity
+/// being asked about, nothing else. `side`: "sell" finds importers paying the
+/// most, "buy" finds exporters with stock.
+///
+/// NOTE: api.ardent-industry.com/v1 now 302s to api.ardent-insight.com/v2; we
+/// call the current host directly rather than rely on the redirect.
+/// `max_distance_ly` widens the search ring. Ardent defaults it to 100 ly,
+/// which is a bubble-shaped assumption: a commander colonising 15,000 ly out
+/// in the Greae Hype hub network gets a flat zero for steel, tritium, water and
+/// gold alike — while Cleaver City, 464 ly away, holds 482,353 t of steel and
+/// 411,318 t of tritium and restocks daily. Omitted, Ardent's own default
+/// stands; passed, it reaches as far as it is told.
+#[tauri::command]
+async fn ardent_market(
+    system: String,
+    commodity: String,
+    side: String,
+    max_distance_ly: Option<u32>,
+) -> Result<String, String> {
+    let want = if side == "buy" { "exports" } else { "imports" };
+    let enc = |s: &str| {
+        s.trim()
+            .replace(' ', "%20")
+            .replace('/', "%2F")
+            .replace('?', "")
+            .replace('#', "")
+    };
+    // Clamped rather than trusted: the caller is a settings field, and an
+    // absurd radius is a slow request that returns the whole galaxy.
+    let ring = max_distance_ly
+        .filter(|d| *d > 0)
+        .map(|d| format!("?maxDistance={}", d.clamp(10, 2000)))
+        .unwrap_or_default();
+    let url = format!(
+        "https://api.ardent-insight.com/v2/system/name/{}/commodity/name/{}/nearby/{}{}",
         enc(&system),
         enc(&commodity.to_lowercase()),
-        want
+        want,
+        ring
     );
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(8))
@@ -2215,9 +2284,31 @@ async fn ardent_market(system: String, commodity: String, side: String) -> Resul
                 b[qty_key].as_i64().unwrap_or(0).cmp(&a[qty_key].as_i64().unwrap_or(0))
             })
     });
-    let out: Vec<serde_json::Value> = rows
+    // Keep the cheapest EIGHT and the nearest FOUR, not simply the cheapest
+    // eight. At a 100 ly ring the two sets overlapped almost entirely and the
+    // distinction did not matter; at 1,000 ly it decides the answer. Around the
+    // commander's deep-space build the eight cheapest sellers of steel all sit
+    // in one hub 464 ly away, and truncating to them threw away the carrier at
+    // 107 ly before the ranker in engine/tools.ts ever saw it.
+    let mut near: Vec<serde_json::Value> = rows.clone();
+    near.sort_by(|a, b| {
+        let da = a["distance"].as_f64().unwrap_or(f64::MAX);
+        let db = b["distance"].as_f64().unwrap_or(f64::MAX);
+        da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut keep: Vec<serde_json::Value> = Vec::new();
+    let mut seen: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    for r in rows.into_iter().take(8).chain(near.into_iter().take(4)) {
+        // marketId is the only stable identity here; two stations can share a
+        // name across systems and a carrier's name is not unique at all.
+        let id = r["marketId"].as_i64().unwrap_or(0);
+        if id != 0 && !seen.insert(id) {
+            continue;
+        }
+        keep.push(r);
+    }
+    let out: Vec<serde_json::Value> = keep
         .into_iter()
-        .take(8)
         .map(|r| {
             json!({
                 "station": r["stationName"],
@@ -2855,6 +2946,7 @@ fn main() {
             galnet_headlines,
             ardent_market,
             ardent_system_commodities,
+            ardent_system_coords,
             ardent_trade_candidates,
             ardent_station_pads,
             ardent_trade_to,

@@ -166,5 +166,104 @@ test('need applies to buying only — it says nothing about where to sell', asyn
 
 test('the opt-in and empty cases still answer honestly rather than inventing a price', async () => {
   assert.match(await ask(ctx({ galaxyMarket: null })), /Galaxy-wide market lookup is off/);
-  assert.match(await ask(ctx({ galaxyMarket: async () => [] })), /No sellers of Tritium reported near Tir/);
+  // The empty answer names the RADIUS it searched. "No sellers near Tir" reads
+  // as "tritium is unavailable"; the limit of the ring is the actual fact.
+  const empty = await ask(ctx({ galaxyMarket: async () => [] }));
+  assert.match(empty, /No sellers of Tritium reported within [\d,]+ ly of Tir/);
+  assert.match(empty, /limit of the search, not of the galaxy/);
+});
+
+// --------------------------------------------------- reaching the deep hubs
+
+/**
+ * The real reply from api.ardent-insight.com for steel exports near
+ * Floanth PW-G b16-3 — the commander's own colonisation build, 15,318 ly from
+ * Sol — at maxDistance=1000. At Ardent's default 100 ly ring this query, and
+ * the same query for tritium, water, aluminium, gold, copper and polymers,
+ * returns a flat zero.
+ */
+const DEEP_STEEL: MarketLookupRow[] = [
+  { station: 'Gustard Watch', system: 'Greae Hype TO-G c27-10', distanceLy: 464, price: 3746, stock: 793835, demand: 0, pad: '3', carrier: false, updatedAt: '2026-09-19T00:00:00Z' },
+  { station: 'Cleaver City', system: 'Greae Hype TO-G c27-10', distanceLy: 464, price: 4142, stock: 482353, demand: 0, pad: '3', carrier: false, updatedAt: '2026-09-20T00:00:00Z' },
+  { station: 'FLK-B2Z', system: 'Floanth FY-L c10-107', distanceLy: 107, price: 4179, stock: 6660, demand: 0, pad: '3', carrier: true, updatedAt: '2026-09-20T00:00:00Z' },
+  { station: 'MOXE', system: 'Floanth KW-O a45-1', distanceLy: 129, price: 4179, stock: 6660, demand: 0, pad: '3', carrier: true, updatedAt: '2026-09-19T00:00:00Z' },
+  { station: 'N4J-BKW', system: 'Floanth NK-C b5-12', distanceLy: 257, price: 4179, stock: 1988, demand: 0, pad: '3', carrier: true, updatedAt: '2026-09-17T00:00:00Z' },
+];
+
+const NOW_DEEP = Date.parse('2026-09-20T18:00:00Z');
+
+test('a 0.9% price edge does not buy 357 extra light years', () => {
+  // Cleaver City (4,142 cr, 464 ly) against FLK-B2Z (4,179 cr, 107 ly): 37 cr
+  // a ton. Price-first ranking put the 464 ly hub above the 107 ly carrier —
+  // which only became possible once the ring was wide enough to see it.
+  const two = [DEEP_STEEL[1], DEEP_STEEL[2]];
+  assert.equal(rankMarketRows(two, 'buy', 5358, NOW_DEEP)[0].station, 'FLK-B2Z');
+});
+
+test('a real price spread still wins, however far away it is', () => {
+  // Gustard Watch is 433 cr a ton cheaper — 10.4%, well outside the tie band,
+  // and 2.3 M credits on a 5,358 t order. That IS worth the extra distance.
+  const ranked = rankMarketRows(DEEP_STEEL, 'buy', 5358, NOW_DEEP);
+  assert.equal(ranked[0].station, 'Gustard Watch');
+  // And the near carrier still beats the hub it is only 0.9% dearer than.
+  const order = ranked.map((r) => r.station);
+  assert.ok(order.indexOf('FLK-B2Z') < order.indexOf('Cleaver City'), order.join(' > '));
+});
+
+test('inside a price band the freshest report still leads', () => {
+  // FLK-B2Z and MOXE are identically priced and identically stocked; FLK-B2Z is
+  // both nearer and newer. N4J-BKW is the same price but a third of the stock.
+  const band = [DEEP_STEEL[4], DEEP_STEEL[3], DEEP_STEEL[2]];
+  assert.deepEqual(
+    rankMarketRows(band, 'buy', null, NOW_DEEP).map((r) => r.station),
+    ['FLK-B2Z', 'MOXE', 'N4J-BKW'],
+  );
+});
+
+test('an empty ring widens itself, and the answer says how far it reached', async () => {
+  const rings: number[] = [];
+  const ctx = {
+    system: 'Floanth PW-G b16-3',
+    station: null,
+    marketRadiusLy: 100,
+    galaxyMarket: async (_c: string, _s: string, _near: string, maxDistanceLy?: number) => {
+      rings.push(maxDistanceLy ?? 0);
+      // Exactly what the live API does from out there: nothing at 100 ly.
+      return maxDistanceLy && maxDistanceLy > 100 ? DEEP_STEEL : [];
+    },
+  } as unknown as ToolContext;
+  const out = await runTool('find_market_in_galaxy', JSON.stringify({ commodity: 'Steel', side: 'buy' }), ctx);
+  assert.deepEqual(rings, [100, 1000]);
+  assert.match(out, /widened to 1,000 ly/);
+  assert.match(out, /DEEP SPACE distances/);
+  assert.match(out, /Gustard Watch/);
+});
+
+test('a ring that answers is never widened', async () => {
+  const rings: number[] = [];
+  const ctx = {
+    system: 'Tir',
+    station: null,
+    marketRadiusLy: 100,
+    galaxyMarket: async (_c: string, _s: string, _near: string, maxDistanceLy?: number) => {
+      rings.push(maxDistanceLy ?? 0);
+      return TRITIUM;
+    },
+  } as unknown as ToolContext;
+  const out = await runTool('find_market_in_galaxy', JSON.stringify({ commodity: 'Tritium', side: 'buy' }), ctx);
+  assert.deepEqual(rings, [100]);
+  assert.doesNotMatch(out, /widened/);
+});
+
+test('nothing anywhere says so as a limit of the search, not of the galaxy', async () => {
+  const ctx = {
+    system: 'Floanth PW-G b16-3',
+    station: null,
+    marketRadiusLy: 100,
+    galaxyMarket: async () => [],
+  } as unknown as ToolContext;
+  const out = await runTool('find_market_in_galaxy', JSON.stringify({ commodity: 'Gold', side: 'buy' }), ctx);
+  assert.match(out, /within 1,000 ly/);
+  assert.match(out, /limit of the search, not of the galaxy/);
+  assert.match(out, /named hub or staging system/);
 });

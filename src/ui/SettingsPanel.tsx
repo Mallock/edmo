@@ -10,6 +10,7 @@ import { recommendationLabel, specsLabel } from './modelfit.ts';
 import { PIPER_VOICE_CATALOG } from './voices.ts';
 import { STATIONS } from '../engine/stations.ts';
 import { RADIO_PROFILE_NAMES } from '../engine/chatter/profiles.ts';
+import { MAX_MARKET_RADIUS_LY } from '../engine/tools.ts';
 
 /** Screen glances are GDI-based; on Linux the section shows as unavailable. */
 const IS_LINUX = typeof navigator !== 'undefined' && navigator.userAgent.includes('Linux');
@@ -658,6 +659,25 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
           </div>
           <div className="row">
             <label>
+              How much is about you
+              <select
+                value={s.comms.relevance}
+                onChange={(e) =>
+                  set({
+                    ...s,
+                    comms: { ...s.comms, relevance: e.target.value as typeof s.comms.relevance },
+                  })
+                }
+                disabled={!s.comms.enabled}
+              >
+                <option value="low">Barely — the galaxy has its own problems</option>
+                <option value="medium">A third — the rest is other people's business</option>
+                <option value="high">Mostly — the channel follows your work</option>
+              </select>
+            </label>
+          </div>
+          <div className="row">
+            <label>
               Volume
               <input
                 type="range"
@@ -1066,6 +1086,38 @@ export function SettingsPanel({ snap }: { snap: AppSnapshot }) {
             commodities checked</b>, and only when the operator looks something up. Prices can be
             hours old and fleet carriers move, so verify stock on arrival.
           </div>
+          {s.external.ardent && (
+            <>
+              <label className="row">
+                <span>Search radius</span>
+                <input
+                  type="number"
+                  min={10}
+                  max={2000}
+                  step={50}
+                  value={s.external.marketRadiusLy}
+                  onChange={(e) =>
+                    set({
+                      ...s,
+                      external: {
+                        ...s.external,
+                        marketRadiusLy: Math.min(2000, Math.max(10, Number(e.target.value) || 100)),
+                      },
+                    })
+                  }
+                />
+                <span className="unit">ly</span>
+              </label>
+              <div className="hint">
+                How far a commodity lookup reaches. 100 ly is right in the bubble, where anything
+                further is just noise. It finds <b>nothing at all</b> in deep space — a build
+                15,000 ly out returns no sellers of steel, tritium or water, while the nearest hub
+                sits 464 ly away holding hundreds of thousands of tons of each. A search that comes
+                back empty widens itself to {MAX_MARKET_RADIUS_LY} ly and says so, so raise this
+                only if you want the wide ring on the first try.
+              </div>
+            </>
+          )}
           <label className="check">
             <input
               type="checkbox"

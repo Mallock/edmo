@@ -23,6 +23,8 @@ import {
   holdAtSites,
   isConstructionDepot,
   siteRoster,
+  stationDisplayName,
+  carrierCoverage,
   tonsRemaining,
   type SystemCommodityRow,
 } from '../src/engine/architect.ts';
@@ -380,7 +382,11 @@ test('a station we docked at in the build system needs no jump, and leads', () =
   assert.ok(order.indexOf('system') < order.indexOf('nearby'));
 });
 
-test('several stations in the system are all remembered, cheapest first', () => {
+test('a seller who cannot fill a load does not lead on price alone', () => {
+  // Dagny Port is 400 cr a ton cheaper and holds 400 t of a 2,542 t line;
+  // Perga Hub is dearer and holds 9,000 t. Both are in the build's own system,
+  // so distance cannot separate them and the load size does. Leading with the
+  // cheap one sends the commander to a pad for a sixth of a hold.
   const groups = listOf({
     visited: [
       market('Perga Hub', 'HIP 71120', '2026-08-10T20:00:00Z', [['Steel', 4200, 9000]]),
@@ -389,9 +395,78 @@ test('several stations in the system are all remembered, cheapest first', () => 
   });
   const inSystem = groups.find((g) => g.bucket === 'system')!;
   const steel = inSystem.items.find((i) => i.key === 'steel')!;
-  assert.equal(steel.best!.station, 'Dagny Port'); // 3,800 beats 4,200
-  assert.equal(steel.alternatives[0].station, 'Perga Hub');
+  assert.equal(steel.best!.station, 'Perga Hub');
+  assert.equal(steel.alternatives[0].station, 'Dagny Port'); // still offered, just not first
+  // Titanium wants 1,525 t and only Dagny Port has any, so it leads regardless.
   assert.equal(inSystem.items.find((i) => i.key === 'titanium')!.best!.station, 'Dagny Port');
+});
+
+test('among sellers that can fill a load, the nearest leads', () => {
+  // The real shape of the commander's titanium row: five sellers they read
+  // themselves, all able to fill a hold, ordered by a 477 cr spread while one
+  // sat in the next system and another fourteen jumps away.
+  const groups = listOf({
+    visited: [
+      market('Niinimaki', 'HIP 71120', '2026-08-10T20:00:00Z', [['Steel', 4360, 371553]]),
+      market('Mao Venture', 'Far Reach', '2026-08-10T20:00:00Z', [['Steel', 3922, 54253]]),
+      market('Baltazar Landing', 'Mid Reach', '2026-08-10T20:00:00Z', [['Steel', 3903, 19191]]),
+    ],
+    distanceFrom: (system: string) => ({ 'Far Reach': 464, 'Mid Reach': 61 })[system] ?? null,
+    reach: { rangeLy: 33.2, basis: 'laden' as const },
+    cargoCapacity: 784,
+  });
+  // Niinimaki is in the build's own system — no jump at all — so it leads even
+  // though it is the dearest of the three.
+  const steel = groups.flatMap((g) => g.items).find((i) => i.key === 'steel')!;
+  assert.equal(steel.best!.station, 'Niinimaki');
+  assert.equal(steel.best!.jumps, 0);
+  // Then the nearer of the two out-of-system stops, not the cheaper one.
+  assert.deepEqual(
+    steel.alternatives.slice(0, 2).map((s) => [s.station, s.distanceLy, s.jumps]),
+    [
+      ['Baltazar Landing', 61, 2],
+      ['Mao Venture', 464, 14],
+    ],
+  );
+});
+
+test('a market we read ourselves gets a distance from the star map', () => {
+  const groups = listOf({
+    visited: [market('Heisenberg Depot', 'HIP 71120', '2026-08-10T20:00:00Z', [['Steel', 3883, 3833]])],
+    distanceFrom: () => 41.5,
+  });
+  const steel = groups.flatMap((g) => g.items).find((i) => i.key === 'steel')!;
+  // In the build's own system it is zero by definition, not by lookup.
+  assert.equal(steel.best!.distanceLy, 0);
+  // Out of system, the map answers where market memory never could.
+  const away = listOf({
+    visited: [market('Elsewhere', 'Some Other Place', '2026-08-10T20:00:00Z', [['Steel', 3883, 9000]])],
+    distanceFrom: () => 41.5,
+    reach: { rangeLy: 20, basis: 'empty' as const },
+  });
+  const there = away.flatMap((g) => g.items).find((i) => i.key === 'steel')!;
+  assert.equal(there.best!.distanceLy, 41.5);
+  assert.equal(there.best!.jumps, 3);
+  // No range known means no jump count invented.
+  const noReach = listOf({
+    visited: [market('Elsewhere', 'Some Other Place', '2026-08-10T20:00:00Z', [['Steel', 3883, 9000]])],
+    distanceFrom: () => 41.5,
+  });
+  assert.equal(noReach.flatMap((g) => g.items).find((i) => i.key === 'steel')!.best!.jumps, null);
+});
+
+test('the colonisation ship is named the way the game means it, not the way it spells it', () => {
+  assert.equal(
+    stationDisplayName('$EXT_PANEL_ColonisationShip; Byeong-cheon Reach'),
+    'Colonisation Ship: Byeong-cheon Reach',
+  );
+  assert.equal(stationDisplayName('$EXT_PANEL_ColonisationShip;'), 'Colonisation Ship');
+  // An unknown token keeps its sense rather than being thrown away.
+  assert.equal(stationDisplayName('$PlanetaryConstructionDepot; Somewhere'), 'Planetary Construction Depot: Somewhere');
+  // Names that are already names are left completely alone.
+  assert.equal(stationDisplayName("Orbital Construction Site: Perga's Progress"), "Orbital Construction Site: Perga's Progress");
+  assert.equal(stationDisplayName('V6W-TTJ'), 'V6W-TTJ');
+  assert.equal(stationDisplayName(null), '');
 });
 
 test('what we read ourselves replaces a report about the same station', () => {
@@ -1084,4 +1159,243 @@ test('the newest reading of a board beats the first one in the array', () => {
   assert.equal(site.commodities.length, 1);
   assert.equal(site.commodities[0].payment, 2985);
   assert.equal(site.ageDays, 3);
+});
+
+// ------------------------------------------------ the carrier as a warehouse
+
+test('what the carrier holds leaves the buy list entirely', () => {
+  // Steel is 2,542 t outstanding and the carrier has all of it.
+  const groups = listOf({ carrier: { tons: new Map([['steel', 2542]]), system: 'Tir', callsign: 'V6W-TTJ' } });
+  const steel = groups.flatMap((g) => g.items).find((i) => i.key === 'steel')!;
+  assert.equal(steel.bucket, 'carrier');
+  assert.equal(steel.onCarrier, 2542);
+  assert.equal(steel.toBuy, 0);
+  // And it is still 2,542 t the depot wants — the requirement did not move.
+  assert.equal(steel.remaining, 2542);
+  const group = groups.find((g) => g.bucket === 'carrier')!;
+  assert.equal(group.tons, 2542);
+  assert.match(group.title, /V6W-TTJ/);
+});
+
+test('a part load nets off what still has to be bought', () => {
+  const groups = listOf({ carrier: { tons: new Map([['steel', 1000]]), system: 'Tir' } });
+  const steel = groups.flatMap((g) => g.items).find((i) => i.key === 'steel')!;
+  assert.notEqual(steel.bucket, 'carrier');
+  assert.equal(steel.onCarrier, 1000);
+  assert.equal(steel.toBuy, 1542);
+  assert.equal(steel.remaining, 2542);
+});
+
+test('tonnage the build does not want is not progress', () => {
+  // 900 t of tritium against a build that asks for none of it.
+  const groups = listOf({ carrier: { tons: new Map([['tritium', 900]]), system: 'HIP 71120' } });
+  assert.equal(groups.some((g) => g.bucket === 'carrier'), false);
+  for (const i of groups.flatMap((g) => g.items)) assert.equal(i.onCarrier, 0);
+});
+
+test('the carrier never counts more than the line still wants', () => {
+  // 9,000 t of steel aboard against a 2,542 t line: the surplus is not credit.
+  const groups = listOf({ carrier: { tons: new Map([['steel', 9000]]), system: 'Tir' } });
+  const steel = groups.flatMap((g) => g.items).find((i) => i.key === 'steel')!;
+  assert.equal(steel.onCarrier, 2542);
+  assert.equal(carrierCoverage(groups).tons, 2542);
+});
+
+test('where the carrier is parked changes what the group means', () => {
+  const away = listOf({ carrier: { tons: new Map([['steel', 2542]]), system: 'Tir', callsign: 'V6W-TTJ' } });
+  assert.match(away.find((g) => g.bucket === 'carrier')!.hint, /Jump the carrier here/);
+  const here = listOf({ carrier: { tons: new Map([['steel', 2542]]), system: 'HIP 71120', callsign: 'V6W-TTJ' } });
+  assert.match(here.find((g) => g.bucket === 'carrier')!.title, /already here, just shuttle it/);
+  assert.match(here.find((g) => g.bucket === 'carrier')!.hint, /Dock, transfer to the ship/);
+});
+
+test('a stop is ranked by what it still has to sell us, not by the requirement', () => {
+  // Hammer sells only steel (2,542 t); Forge sells titanium and aluminium
+  // (2,847 t between them). With the steel already on the carrier, Hammer has
+  // nothing left to offer and must not lead the list.
+  const sources = new Map<string, MarketLookupRow[]>([
+    ['steel', [row({ station: 'Hammer', system: 'Elsewhere', distanceLy: 10, stock: 9000 })]],
+    ['titanium', [row({ station: 'Forge', system: 'Elsewhere', distanceLy: 10, stock: 9000 })]],
+    ['aluminium', [row({ station: 'Forge', system: 'Elsewhere', distanceLy: 10, stock: 9000 })]],
+  ]);
+  const groups = buildShoppingList(listDepot(), {
+    nowMs: NOW,
+    sources,
+    carrier: { tons: new Map([['steel', 2542]]), system: 'Tir' },
+  });
+  const nearby = groups.find((g) => g.bucket === 'nearby')!;
+  assert.equal(nearby.items[0].best!.station, 'Forge');
+  assert.equal(nearby.items[0].name, 'Titanium');
+  // The "+N more from one pad" badge counts lines the stop can actually fill.
+  assert.equal(nearby.items[0].stop!.lines, 2);
+  assert.equal(nearby.items[0].stop!.tons, 1525 + 1322);
+});
+
+test('coverage states the build in lines and tons, not just tonnage aboard', () => {
+  const groups = listOf({
+    carrier: { tons: new Map([['steel', 2542], ['titanium', 1525], ['water', 3]]), system: 'Tir' },
+  });
+  const c = carrierCoverage(groups);
+  assert.equal(c.lines, 3);
+  assert.equal(c.ofLines, 7);
+  assert.equal(c.tons, 2542 + 1525 + 3);
+  // Water wants 6 t and the carrier has 3, so 3 t of it still has to be found.
+  assert.equal(c.toBuy, 1322 + 676 + 3 + 9 + 13);
+});
+
+test('with no carrier at all nothing about the list changes', () => {
+  const plain = listOf();
+  const withEmpty = listOf({ carrier: { tons: new Map(), system: null } });
+  assert.deepEqual(
+    plain.map((g) => [g.bucket, g.tons, g.items.length]),
+    withEmpty.map((g) => [g.bucket, g.tons, g.items.length]),
+  );
+  for (const i of plain.flatMap((g) => g.items)) assert.equal(i.toBuy, i.remaining - i.deliverNow);
+});
+
+test('the model is told not to re-buy what the carrier already holds', () => {
+  const groups = listOf({ carrier: { tons: new Map([['steel', 2542]]), system: 'Tir', callsign: 'V6W-TTJ' } });
+  const facts = architectFacts(listDepot(), groups)!;
+  assert.match(facts, /already on your fleet carrier/);
+  assert.match(facts, /do NOT suggest buying it/);
+});
+
+// --------------------------------- first-hand is not the same as near
+
+/**
+ * The live failure, from the commander's own panel at 82.5% built.
+ *
+ * Colonising Floanth PW-G b16-3, they were shown five sellers of steel — every
+ * one of them in HIP 71120, every one marked "you saw it", all of it under a
+ * heading that said "Found nearby", and the next-load manifest was cut against
+ * the cheapest of them.
+ *
+ * HIP 71120 is in the bubble. It is 15,114 light years from that build: four
+ * hundred and fifty-six jumps at the 33.2 ly this ship makes loaded. The
+ * nearest real seller of steel, FLK-B2Z, is 107 ly away, and it was ranked
+ * BENEATH all five because a stranger reported it rather than the commander.
+ */
+/** The same requirement, but sited where the commander actually built it. */
+const deepDepot = () => {
+  const t = new ConstructionTracker();
+  t.apply(at('2026-08-10T20:43:00Z', {
+    event: 'Docked',
+    StationName: '$EXT_PANEL_ColonisationShip; Byeong-cheon Reach',
+    StationType: 'SpaceConstructionDepot',
+    StarSystem: 'Floanth PW-G b16-3',
+    MarketID: 3955029250,
+    StationServices: ['dock', 'commodities', 'colonisationcontribution'],
+  }));
+  t.apply(DEPOT);
+  return t.depot!;
+};
+
+test('a market we stood on is not promoted over one fifteen thousand ly nearer', () => {
+  const groups = buildShoppingList(deepDepot(), {
+    nowMs: NOW,
+    cargoCapacity: 784,
+    // Read first-hand, long ago, in the bubble. The star map has no
+    // coordinates for it, so its distance is genuinely unknown.
+    visited: [market('Heisenberg Depot', 'HIP 71120', '2026-08-10T18:00:00Z', [['Steel', 3645, 4035]])],
+    sources: new Map([
+      ['steel', [row({ station: 'FLK-B2Z', system: 'Floanth FY-L c10-107', distanceLy: 107, price: 4179, stock: 6660 })]],
+    ]),
+    reach: { rangeLy: 33.2, basis: 'laden' as const },
+  });
+  const steel = groups.flatMap((g) => g.items).find((i) => i.key === 'steel')!;
+  // The measurable one leads, even though it is dearer and second-hand.
+  assert.equal(steel.best!.station, 'FLK-B2Z');
+  assert.equal(steel.best!.distanceLy, 107);
+  assert.equal(steel.best!.jumps, 4);
+  // The bubble board is still offered — the price was real — just not first.
+  assert.equal(steel.alternatives[0].station, 'Heisenberg Depot');
+  assert.equal(steel.alternatives[0].distanceLy, null);
+});
+
+test('inside the build’s own system, first-hand still leads', () => {
+  // The tier that genuinely is a tier: no jump, so nothing outranks it.
+  const groups = buildShoppingList(listDepot(), {
+    nowMs: NOW,
+    visited: [market('Perga Hub', 'HIP 71120', '2026-08-10T18:00:00Z', [['Steel', 4400, 9000]])],
+    sources: new Map([
+      ['steel', [row({ station: 'Far Cheap', system: 'Somewhere Else', distanceLy: 12, price: 100, stock: 9000 })]],
+    ]),
+  });
+  // listDepot()'s system IS HIP 71120, so Perga Hub needs no jump at all.
+  const steel = groups.flatMap((g) => g.items).find((i) => i.key === 'steel')!;
+  assert.equal(steel.best!.station, 'Perga Hub');
+  assert.equal(steel.best!.inSystem, true);
+});
+
+test('two equally distant boards: the one we read ourselves wins', () => {
+  const groups = buildShoppingList(listDepot(), {
+    nowMs: NOW,
+    visited: [market('Ours', 'Elsewhere', '2026-08-10T18:00:00Z', [['Steel', 4400, 9000]])],
+    distanceFrom: () => 50,
+    sources: new Map([
+      ['steel', [row({ station: 'Theirs', system: 'Other Place', distanceLy: 50, price: 4400, stock: 9000 })]],
+    ]),
+  });
+  const steel = groups.flatMap((g) => g.items).find((i) => i.key === 'steel')!;
+  assert.equal(steel.best!.station, 'Ours');
+  assert.equal(steel.best!.own, true);
+});
+
+// ------------------------------------------------- carriers are not suppliers
+
+test('other commanders’ carriers are left out when stations only is on', () => {
+  // The commander's real steel row: every one of the five nearest sellers was
+  // a fleet carrier, and the permanent stations holding 793,835 t and 482,353 t
+  // were pushed off the end of the list by them.
+  const sources = new Map<string, MarketLookupRow[]>([
+    ['steel', [
+      row({ station: 'FLK-B2Z', system: 'Floanth FY-L c10-107', distanceLy: 107, price: 4179, stock: 6660, carrier: true }),
+      row({ station: 'MOXE', system: 'Floanth KW-O a45-1', distanceLy: 129, price: 4179, stock: 6660, carrier: true }),
+      row({ station: 'Gustard Watch', system: 'Greae Hype TO-G c27-107', distanceLy: 464, price: 3746, stock: 793835, carrier: false }),
+    ]],
+  ]);
+  const withCarriers = buildShoppingList(deepDepot(), { nowMs: NOW, sources, cargoCapacity: 784 });
+  assert.equal(withCarriers.flatMap((g) => g.items).find((i) => i.key === 'steel')!.best!.station, 'FLK-B2Z');
+
+  const stationsOnly = buildShoppingList(deepDepot(), { nowMs: NOW, sources, cargoCapacity: 784, stationsOnly: true });
+  const steel = stationsOnly.flatMap((g) => g.items).find((i) => i.key === 'steel')!;
+  assert.equal(steel.best!.station, 'Gustard Watch');
+  assert.equal(steel.alternatives.some((s) => s.carrier), false);
+});
+
+test('the commander’s own carrier is never filtered out', () => {
+  const sources = new Map<string, MarketLookupRow[]>([
+    ['steel', [
+      row({ station: 'V6W-TTJ', system: 'Floanth PW-G b16-3', distanceLy: 0, price: 4000, stock: 9000, carrier: true }),
+      row({ station: 'Someone Else', system: 'Far Away', distanceLy: 900, price: 100, stock: 9000, carrier: true }),
+    ]],
+  ]);
+  const groups = buildShoppingList(deepDepot(), {
+    nowMs: NOW,
+    sources,
+    stationsOnly: true,
+    ownCarrier: 'V6W-TTJ',
+  });
+  const steel = groups.flatMap((g) => g.items).find((i) => i.key === 'steel')!;
+  assert.equal(steel.best!.station, 'V6W-TTJ');
+  // Somebody else's is still gone, however cheap it is.
+  assert.equal(steel.alternatives.some((s) => s.station === 'Someone Else'), false);
+});
+
+test('a board we read on a carrier is recognised as one by its callsign', () => {
+  // Market memory records a name and never a station type, so the only tell is
+  // the registration plate. Without it a carrier we docked at read as a
+  // permanent station and slipped straight through the filter.
+  const groups = buildShoppingList(deepDepot(), {
+    nowMs: NOW,
+    visited: [
+      market('QFB-75N', 'Somewhere', '2026-08-10T18:00:00Z', [['Steel', 3000, 9000]]),
+      market('Perga Hub', 'Somewhere', '2026-08-10T18:00:00Z', [['Steel', 4000, 9000]]),
+    ],
+    distanceFrom: () => 40,
+    stationsOnly: true,
+  });
+  const steel = groups.flatMap((g) => g.items).find((i) => i.key === 'steel')!;
+  assert.equal(steel.best!.station, 'Perga Hub');
+  assert.equal([steel.best!, ...steel.alternatives].some((s) => s.station === 'QFB-75N'), false);
 });

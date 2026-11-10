@@ -131,6 +131,16 @@ function Entry({
     <li className="comms-entry">
       <div className="comms-entry-head">
         <span className="comms-entry-channel">{entry.channel}</span>
+        {/*
+          The ambient beat's tag — what the topic roll dealt. Readable proof
+          that the channel is not about you, and the quickest way to see a
+          category firing too often with the audio off.
+        */}
+        {entry.topic && (
+          <span className="comms-entry-topic" title="Overheard — not about you">
+            {entry.topic}
+          </span>
+        )}
         <span className="comms-entry-age">{ago(entry.at, nowMs)}</span>
       </div>
       {entry.turns.map((turn, i) => (

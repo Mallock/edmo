@@ -13,6 +13,7 @@ import { ChatterEngine, type ChatterSource, type TickInput } from '../src/engine
 import { parseGrammar } from '../src/engine/chatter/grammar.ts';
 import { BUNDLED_GRAMMAR } from '../src/engine/chatter/bundled-grammar.ts';
 import { textureBrief, verifyAgainstBrief, type Brief } from '../src/engine/chatter/brief.ts';
+import { buildPersonaPool } from '../src/engine/chatter/cast.ts';
 import { sceneText, type Scene } from '../src/engine/chatter/scenes.ts';
 import { CHANNEL_IDS, type ChannelId } from '../src/engine/chatter/types.ts';
 
@@ -1035,4 +1036,163 @@ test('one subject is carried once, and its payoff comes back to its own channel'
   assert.equal(due[0].arcId, first);
   assert.equal(due[0].channel, 'LOCAL');
   assert.equal(due[0].speaker, 'hauler');
+});
+
+// ---------------------------------------------------------------------------
+// The regulars' seat, and what the engine learns when one is heard
+// ---------------------------------------------------------------------------
+
+test('a regular carrying an ambient beat is seated in their own name and voice', () => {
+  const e = engine(5, 'llm');
+  const reg = e.regulars.cast(
+    'conspiracy',
+    'the station rotates to hide something',
+    seeded(9),
+    buildPersonaPool(VOICES),
+    new Date(T).toISOString(),
+  );
+  e.sceneSlots.reserve('channel:LOCAL', T + 10 * 60_000);
+  e.sceneSlots.fulfil(
+    'channel:LOCAL',
+    preScene({
+      turns: [
+        { speakerRef: 'hauler', text: 'It rotates once a day. Ask yourself why.' },
+        { speakerRef: 'hauler2', text: 'Because it is a station.' },
+      ],
+      brief: textureBrief('topic:conspiracy:0'),
+      topic: { category: 'conspiracy', label: 'conspiracy', shape: 'exchange', regularId: reg.id, regularRef: 'hauler' },
+    }),
+    T,
+  );
+  const r = e.tick(
+    input({ context: { ...input().context, resolvedPorts: 0, carrierPresent: true, hasCrew: false } }),
+  );
+  assert.ok(r.transmission, r.quietBecause);
+  const [first, second] = r.transmission!.cast;
+  assert.equal(first.name, reg.name);
+  assert.equal(first.persona.voice, reg.persona.voice);
+  assert.equal(first.persona.quirk, reg.persona.quirk);
+  assert.equal(first.returning, false, 'first time on the air');
+  assert.notEqual(second.name, reg.name);
+
+  // Only the regular's own line enters their ledger, and only now that it
+  // has actually gone out.
+  assert.deepEqual(reg.ledger, ['It rotates once a day. Ask yourself why.']);
+  assert.equal(reg.heard, 1);
+
+  // Next time they are a returning voice.
+  e.sceneSlots.reserve('channel:LOCAL', T + 30 * 60_000);
+  e.sceneSlots.fulfil(
+    'channel:LOCAL',
+    preScene({
+      id: 'pre2',
+      turns: [
+        { speakerRef: 'hauler', text: 'Twice a day now, and nobody is asking.' },
+        { speakerRef: 'hauler2', text: 'I am asking you to stop.' },
+      ],
+      brief: textureBrief('topic:conspiracy:1'),
+      topic: { category: 'conspiracy', label: 'conspiracy', shape: 'exchange', regularId: reg.id, regularRef: 'hauler' },
+    }),
+    T + 20 * 60_000,
+  );
+  const again = e.tick(
+    input({
+      nowMs: T + 20 * 60_000,
+      context: { ...input().context, resolvedPorts: 0, carrierPresent: true, hasCrew: false },
+    }),
+  );
+  assert.ok(again.transmission, again.quietBecause);
+  assert.equal(again.transmission!.cast[0].name, reg.name);
+  assert.equal(again.transmission!.cast[0].returning, true);
+  assert.equal(reg.heard, 2);
+  assert.equal(reg.ledger.length, 2);
+});
+
+test('a regular whose voice is gone is substituted, not silenced', () => {
+  const e = engine(5, 'llm');
+  const reg = e.regulars.cast('mic-open', 'the cat', seeded(2), buildPersonaPool(['gone-voice']), new Date(T).toISOString());
+  assert.equal(reg.persona.voice, 'gone-voice');
+  e.sceneSlots.reserve('channel:LOCAL', T + 10 * 60_000);
+  e.sceneSlots.fulfil(
+    'channel:LOCAL',
+    preScene({
+      turns: [{ speakerRef: 'hauler', text: 'No. We discussed this. The red one is mine.' }],
+      brief: textureBrief('topic:mic-open:4'),
+      topic: { category: 'mic-open', label: 'mic open', shape: 'reply-unheard', regularId: reg.id, regularRef: 'hauler' },
+    }),
+    T,
+  );
+  const r = e.tick(
+    input({ context: { ...input().context, resolvedPorts: 0, carrierPresent: true, hasCrew: false } }),
+  );
+  assert.ok(r.transmission, r.quietBecause);
+  assert.ok(VOICES.includes(r.transmission!.cast[0].persona.voice));
+  assert.equal(r.transmission!.cast[0].persona.substituted, true);
+  assert.equal(r.transmission!.cast[0].name, reg.name);
+});
+
+test('a running gag never opens a story arc', () => {
+  const e = engine();
+  const iso = new Date(T).toISOString();
+  e.cast.remember({
+    name: 'Dez Okonkwo',
+    persona: buildPersonaPool(VOICES)[0],
+    homeSystem: 'Ratraii',
+    channel: 'LOCAL',
+    role: 'hauler',
+    firstAt: iso,
+    lastAt: iso,
+    arcs: [],
+  });
+  const opened = e.openArc({
+    system: 'Ratraii',
+    speaker: 'Dez Okonkwo',
+    subjectKey: 'topic:conspiracy:2',
+    subjectKind: 'personal',
+    func: 'establish',
+    summary: 'overheard — conspiracy',
+    atIso: iso,
+  });
+  assert.equal(opened, null);
+  assert.equal(e.cast.openArcs().length, 0);
+  // An ordinary subject on the same speaker still opens one.
+  const real = e.openArc({
+    system: 'Ratraii',
+    speaker: 'Dez Okonkwo',
+    subjectKey: 'price:bertrandite@hurston ring',
+    subjectKind: 'price',
+    func: 'establish',
+    summary: 'Bertrandite down',
+    atIso: iso,
+  });
+  assert.ok(real);
+});
+
+test('the topic ledger and the regulars ride the engine’s persisted state', () => {
+  const e = engine(1, 'llm');
+  e.topics.note('grievance');
+  e.topics.note('relevant');
+  const reg = e.regulars.cast('bureaucracy', 'form 6-C', seeded(3), buildPersonaPool(VOICES), new Date(T).toISOString());
+  e.regulars.noteAired(reg.id, ['Form 6-C, clause four, does not exist.'], new Date(T).toISOString());
+
+  const back = engine(1, 'llm');
+  back.load(JSON.parse(JSON.stringify(e.toJSON())));
+  assert.deepEqual(back.topics.history(), ['grievance', 'relevant']);
+  assert.equal(back.regulars.find(reg.id)?.name, reg.name);
+  assert.deepEqual(back.regulars.find(reg.id)?.ledger, ['Form 6-C, clause four, does not exist.']);
+
+  // Old persisted state without either section still loads.
+  const old = engine(1, 'llm');
+  old.load({ cast: e.cast.toJSON(), guard: e.guard.toJSON() });
+  assert.deepEqual(old.topics.history(), []);
+  assert.equal(old.regulars.size, 0);
+});
+
+test('maintenance forgets a regular nobody has heard in days', () => {
+  const e = engine(1, 'llm');
+  const reg = e.regulars.cast('wrong-lane', 'sideways', seeded(3), buildPersonaPool(VOICES), new Date(T).toISOString());
+  e.maintain(T + 60_000);
+  assert.ok(e.regulars.find(reg.id));
+  e.maintain(T + 4 * 24 * 3_600_000);
+  assert.equal(e.regulars.find(reg.id), undefined);
 });

@@ -38,6 +38,7 @@ import {
   MarketMemory,
   findOpportunities,
   parseMarketSnapshot,
+  routeStartFrom,
   type MarketRecord,
   type TradeOpportunity,
 } from '../engine/trade.ts';
@@ -77,20 +78,62 @@ import {
   ConstructionTracker,
   architectFacts,
   buildShoppingList,
+  carrierCoverage,
   commodityKey,
   coversFromMarket,
   describeCoverage,
   describeDepot,
   holdAtSites,
+  isConstructionDepot,
   isConstructionSiteType,
   siteRoster,
   tonsRemaining,
   tonsRequired,
   type DepotState,
   type HoldMatch,
+  type CarrierCoverage,
   type ShoppingGroup,
   type SiteListing,
 } from '../engine/architect.ts';
+import {
+  CarrierHold,
+  describeCarrierHold,
+  parseCarrierStock,
+  type CarrierHoldSnapshot,
+} from '../engine/carrierhold.ts';
+import {
+  JumpRange,
+  StarMap,
+  describeReach,
+  reachOf,
+  type ReachEstimate,
+} from '../engine/starmap.ts';
+import {
+  describeHaulClock,
+  haulClock,
+  HaulLog,
+  PurchaseLog,
+  basketAt,
+  cartStatus,
+  describeBasketLine,
+  describeCart,
+  describeCartFilled,
+  planTrip,
+  stopHere,
+  stopPlans,
+  type Basket,
+  type Cart,
+  type HaulClockReading,
+  type StopPlan,
+  type TripPlan,
+} from '../engine/haul.ts';
+import {
+  BuildLibrary,
+  describeBuild,
+  identifyBuild,
+  type BuildGuess,
+  type LearnedBuild,
+} from '../engine/buildtypes.ts';
 import {
   acceptNews,
   buildNewsBrief,
@@ -187,7 +230,7 @@ import {
 } from '../engine/chatter/briefs.ts';
 import { rotateWindow } from '../engine/rotate.ts';
 import { textureBrief, type Brief, type BriefKind, type FactSource } from '../engine/chatter/brief.ts';
-import type { ArcSubject } from '../engine/chatter/cast.ts';
+import { buildPersonaPool, type ArcSubject } from '../engine/chatter/cast.ts';
 import { chooseFunction, nextBeatFor, pickBrief } from '../engine/chatter/director.ts';
 import type { ChannelState } from '../engine/chatter/channels.ts';
 import { sceneTranscript } from '../engine/chatter/scenes.ts';
@@ -198,7 +241,10 @@ import {
   acceptSceneReply,
   buildSceneChat,
   type SceneRequest,
+  type TopicRequest,
 } from '../engine/chatter/llm.ts';
+import { TOPICS, topicSubjectKey, type TopicCategory } from '../engine/chatter/topics.ts';
+import { REGULAR_SHARE } from '../engine/chatter/regulars.ts';
 import type { Act, ChannelId, DramaticFunction } from '../engine/chatter/types.ts';
 import {
   GLANCE_FORMAT,
@@ -237,7 +283,7 @@ import {
   type ReactionTier,
 } from '../engine/copilot.ts';
 import { ConvoBuffer, cleanTranscript, toolExchangeOf } from '../engine/convo.ts';
-import { TOOL_SCHEMAS, runTool, type ToolContext } from '../engine/tools.ts';
+import { MAX_MARKET_RADIUS_LY, TOOL_SCHEMAS, runTool, type ToolContext } from '../engine/tools.ts';
 import type { ChatMessage } from '../engine/lmstudio.ts';
 import type { JournalEvent, Mission, OperatorState } from '../engine/types.ts';
 import {
@@ -251,6 +297,7 @@ import {
   type ArdentMarketRow,
   type ArdentSystemRow,
   ardentSystemCommodities,
+  ardentSystemCoords,
   ardentTradeCandidates,
   ardentStationPads,
   ardentTradeTo,
@@ -513,6 +560,68 @@ export interface ArchitectView {
   cargoCapacity: number | null;
   /** Tons in the hold right now, for the trip arithmetic. */
   holdUsed: number | null;
+  /**
+   * The commander's own carrier, as a warehouse. Null when they own none —
+   * which is a different panel, not an empty one.
+   */
+  carrier: {
+    hold: CarrierHoldSnapshot;
+    coverage: CarrierCoverage;
+    /** Parked in the build's own system: a shuttle run, not a carrier jump. */
+    atBuild: boolean;
+    line: string | null;
+  } | null;
+  /** The next load, spelled out. Null without a hold size or a source. */
+  trip: TripPlan | null;
+  /**
+   * The whole run, by stop rather than by commodity.
+   *
+   * The tree answers "where do I get titanium" seventeen times; this answers
+   * "where do I go and what do I buy there", which is the question actually
+   * being asked in front of the galaxy map.
+   */
+  stops: StopPlan[];
+  /**
+   * The list at the pad the ship is standing on, ticked off as it fills.
+   *
+   * Null anywhere that is not a stop on the run. The commander was holding
+   * four lines and two trips' worth of arithmetic in their head while the
+   * commodities market showed them one commodity at a time.
+   */
+  basket: Basket | null;
+  /**
+   * The carrier as a trolley: what is gathered and what is still missing.
+   *
+   * A carrier jumped one commodity short is a carrier that has to come
+   * back, so 'is the cart full' is its own question and gets its own view.
+   */
+  cart: Cart;
+  cartLine: string | null;
+  /** How fast this commander hauls, from their own contributions. */
+  clock: HaulClockReading;
+  clockLine: string | null;
+  /** What the depot's total tonnage says is being built. */
+  build: BuildGuess | null;
+  buildLine: string | null;
+  /**
+   * Commodity breakdowns the commander has read first-hand, by total cost.
+   *
+   * The catalogue knows what every facility costs in total and nothing about
+   * what it costs in steel. This is the half that can only come from having
+   * stood on one — so the price list shows a real breakdown for the builds
+   * this commander has done, and an honest blank for the rest.
+   */
+  learned: LearnedBuild[];
+  /**
+   * The range the jump counts are built on, and where that figure came from.
+   *
+   * Null until the ship has jumped or the outfitting figure is known — in
+   * which case no jump count is shown anywhere rather than a made-up one.
+   */
+  reach: ReachEstimate | null;
+  reachLine: string | null;
+  /** Other commanders' carriers are being left out of the list. */
+  stationsOnly: boolean;
 }
 
 export interface CommsView {
@@ -562,6 +671,9 @@ export interface CommsView {
     at: number;
     channel: ChannelId;
     turns: Array<{ speaker: string; text: string; returning: boolean }>;
+    /** The ambient beat's category tag — "wrong channel", "conspiracy" —
+     *  when the transmission was one. Absent on beats about the commander. */
+    topic?: string;
   }>;
 }
 
@@ -1029,6 +1141,102 @@ export class AppCore {
     }
     return c;
   })();
+  /**
+   * What is in the carrier's hold, commodity by commodity.
+   *
+   * Persisted for the same reason the requirement is: the game states a
+   * carrier's manifest nowhere, so a ledger thrown away at shutdown is a
+   * warehouse the commander owns and the panel cannot see.
+   */
+  private carrierHold = (() => {
+    const h = new CarrierHold();
+    try {
+      h.load(JSON.parse(localStorage.getItem('edmo.carrierhold.v1') ?? 'null'));
+    } catch {
+      /* the next transfer or board reading starts it again */
+    }
+    return h;
+  })();
+  /**
+   * Every contribution ever made, which is the only record of how fast this
+   * commander actually hauls. Unlike the requirement, it cannot be re-read off
+   * a panel — lose it and the build's ETA goes with it.
+   */
+  private haulLog = (() => {
+    const l = new HaulLog();
+    try {
+      l.load(JSON.parse(localStorage.getItem('edmo.haul.v1') ?? 'null'));
+    } catch {
+      /* the clock re-learns from the next few deliveries */
+    }
+    return l;
+  })();
+  /**
+   * Commodity breakdowns for build types already seen, keyed by total cost.
+   *
+   * Nobody publishes these. The commander reads one off the contribution panel
+   * every time they start a build, and this is what keeps the second Coriolis
+   * from being planned as blindly as the first.
+   */
+  private buildLibrary = (() => {
+    const b = new BuildLibrary();
+    try {
+      b.load(JSON.parse(localStorage.getItem('edmo.buildlib.v1') ?? 'null'));
+    } catch {
+      /* an empty library just means nothing is predicted yet */
+    }
+    return b;
+  })();
+  /**
+   * Docked at a construction site right now.
+   *
+   * Read off the Docked event rather than inferred from the station name,
+   * because the names are not a pattern: "Orbital Construction Site: Perga's
+   * Progress" and "$EXT_PANEL_ColonisationShip; Byeong-cheon Reach" are the
+   * same kind of place spelled two completely different ways.
+   */
+  private atConstructionSite = false;
+  /**
+   * Coordinates for every system the commander has flown to.
+   *
+   * Persisted, and the whole reason the shopping list can put a distance on a
+   * market they read themselves: the journal has been handing us StarPos on
+   * every arrival and only the current system's copy was being kept.
+   */
+  private starMap = (() => {
+    const m = new StarMap();
+    try {
+      m.load(JSON.parse(localStorage.getItem('edmo.starmap.v1') ?? '[]'));
+    } catch {
+      /* it refills itself from the next few arrivals */
+    }
+    return m;
+  })();
+  /** Observed jump distances and the cargo aboard at the time. */
+  private jumpRange = (() => {
+    const j = new JumpRange();
+    try {
+      j.load(JSON.parse(localStorage.getItem('edmo.jumprange.v1') ?? '[]'));
+    } catch {
+      /* the range re-learns from the next loaded jump */
+    }
+    return j;
+  })();
+  /**
+   * What has been bought at the pad under the ship, this visit.
+   *
+   * Deliberately NOT persisted: a basket is about the docking it belongs to,
+   * and one restored from a previous session would tick off lines the
+   * commander is standing there looking at.
+   */
+  private purchases = new PurchaseLog();
+  /**
+   * The cart as it stood at the last check, so filling it is announced once.
+   *
+   * Not persisted: a restored 'already full' would swallow the callout on
+   * the very run the commander wants it for.
+   */
+  private lastCart: Cart | null = null;
   /** Commodity key → where it can be bought, from the galaxy scan. */
   private architectSources = new Map<string, ArdentMarketRow[]>();
   /**
@@ -2081,6 +2289,77 @@ export class AppCore {
       this.saga.apply(ev);
       this.bioTracker.apply(ev);
       this.carrier.apply(ev);
+      // Where places are, and how far this ship gets on one tank of it. Both
+      // fold from events the app has always read and always discarded.
+      if (this.starMap.apply(ev)) {
+        try {
+          localStorage.setItem('edmo.starmap.v1', JSON.stringify(this.starMap.toJSON()));
+        } catch {
+          /* the map still stands for this session */
+        }
+      }
+      // The cargo aboard at the moment of the jump is what makes it a LADEN
+      // measurement, so it has to be read before anything else moves it.
+      if (this.jumpRange.apply(ev, this.ship.liveCargo ?? 0)) {
+        try {
+          localStorage.setItem('edmo.jumprange.v1', JSON.stringify(this.jumpRange.toJSON()));
+        } catch {
+          /* the range still stands for this session */
+        }
+      }
+      // The carrier's manifest. Folded for every event rather than under the
+      // `Carrier*` branch below, because the two that actually move it —
+      // CargoTransfer and a MarketBuy against its own id — are not named
+      // "Carrier" anything.
+      if (this.carrierHold.apply(ev)) {
+        try {
+          localStorage.setItem('edmo.carrierhold.v1', JSON.stringify(this.carrierHold.toJSON()));
+        } catch {
+          /* the ledger still stands for this session */
+        }
+      }
+      // The basket at the pad. Taken BEFORE the purchase is folded so the two
+      // baskets can be compared and a finished line called out exactly once.
+      if (ev.event === 'MarketBuy' || ev.event === 'MarketSell' || ev.event === 'Docked') {
+        const before = live && this.bootstrapped ? (this.architectView()?.basket ?? null) : null;
+        if (this.purchases.apply(ev) && live && this.bootstrapped) {
+          const line = describeBasketLine(before, this.architectView()?.basket ?? null);
+          if (line) {
+            this.pushFeed('nudge', `🛒 ${line}`, { severity: 'info' });
+            this.speak(line);
+          }
+          this.emit();
+        }
+      }
+      // The cart going full is the one moment in a gathering run that must not
+      // be missed: everything the build still wants is aboard, and the next
+      // move is a carrier jump rather than another shopping trip. Checked on
+      // the events that can actually fill it.
+      if (
+        live &&
+        this.bootstrapped &&
+        (ev.event === 'CargoTransfer' || ev.event === 'MarketBuy' || ev.event === 'ColonisationConstructionDepot')
+      ) {
+        const after = this.architectView();
+        const line = after
+          ? describeCartFilled(this.lastCart, after.cart, after.carrier?.hold.callsign ?? null, after.depot.system)
+          : null;
+        if (after) this.lastCart = after.cart;
+        if (line) {
+          this.pushFeed('nudge', `🛒 ${line}`, { severity: 'info' });
+          this.speak(line);
+          this.emit();
+        }
+      }
+      // Every contribution, for the haul clock. This one cannot be rebuilt
+      // from anywhere, so it is written the moment it lands.
+      if (this.haulLog.apply(ev)) {
+        try {
+          localStorage.setItem('edmo.haul.v1', JSON.stringify(this.haulLog.toJSON()));
+        } catch {
+          /* the rate re-learns from the next few runs */
+        }
+      }
       // The lockdown / cooldown clocks. Folded for every event so a bootstrap
       // replay restores a jump that is still counting down.
       if (ev.event.startsWith('Carrier')) {
@@ -2108,6 +2387,10 @@ export class AppCore {
         } catch {
           /* the list still stands for this session */
         }
+        // A requirement just read is a breakdown nobody publishes. Filed
+        // against its total cost, so the NEXT build of this type can be
+        // planned before the commander has flown to it.
+        this.learnBuild();
         if (live && this.bootstrapped) this.announceConstruction();
       }
       // Remember doors that stay shut (and forget one that opens on a Docked).
@@ -2216,6 +2499,9 @@ export class AppCore {
         if (ev.event === 'Docked') {
           // Fatigue resets in a docking bay; note how often we've been here.
           this.jumpsSinceDock = 0;
+          // Route planning has to know this: Spansh's market graph has never
+          // heard of a construction site, so one cannot be a route start.
+          this.atConstructionSite = isConstructionDepot(ev);
           const where = typeof ev.StationName === 'string' ? ev.StationName : this.sm.location.station;
           if (where) {
             this.dockVisits.set(where, (this.dockVisits.get(where) ?? 0) + 1);
@@ -2298,6 +2584,7 @@ export class AppCore {
       return;
     }
     if (ev.event === 'Undocked') {
+      this.atConstructionSite = false;
       if (this.view !== 'orrery' && this.orreryView()) this.setView('orrery');
     }
   }
@@ -3334,7 +3621,23 @@ export class AppCore {
     }
     else if (name === 'Market.json') {
       try {
-        const rec = parseMarketSnapshot(JSON.parse(text));
+        const raw = JSON.parse(text);
+        const rec = parseMarketSnapshot(raw);
+        // The carrier's own board is the best reading of its hold we ever get,
+        // and it is worth taking whether or not trade features are on — the
+        // colonisation list depends on it and the trade planner does not.
+        //
+        // Parsed separately from `rec` on purpose: that one keeps only rows
+        // worth trading, and a hold reading needs every row with tons on it.
+        const stock = parseCarrierStock(raw);
+        if (stock && this.carrierHold.readMarket(stock.marketId, stock.items, stock.at)) {
+          try {
+            localStorage.setItem('edmo.carrierhold.v1', JSON.stringify(this.carrierHold.toJSON()));
+          } catch {
+            /* the ledger still stands for this session */
+          }
+          this.emit();
+        }
         if (rec && this.settings.trade.enabled) {
           const known = this.marketMemory.byId(rec.marketId);
           this.marketMemory.record(rec);
@@ -3496,27 +3799,46 @@ export class AppCore {
     // is not one (they're excluded from its market graph, so asking "from
     // V6W-TTJ" politely returns nothing). Docked on a carrier or in space,
     // fall back to the last real station market we saw in this system.
-    const carrierName = /^[A-Z0-9]{3}-[A-Z0-9]{3}$/;
-    let station = this.sm.location.station ?? null;
-    if (!station || carrierName.test(station)) {
-      const fallback = this.marketMemory.stationIn(system);
-      if (fallback) {
-        if (station) {
-          this.pushFeed('system', `You're on the carrier — planning the route from ${fallback} instead.`);
-        }
-        station = fallback;
-      } else {
-        // No usable start (on a carrier, or never docked here) — be honest,
-        // don't let an empty/rejected reply masquerade as "no routes".
-        this.pushFeed(
-          'system',
-          station
+    //
+    // A construction site is the same problem wearing a different hat, and it
+    // is the one a colonising commander hits every single time: Spansh has
+    // never heard of "$EXT_PANEL_ColonisationShip; Byeong-cheon Reach", so it
+    // answers {"error":"Could not find station"} and the feed reported a route
+    // search failure at the exact moment the commander was standing on the
+    // build asking where to buy its steel.
+    // Every site we know of is barred as a start, not just the one under the
+    // ship: in a system being colonised, several of the markets we have read
+    // are construction sites and none of them are in Spansh's graph.
+    const was = this.sm.location.station ?? null;
+    const start = routeStartFrom({
+      system,
+      station: was,
+      atConstructionSite: this.atConstructionSite,
+      knownSites: this.construction.all.map((d) => d.station ?? '').filter(Boolean),
+      memory: this.marketMemory,
+    });
+    if (!start.ok) {
+      // Be honest rather than letting a rejected query masquerade as "no
+      // routes" — which is what the feed used to show.
+      this.pushFeed(
+        'system',
+        start.reason === 'depot'
+          ? `Nobody's route planner has heard of ${was} — it's a construction site, and it won't exist in community data until it's finished. Dock at a station market in ${system} once and I'll plan from there.`
+          : start.reason === 'carrier'
             ? `Routes can't start from a fleet carrier, commander — dock at a station market in ${system} once so I learn a starting point.`
             : `The route planner needs a station market as a starting point — dock somewhere in ${system} with a market and ask again.`,
-        );
-        this.emit();
-        return;
-      }
+      );
+      this.emit();
+      return;
+    }
+    const station: string = start.station;
+    if (start.moved && was) {
+      this.pushFeed(
+        'system',
+        this.atConstructionSite
+          ? `Route planners can't start from a construction site — planning from ${station} instead.`
+          : `You're on the carrier — planning the route from ${station} instead.`,
+      );
     }
     this.routeBusy = true;
     // Large-pad hulls (Cutter, Panther Clipper…) can't dock at medium/small
@@ -4297,7 +4619,12 @@ export class AppCore {
       }));
   }
 
-  private commsDossier(briefs: readonly Brief[]): string {
+  /**
+   * The writer's briefing. `scenery` leaves the commander out of it — for an
+   * ambient beat, which is about somebody else (dossier.ts explains why the
+   * data has to change, not just the instruction).
+   */
+  private commsDossier(briefs: readonly Brief[], scenery = false): string {
     const st = this.statusTracker.current;
     this.briefSeq += 1;
     // The commander's REAL whereabouts, when the generic state undersells it.
@@ -4335,6 +4662,7 @@ export class AppCore {
       supercruise: !!st?.supercruise,
       portSeparationLs: this.commsContext().portSeparationLs,
       recentAir: this.recentCommsAir,
+      scenery,
       // The campaign spine rides in as MORE dossier data — same idiom, no new
       // prompt shape. The writer sees the running threads beside the system
       // facts and grounds its invention in both.
@@ -4477,6 +4805,72 @@ export class AppCore {
     slots.reserve(key, nowMs + ttlMs);
     if (slots.count(key) <= before) return;
 
+    /**
+     * THE TOPIC ROLL — is this beat about the commander at all?
+     *
+     * Only a beat with no prior claim on it rolls: the tower is answering
+     * the commander, an arrival is the commander's own moment, and a thread
+     * due its payoff is continuing something already set up. Everything else
+     * — which is most of the air — rolls against the Relevance dial, and
+     * most of the time comes up as somebody else's business. Relevance was
+     * the bug: hauling produced hauling talk, mining produced mining talk,
+     * and it was coherent and completely dead.
+     */
+    const spokenFor =
+      (towerTarget && target.id === 'TOWER') ||
+      (arrivalTarget && target.id === 'STATION') ||
+      !!due ||
+      !!choice.arcId;
+    const roll = spokenFor
+      ? null
+      : this.comms.topics.roll({
+          channel: target.id,
+          relevance: this.settings.comms.relevance,
+          rand: Math.random,
+        });
+    const { speakers, speakerNames } = this.commsSpeakerSpec(target.id);
+    let topic: TopicRequest | undefined;
+    if (roll && roll.kind === 'ambient') {
+      const def = TOPICS[roll.category];
+      // A regular carries most ambient beats once one exists for the
+      // category; a newcomer is born with this roll's seed as their bit, and
+      // a returning voice keeps the bit they already have.
+      const carried = Math.random() < REGULAR_SHARE;
+      const regular = carried
+        ? this.comms.regulars.cast(
+            roll.category,
+            roll.seed,
+            Math.random,
+            buildPersonaPool(this.castVoicePool()),
+            new Date(nowMs).toISOString(),
+          )
+        : null;
+      topic = {
+        category: roll.category,
+        label: def.label,
+        brief: def.brief,
+        seed: regular ? regular.bit : roll.seed,
+        shape: roll.shape,
+        lines: roll.lines,
+      };
+      if (regular) {
+        // The regular takes the first line — the only line, for a fragment —
+        // and the roster says so by name, so the parser strips their
+        // self-address and the cast seats them in their own voice on the way
+        // out.
+        topic.regular = {
+          id: regular.id,
+          ref: speakers[0],
+          name: regular.name,
+          character: regular.character,
+          bit: regular.bit,
+          ledger: regular.ledger,
+          returning: regular.heard > 0,
+        };
+        speakerNames[speakers[0]] = regular.name;
+      }
+    }
+
     const brief =
       towerTarget && target.id === 'TOWER'
         ? towerBrief({
@@ -4487,8 +4881,15 @@ export class AppCore {
             moment: towerCall!.moment === 'departure' ? 'departure' : towerCall!.moment,
             reason: towerCall!.reason,
           })
-        : this.commsWriteBrief(briefs, target.id, choice.arcId);
-    const { speakers, speakerNames } = this.commsSpeakerSpec(target.id);
+        : roll?.kind === 'ambient'
+          ? // An ambient beat asserts nothing about the commander's world, so
+            // it is written against a texture brief — keyed per seed so the
+            // same-subject gate sees variety, and prefixed so no arc opens on it.
+            {
+              ...textureBrief(topicSubjectKey(roll.category, roll.seedIndex)),
+              summary: `overheard — ${TOPICS[roll.category].label}`,
+            }
+          : this.commsWriteBrief(briefs, target.id, choice.arcId);
     // An arrival gets the moment it is actually having, not a random one off
     // the pool — and the claim is spent here, whether or not the scene
     // survives, so a dropped welcome cannot hold the channel hostage.
@@ -4512,7 +4913,9 @@ export class AppCore {
       ? claimed.kind === 'arrive'
         ? `this ship is docking at ${claimed.station} right now — the arrival itself`
         : `this ship has just undocked from ${claimed.station} and is on its way out`
-      : this.pickCommsSituation(target.id);
+      : topic
+        ? topic.seed
+        : this.pickCommsSituation(target.id);
 
     // Build the whole plan BEFORE claiming the writer.
     //
@@ -4540,8 +4943,14 @@ export class AppCore {
         // The moment this scene stops being worth saying. Carried so the writer
         // can budget against it rather than against a constant.
         readyBy: nowMs + ttlMs,
-        dossier: this.commsDossier(briefs),
+        // Scenery only for an ambient beat: a briefing that says where the
+        // commander is and what they carry makes the scene about them anyway.
+        dossier: this.commsDossier(briefs, !!topic),
         rotate: this.briefSeq,
+        topic,
+        // What the ledger learns if this beat is written: the category, or
+        // that it was about the commander. Claimed beats teach it nothing.
+        rolled: roll ? (roll.kind === 'ambient' ? roll.category : 'relevant') : undefined,
       };
     } catch (e) {
       // Free the slot we just reserved; a briefing we cannot build is not a
@@ -4579,6 +4988,8 @@ export class AppCore {
     readyBy: number;
     dossier: string;
     rotate: number;
+    topic?: TopicRequest;
+    rolled?: 'relevant' | TopicCategory;
   }): Promise<void> {
     try {
       const model = this.activeModel();
@@ -4632,10 +5043,12 @@ export class AppCore {
         situation: plan.situation,
         dossier: plan.dossier,
         rotate: plan.rotate,
+        topic: plan.topic,
         // Real radio calls run past two turns — request, answer, read-back,
         // close (the genre's reference corpus runs three to five). Every
         // third scene asks for three lines, every seventh for four; the rest
         // stay call-and-response. Positional assignment wraps the roster.
+        // A fragment sets its own count and wins (see TopicRequest.lines).
         lines:
           plan.speakers.length >= 2
             ? plan.rotate % 7 === 0
@@ -4687,8 +5100,11 @@ export class AppCore {
         `comms:${plan.channel}:${Date.now()}`,
         plan.ttlMs,
         plan.arcId,
-        // What has already been on the air, so a line cannot come back.
-        this.recentCommsAir,
+        // What has already been on the air, so a line cannot come back — and
+        // a returning regular's own ledger, which may be older than the six
+        // scenes the air remembers. The prompt asks them to escalate the bit,
+        // not repeat it; a verbatim return is the one failure it names.
+        [...this.recentCommsAir, ...(plan.topic?.regular?.ledger ?? [])],
       );
 
       if (!accepted.ok) {
@@ -4732,6 +5148,10 @@ export class AppCore {
         this.commsDiag.lastGenOutcome = `dropped ${plan.channel.toLowerCase()} (late)`;
         return;
       }
+
+      // The no-repeat window learns only from beats that were actually
+      // written: a roll that failed generation must not burn its category.
+      if (plan.rolled) this.comms.topics.note(plan.rolled);
 
       this.commsConversation.record(plan.channel, plan.situation, sceneTranscript(accepted.scene));
       // Feed the noun-cooling window (dossier.ts recentAir) — six scenes deep.
@@ -4824,6 +5244,7 @@ export class AppCore {
         at: now,
         channel: t.channel,
         turns,
+        ...(t.scene.topic ? { topic: t.scene.topic.label } : {}),
       },
       ...this.commsLog,
     ].slice(0, 40);
@@ -5127,34 +5548,184 @@ export class AppCore {
     return this.marketMemory.latest({ station, system: this.sm.location.system });
   }
 
+  /** The carrier as a source, or null when the commander owns none. */
+  private carrierSource(): { tons: Map<string, number>; system: string | null; callsign: string | null } | null {
+    if (!this.carrier.owned()) return null;
+    const snap = this.carrierHold.snapshot();
+    const fleet = this.carrier.snapshot();
+    return {
+      tons: this.carrierHold.tons(),
+      // CarrierHold learns the system from CarrierLocation/CarrierJump too, but
+      // CarrierTracker has been watching longer — prefer whichever knows.
+      system: fleet.system ?? snap.system,
+      callsign: fleet.callsign ?? snap.callsign,
+    };
+  }
+
   private architectView(): ArchitectView | null {
     const depot = this.construction.depot;
     if (!depot) return null;
     const capacity = this.stats.cargoCapacity || this.ship.current?.cargoCapacity || null;
+    const carrier = this.carrierSource();
+    // What this ship actually does with a hold full of steel, measured rather
+    // than taken off the outfitting screen.
+    const reach = reachOf(this.jumpRange, capacity, this.ship.current?.maxJumpRange ?? null);
     const groups = buildShoppingList(depot, {
       cargo: this.cargoManifest,
       localMarket: this.localMarketRecord(),
       visited: this.marketMemory.all(),
       sources: this.architectSources,
       cargoCapacity: capacity,
+      carrier,
+      // Measured from where the ship is, which is the same origin the galaxy
+      // scan used, so a first-hand row and a community row are comparable.
+      distanceFrom: (system) => this.starMap.between(this.sm.location.system, system),
+      reach,
+      stationsOnly: this.settings.architect.stationsOnly,
+      ownCarrier: carrier?.callsign ?? null,
     });
     const roster = this.architectRoster;
+    const totalRequired = tonsRequired(depot);
+    const totalRemaining = tonsRemaining(depot);
+    const holdUsed = this.ship.liveCargo ?? null;
+    const coverage = carrierCoverage(groups);
+    const clock = haulClock(this.haulLog.all, totalRemaining, depot.marketId);
+    const build = identifyBuild(totalRequired);
+    const stops = stopPlans(groups, { capacity });
+    // The journal's own docked flag, not Status.json's. Status is a snapshot
+    // file that may not have been read yet (and is absent entirely in a
+    // replay), while Docked/Undocked are events we have always folded.
+    const here = this.sm.docked ? this.sm.location.station : null;
+    // Built from THIS station's own board, not from the run's top few. The
+    // commander is standing on the pad; that it did not place in the best six
+    // stops in the galaxy does not make the list in front of them less real.
+    const board = here ? this.localMarketRecord() : null;
+    const sells = new Map<string, number>();
+    for (const i of board?.items ?? []) {
+      if (i.buy > 0 && i.stock > 0) sells.set(commodityKey(i.name), i.stock);
+    }
+    const stop = here
+      ? (stopHere(here, board?.system ?? this.sm.location.system, sells, groups) ??
+        // No board read yet — fall back to whatever the run knows about this
+        // station, so a rescan's knowledge is not thrown away.
+        stops.find((p) => p.station.toLowerCase() === here.toLowerCase()))
+      : undefined;
+    const basket = basketAt(stop, this.purchases.tons, carrier?.tons ?? new Map());
+    const cart = cartStatus(groups);
     return {
       depot,
       depots: this.construction.all,
       roster,
       hold: roster ? holdAtSites(this.cargoManifest, roster, this.commodityNames()) : [],
       groups,
-      totalRequired: tonsRequired(depot),
-      totalRemaining: tonsRemaining(depot),
+      totalRequired,
+      totalRemaining,
       atSite: !!this.statusTracker.current?.docked && this.sm.location.station === depot.station,
       online: this.settings.external.ardent,
       scanning: this.architectScanning,
       scannedAt: this.architectScannedAt,
       scanError: this.architectScanError,
       cargoCapacity: capacity,
-      holdUsed: this.ship.liveCargo ?? null,
+      holdUsed,
+      carrier: carrier
+        ? {
+            hold: this.carrierHold.snapshot(),
+            coverage,
+            atBuild:
+              !!carrier.system &&
+              carrier.system.toLowerCase() === (depot.system ?? '').toLowerCase(),
+            line: describeCarrierHold(this.carrierHold.snapshot(), coverage.lines, coverage.ofLines, coverage.tons),
+          }
+        : null,
+      trip: planTrip(groups, {
+        capacity,
+        holdUsed,
+        depotSystem: depot.system,
+        carrierSystem: carrier?.system ?? null,
+        carrierName: carrier?.callsign ?? null,
+      }),
+      stops,
+      basket,
+      cart,
+      cartLine: describeCart(cart, carrier?.callsign ?? null, depot.system),
+      clock,
+      clockLine: describeHaulClock(clock, totalRemaining),
+      build,
+      buildLine: describeBuild(build),
+      learned: this.buildLibrary.all,
+      reach,
+      reachLine: describeReach(reach),
+      stationsOnly: this.settings.architect.stationsOnly,
     };
+  }
+
+  /**
+   * Look up coordinates for systems our own market readings came from.
+   *
+   * Only systems that actually sell something THIS build wants, so the work is
+   * proportional to the shopping list rather than to a career of dockings, and
+   * capped per scan so a long market memory converges over a few rescans
+   * instead of firing forty requests at once. Results are cached in the star
+   * map for good — a system does not move.
+   */
+  private async placeRememberedSystems(depot: DepotState): Promise<void> {
+    if (!this.settings.external.ardent) return;
+    const wanted = new Set(depot.resources.filter((r) => r.remaining > 0).map((r) => r.key));
+    const here = this.sm.location.system;
+    const unknown: string[] = [];
+    for (const m of this.marketMemory.all()) {
+      if (unknown.includes(m.system)) continue;
+      if (this.starMap.coordsOf(m.system)) continue;
+      if (!m.items.some((i) => i.buy > 0 && i.stock > 0 && wanted.has(commodityKey(i.name)))) continue;
+      unknown.push(m.system);
+    }
+    if (!unknown.length) return;
+    let placed = false;
+    for (const system of unknown.slice(0, 12)) {
+      try {
+        const c = await ardentSystemCoords(system);
+        if (c && this.starMap.place(system, c.x, c.y, c.z)) placed = true;
+      } catch {
+        /* one unplaceable system must not stop the rest */
+      }
+    }
+    if (!placed) return;
+    try {
+      localStorage.setItem('edmo.starmap.v1', JSON.stringify(this.starMap.toJSON()));
+    } catch {
+      /* the map still stands for this session */
+    }
+    // The distances are what the ordering is built on, so the panel has to be
+    // recomputed rather than waiting for the next event to nudge it.
+    if (here === this.sm.location.system) this.emit();
+  }
+
+  /**
+   * File the requirement under its total cost.
+   *
+   * The catalogue in `buildtypes.ts` knows a Coriolis costs 53,723 t and has no
+   * idea how much of that is steel. Nobody publishes that. The commander reads
+   * it off the contribution panel every time they open one, and this is where
+   * it stops being thrown away.
+   */
+  private learnBuild(): void {
+    const depot = this.construction.depot;
+    if (!depot || !depot.resources.length) return;
+    const tons = tonsRequired(depot);
+    if (!tons) return;
+    const learned = this.buildLibrary.learn({
+      tons,
+      lines: depot.resources.map((r) => ({ key: r.key, name: r.name, required: r.required })),
+      station: depot.station,
+      system: depot.system,
+      at: depot.at,
+    });
+    if (!learned) return;
+    try {
+      localStorage.setItem('edmo.buildlib.v1', JSON.stringify(this.buildLibrary.toJSON()));
+    } catch {
+      /* the library is a convenience, never the source of truth */
+    }
   }
 
   /**
@@ -5206,6 +5777,7 @@ export class AppCore {
       localMarket: this.localMarketRecord(),
       visited: this.marketMemory.all(),
       sources: this.architectSources,
+      carrier: this.carrierSource(),
     });
     const line = describeDepot(depot, groups);
     if (!line) return;
@@ -5215,6 +5787,17 @@ export class AppCore {
       this.pushFeed('nudge', `🏗 ${line}`, { severity: 'info' });
       this.speak(line);
       this.copilotEvent(`EVENT: ${line}`);
+      // What the site IS, from the one number the depot always states. Feed
+      // only — the shopping list is the urgent part and this is the label on
+      // it, not something worth a second voice line on top of the first.
+      const named = describeBuild(identifyBuild(tonsRequired(depot)));
+      if (named) this.pushFeed('system', `🏗 ${named}`);
+      // And what of it is already bought and sitting in deep space.
+      const carrier = this.architectView()?.carrier;
+      if (carrier?.line && carrier.coverage.lines > 0) {
+        this.pushFeed('nudge', `📦 ${carrier.line}`, { severity: 'info' });
+        this.speak(carrier.line);
+      }
       void this.architectScan(false);
     } else {
       this.pushFeed('system', `🏗 ${line}`);
@@ -5231,6 +5814,21 @@ export class AppCore {
    * entirely. Re-scanning is cheap to ask for and expensive to do, so a scan
    * from the same system inside ten minutes is reused.
    */
+  /**
+   * Show or hide other commanders' fleet carriers in the shopping list.
+   *
+   * No rescan: the rows are already in hand and this only changes which of
+   * them are allowed to be an answer.
+   */
+  toggleStationsOnly(): void {
+    this.settings = {
+      ...this.settings,
+      architect: { ...this.settings.architect, stationsOnly: !this.settings.architect.stationsOnly },
+    };
+    saveSettings(this.settings);
+    this.emit();
+  }
+
   async architectScan(force = true): Promise<void> {
     const depot = this.construction.depot;
     if (!depot || this.architectScanning) return;
@@ -5261,6 +5859,14 @@ export class AppCore {
     this.architectScanning = true;
     this.architectScanError = null;
     this.emit();
+    // Place the systems our own market readings came from.
+    //
+    // The star map is built from arrivals, so it only knows where the
+    // commander has been SINCE it existed — while market memory is far older.
+    // Without this every first-hand row reads "distance unknown", and five
+    // boards in the bubble look exactly like five boards next door. Bounded
+    // per scan and cached for good, so it converges and then costs nothing.
+    void this.placeRememberedSystems(depot);
     const found = new Map<string, ArdentMarketRow[]>();
     // The construction sites in the same response. Free — they arrive whether
     // we look at them or not, and used to be thrown away.
@@ -5324,12 +5930,27 @@ export class AppCore {
     );
     const queue = [...wanted.filter((r) => !covered.has(r.key))];
     const searched = queue.length; // the workers drain the queue
+    /**
+     * The search ring, which promotes itself once and then stays promoted.
+     *
+     * A build in the bubble answers at 100 ly on every commodity and never
+     * widens. A build 15,000 ly out answers at 100 ly on NONE of them — so the
+     * first empty result promotes the whole scan rather than making all
+     * seventeen commodities discover deep space independently and pay for two
+     * requests each.
+     */
+    let ring = Math.max(10, Math.round(this.settings.external.marketRadiusLy ?? 100));
     const worker = async (): Promise<void> => {
       for (let next = queue.shift(); next; next = queue.shift()) {
         try {
           // Ardent names commodities exactly the way commodityKey spells them:
           // 'liquidoxygen', 'fruitandvegetables'. Verified against the live API.
-          found.set(next.key, await ardentMarket(from, next.key, 'buy'));
+          let rows = await ardentMarket(from, next.key, 'buy', ring);
+          if (!rows.length && ring < MAX_MARKET_RADIUS_LY) {
+            rows = await ardentMarket(from, next.key, 'buy', MAX_MARKET_RADIUS_LY);
+            if (rows.length) ring = MAX_MARKET_RADIUS_LY;
+          }
+          found.set(next.key, rows);
         } catch {
           failed++;
         }
@@ -7220,9 +7841,10 @@ export class AppCore {
       markets: this.marketMemory,
       // Opt-in only: null keeps the tool advertised but honestly unavailable,
       // so the model explains how to enable it instead of inventing prices.
+      marketRadiusLy: this.settings.external.marketRadiusLy,
       galaxyMarket: this.settings.external.ardent
-        ? (commodity, side, nearSystem) =>
-            ardentMarket(nearSystem || this.sm.location.system, commodity, side)
+        ? (commodity, side, nearSystem, maxDistanceLy) =>
+            ardentMarket(nearSystem || this.sm.location.system, commodity, side, maxDistanceLy)
         : null,
       findTradeRun: this.settings.external.ardent
         ? (opts) => this.findTradeRun(opts)

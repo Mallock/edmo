@@ -318,6 +318,7 @@ export function App() {
               view={snap.architect}
               nowMs={nowMs}
               onScan={() => void core.architectScan()}
+              onToggleStationsOnly={() => core.toggleStationsOnly()}
             />
           ) : plotOpen ? (
             <PlotterCard

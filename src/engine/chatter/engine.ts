@@ -56,7 +56,9 @@ import {
 } from './cast.ts';
 import { candidates, render, templateKey, type Grammar } from './grammar.ts';
 import { SceneSlots } from './llm.ts';
+import { RegularsBook } from './regulars.ts';
 import { functionsForAct, validateScene, type Scene } from './scenes.ts';
+import { TopicLedger } from './topics.ts';
 import { CHANNEL_IDS } from './types.ts';
 import type { Act, ChannelId, DramaticFunction } from './types.ts';
 
@@ -128,6 +130,11 @@ export class ChatterEngine {
   readonly guard = new RepetitionGuard();
   readonly cast = new CastBook();
   readonly slots = new SceneSlots();
+  /** What the written beats have lately been about — the no-repeat window
+   *  and the relevance run cap. The store rolls against it at write time. */
+  readonly topics = new TopicLedger();
+  /** The recurring comedy voices and their running gags. */
+  readonly regulars = new RegularsBook();
 
   private grammar: Grammar;
   private rand: () => number;
@@ -279,6 +286,17 @@ export class ChatterEngine {
     this.guard.remember(scene);
     this.lastAnyAt = input.nowMs;
     this.lastPerChannel[picked.id] = input.nowMs;
+
+    // A regular's ledger records what went OUT, not what was written for
+    // them: the running gag is built from lines the commander actually heard.
+    if (scene.topic?.regularId && scene.topic.regularRef) {
+      const ref = scene.topic.regularRef;
+      this.regulars.noteAired(
+        scene.topic.regularId,
+        scene.turns.filter((t) => t.speakerRef === ref).map((t) => t.text),
+        new Date(input.nowMs).toISOString(),
+      );
+    }
 
     return {
       ...base,
@@ -494,6 +512,24 @@ export class ChatterEngine {
         continue;
       }
 
+      // A regular carrying an ambient beat sits in their own seat: their
+      // name, their voice, their quirk — fixed at birth, whatever system this
+      // is. The cast book's per-system memory is for everybody else.
+      const regular =
+        scene.topic?.regularId && scene.topic.regularRef === turn.speakerRef
+          ? this.regulars.find(scene.topic.regularId)
+          : undefined;
+      if (regular) {
+        const entry = {
+          name: regular.name,
+          persona: resolvePersona(regular.persona, input.installedVoices),
+          returning: regular.heard > 0,
+        };
+        perScene.set(turn.speakerRef, entry);
+        out.push(entry);
+        continue;
+      }
+
       const existing = this.cast.castFor(input.system, turn.speakerRef, scene.channel, this.rand);
       let entry: { name: string; persona: Persona; returning: boolean };
 
@@ -598,6 +634,10 @@ export class ChatterEngine {
   }): string | null {
     if (input.func !== 'establish' && input.func !== 'complicate') return null;
     if (!input.subjectKey || !input.speaker) return null;
+    // A running gag is not a story arc. Its continuity lives in the regular's
+    // ledger, and an arc opened on it would route a "reversal" back through
+    // the relevant path with a factual brief — a payoff to a joke nobody told.
+    if (input.subjectKey.startsWith('topic:')) return null;
     // Already being carried — by this speaker or any other.
     for (const { arc } of this.cast.openArcs()) {
       if (arc.subjectKey === input.subjectKey) return null;
@@ -627,21 +667,29 @@ export class ChatterEngine {
   }
 
   /** Persisted state — the store hands this to localStorage. */
-  toJSON(): { cast: unknown; guard: unknown } {
-    return { cast: this.cast.toJSON(), guard: this.guard.toJSON() };
+  toJSON(): { cast: unknown; guard: unknown; topics: unknown; regulars: unknown } {
+    return {
+      cast: this.cast.toJSON(),
+      guard: this.guard.toJSON(),
+      topics: this.topics.toJSON(),
+      regulars: this.regulars.toJSON(),
+    };
   }
 
   load(json: unknown): void {
-    const data = json as { cast?: unknown; guard?: unknown } | null;
+    const data = json as { cast?: unknown; guard?: unknown; topics?: unknown; regulars?: unknown } | null;
     if (!data) return;
     if (data.cast) this.cast.load(data.cast);
     if (data.guard) this.guard.load(data.guard);
+    if (data.topics) this.topics.load(data.topics);
+    if (data.regulars) this.regulars.load(data.regulars);
   }
 
   /** Housekeeping on a slow timer. */
   maintain(nowMs: number): void {
     this.cast.dropStaleArcs(nowMs);
     this.cast.prune(nowMs);
+    this.regulars.prune(nowMs);
     this.slots.sweep(nowMs);
   }
 }

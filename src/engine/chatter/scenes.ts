@@ -24,7 +24,25 @@
  * what turns ambience into a world.
  */
 import type { Brief } from './brief.ts';
+import type { BeatShape, TopicCategory } from './topics.ts';
 import type { ChannelId, DramaticFunction } from './types.ts';
+
+/**
+ * What an AMBIENT beat was about, and who carried it.
+ *
+ * Absent on a beat about the commander's own business. Present, it tells the
+ * cast to seat the regular in their own voice, tells the engine whose ledger
+ * the aired lines belong to, and gives the panel a tag to show.
+ */
+export interface SceneTopic {
+  category: TopicCategory;
+  label: string;
+  shape: BeatShape;
+  /** The regular carrying the beat, when one is. */
+  regularId?: string;
+  /** Which speaker ref the regular took — always the first line. */
+  regularRef?: string;
+}
 
 export const MIN_TURNS = 1;
 export const MAX_TURNS = 4;
@@ -62,6 +80,8 @@ export interface Scene {
    * cannot see that; this can.
    */
   templateId?: string;
+  /** Set on an ambient beat — see SceneTopic. */
+  topic?: SceneTopic;
 }
 
 export type SceneProblem =

@@ -7,9 +7,9 @@ WHAT THIS IS
   index.html                              the page
   img/                                    screenshots + icons
   fonts/                                  the two webfonts, self-hosted
-  ED-Mission-Operator-1.9.4-setup.exe       the Windows installer (~132 MB)
-  ED-Mission-Operator-1.9.4-amd64.deb       Linux beta, Ubuntu/Debian (~147 MB)
-  ED-Mission-Operator-1.9.4-x86_64.AppImage Linux beta, any distro (~231 MB)
+  ED-Mission-Operator-1.9.6-setup.exe       the Windows installer (~132 MB)
+  ED-Mission-Operator-1.9.6-amd64.deb       Linux beta, Ubuntu/Debian (~147 MB)
+  ED-Mission-Operator-1.9.6-x86_64.AppImage Linux beta, any distro (~232 MB)
 
 HOW TO PUT IT ON YOUR WEB HOTEL
   1. Open your web hotel's File Manager (or connect with FTP, e.g. FileZilla).
@@ -22,7 +22,38 @@ NOTES
   * The installer is ~132 MB. Browser-based file managers sometimes limit
     uploads (often to 100 MB) — if the .exe upload fails, use FTP instead,
     or upload it to a file service and change the download link in
-    index.html (search for "ED-Mission-Operator-1.9.4-setup.exe").
+    index.html (search for "ED-Mission-Operator-1.9.6-setup.exe").
+  * 1.9.5 makes the comms channel mostly not about you.
+
+    Nearly every written radio beat was anchored to whatever you were doing:
+    hauling produced hauling talk, mining produced mining talk. Coherent, and
+    completely dead — a channel that is always about the listener is a
+    service, not a place. Every written beat now takes a TOPIC ROLL before it
+    takes a brief, and only a minority (a new dial, "How much is about you",
+    a third by default) concern your cargo, your contract or your approach.
+    The rest is other people's business overheard: a divorce being negotiated
+    by two people who do not know the channel is open, a bar advertising its
+    one working chair, a station official reading out the clause numbers of
+    a form that does not exist, a man who is certain the station only rotates
+    to hide something. Eight categories, none of which can come straight back
+    — the roll is rerolled if it wants the same subject inside three beats —
+    and about a third of them are FRAGMENTS: half an argument, a punchline
+    whose setup you missed, somebody answering a question you never heard.
+
+    THE REGULARS COME BACK. The comedy voices are named, keep a fixed manner
+    and a fixed voice, and are remembered across restarts. Each carries a
+    running bit, and only what they actually said on the air is kept, so when
+    the Sidewinder pilot's insurance saga returns an hour later it does not
+    reference the earlier episode — it escalates it: same detail, worse. A
+    voice that has escalated all the way retires and somebody new is born
+    with a fresh bit. The Comms log tags each of these beats with its
+    category, so the roll is visible with the audio off.
+
+    NOTHING THAT MATTERS IS DELAYED. The tower still only ever answers you,
+    the emergency channel never rolls, and a firefight still clears every
+    channel. Comedy rides the ambient bus and is dropped before it can hold
+    up a clearance or a hull warning.
+
   * 1.9.4 stops the build panel forgetting every site but the last one.
 
     A colonisation system is not one build. Preae Aihm EH-D d12-64 holds
@@ -708,7 +739,7 @@ NOTES
     ranges and payout estimates; and four opt-in community lookups the operator
     calls only when asked (Spansh routes, galaxy-wide markets via Ardent
     Insight, the EDAstro exploration catalogue, and the Galnet news wire).
-  * All three installers are 1.9.4.
+  * All three installers are 1.9.6.
 
     Windows:  npm run tauri build
               -> src-tauri/target/release/bundle/nsis/

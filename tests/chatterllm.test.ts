@@ -865,3 +865,172 @@ test('every ambient channel gets the house style, TOWER keeps its own prompt', (
   const tower = buildSceneChat(req({ channel: 'TOWER' }))[1].content;
   assert.doesNotMatch(tower, /THE SECOND LINE IS A PERSON/);
 });
+
+// ---------------------------------------------------------------------------
+// Ambient beats — the topic roll's half of the prompt
+// ---------------------------------------------------------------------------
+
+const ambient = (over: Partial<SceneRequest['topic']> = {}, reqOver: Partial<SceneRequest> = {}): SceneRequest =>
+  req({
+    channel: 'LOCAL',
+    func: 'texture',
+    brief: textureBrief('topic:conspiracy:2'),
+    dossier: 'System: Ratraii — high security\nStations: Kepler Landing',
+    topic: {
+      category: 'conspiracy',
+      label: 'conspiracy',
+      brief: 'Somebody who is absolutely certain and entirely wrong.',
+      seed: 'a theory that the station only rotates so nobody notices what is on the far side',
+      shape: 'exchange',
+      ...over,
+    },
+    ...reqOver,
+  });
+
+test('an ambient beat is not about the listener, and says so last', () => {
+  const chat = buildSceneChat(ambient());
+  const user = chat.at(-1)!.content;
+  assert.match(user, /NOBODY HERE KNOWS THE LISTENER EXISTS/);
+  assert.match(user, /STAY INSIDE THE WORLD/);
+  assert.match(user, /PLAYED STRAIGHT/);
+  // The order that made every beat about the commander's world is gone.
+  assert.doesNotMatch(user, /GROUND THE SCENE IN THIS SYSTEM/);
+  assert.doesNotMatch(user, /as the driver/);
+  assert.doesNotMatch(user, /COMMANDER'S presence/);
+  // The briefing rides in as scenery, not as the script.
+  assert.match(user, /scenery only/);
+  assert.match(user, /Kepler Landing/);
+  // The beat's brief and its seed are the driver.
+  assert.match(user, /THIS BEAT — CONSPIRACY/);
+  assert.match(user, /absolutely certain and entirely wrong/);
+  assert.match(user, /THE IDEA THIS TIME: a theory that the station only rotates/);
+  // Rules sit at the end, where position makes them count.
+  assert.ok(user.indexOf('NOBODY HERE KNOWS') > user.indexOf('THE IDEA THIS TIME'));
+  assert.ok(user.indexOf('Write the 2 lines now') > user.indexOf('PLAYED STRAIGHT'));
+});
+
+test('an ambient beat keeps the house style', () => {
+  const user = buildSceneChat(ambient())[1].content;
+  assert.match(user, /NOT ABOUT EQUIPMENT/);
+  assert.match(user, /ONE THOUGHT PER LINE/);
+  assert.match(user, /THE SECOND LINE IS A PERSON/);
+  // The channel's own system prompt is untouched: it still sounds like LOCAL.
+  assert.match(buildSceneChat(ambient())[0].content, /two working pilots on the open channel/);
+});
+
+test('the ambient turn names no world outside the fiction', () => {
+  // Anything quotable in a prompt eventually gets quoted, so the frame rule is
+  // phrased as a subject and never as a list of forbidden words.
+  const user = buildSceneChat(ambient())[1].content;
+  assert.doesNotMatch(user, /\b(AI|LLM|model|video ?game|player|simulation)\b/);
+});
+
+test('a fragment asks for one line, and the roster says so', () => {
+  for (const shape of ['reply-unheard', 'punchline'] as const) {
+    const chat = buildSceneChat(ambient({ shape, lines: 1 }));
+    const user = chat.at(-1)!.content;
+    assert.match(user, /A FRAGMENT: one line only/, shape);
+    assert.match(user, /one line, spoken by the first person below/, shape);
+    assert.match(user, /Write the 1 line now/, shape);
+    assert.match(user, /Write one line of intercepted radio/, shape);
+    assert.doesNotMatch(user, /THE SECOND LINE IS A PERSON/, shape);
+    assert.match(chat[0].content, /exactly 1 line\b/, shape);
+  }
+  const mid = buildSceneChat(ambient({ shape: 'mid-argument', lines: 2 })).at(-1)!.content;
+  assert.match(mid, /two lines from the MIDDLE of an argument/);
+  assert.match(mid, /Write the 2 lines now/);
+});
+
+test('a whole exchange still follows the roster and the rotation for its length', () => {
+  const user = buildSceneChat(ambient({ shape: 'exchange', lines: undefined }, { lines: 3 })).at(-1)!.content;
+  assert.match(user, /Build a 3-line radio scene/);
+  assert.doesNotMatch(user, /A FRAGMENT/);
+});
+
+test('a regular’s first appearance establishes the bit', () => {
+  const user = buildSceneChat(
+    ambient({
+      regular: {
+        id: 'reg:1',
+        ref: 'hauler',
+        name: 'Dez Okonkwo',
+        character: 'is absolutely certain about something nobody else believes',
+        bit: 'the station rotates to hide something',
+        ledger: [],
+        returning: false,
+      },
+    }),
+  ).at(-1)!.content;
+  assert.match(user, /A REGULAR ON THIS CHANNEL: Dez Okonkwo — who is absolutely certain/);
+  assert.match(user, /FIRST APPEARANCE/);
+  assert.match(user, /the station rotates to hide something/);
+  assert.doesNotMatch(user, /ESCALATE/);
+  // On the roster too, so the parser and the cast agree on who line 1 is.
+  assert.match(user, /1\. Dez Okonkwo, who is absolutely certain/);
+  assert.doesNotMatch(user, /heard them before/);
+});
+
+test('a returning regular is handed what they said and told to make it worse', () => {
+  const user = buildSceneChat(
+    ambient({
+      regular: {
+        id: 'reg:1',
+        ref: 'hauler',
+        name: 'Dez Okonkwo',
+        character: 'is absolutely certain about something nobody else believes',
+        bit: 'the station rotates to hide something',
+        ledger: ['It rotates once a day. Ask yourself why.', 'Twice a day now. Nobody is asking.'],
+        returning: true,
+      },
+    }),
+  ).at(-1)!.content;
+  assert.match(user, /WHAT THEY SAID ON THE AIR BEFORE/);
+  assert.match(user, /- It rotates once a day\. Ask yourself why\./);
+  assert.match(user, /- Twice a day now\. Nobody is asking\./);
+  assert.match(user, /CONTINUE THE BIT AND ESCALATE/);
+  assert.match(user, /Never repeat an earlier line and never merely refer back/);
+  assert.doesNotMatch(user, /FIRST APPEARANCE/);
+  assert.match(user, /1\. Dez Okonkwo, who .* — the commander has heard them before/);
+});
+
+test('the tower ignores a topic entirely — a clearance never carries a bit', () => {
+  const plain = req({ channel: 'TOWER', speakers: ['tower'], speakerNames: { tower: 'Kepler Landing Tower' } });
+  const withTopic = { ...plain, topic: ambient().topic };
+  assert.deepEqual(buildSceneChat(withTopic), buildSceneChat(plain));
+  const outcome = acceptSceneReply('Cleared to pad four, welcome back.', withTopic, 'id', 60_000);
+  assert.ok(outcome.ok);
+  assert.equal(outcome.ok && outcome.scene.topic, undefined);
+});
+
+test('an accepted ambient scene carries its topic and the regular’s seat', () => {
+  const r = ambient({
+    shape: 'punchline',
+    lines: 1,
+    regular: {
+      id: 'reg:conspiracy:1',
+      ref: 'hauler',
+      name: 'Dez Okonkwo',
+      character: 'c',
+      bit: 'b',
+      ledger: [],
+      returning: false,
+    },
+  });
+  const outcome = acceptSceneReply('And that is why the far side has no windows.', r, 'id', 60_000);
+  assert.ok(outcome.ok);
+  const scene = outcome.ok ? outcome.scene : null;
+  assert.deepEqual(scene?.topic, {
+    category: 'conspiracy',
+    label: 'conspiracy',
+    shape: 'punchline',
+    regularId: 'reg:conspiracy:1',
+    regularRef: 'hauler',
+  });
+  assert.equal(scene?.turns.length, 1);
+  assert.equal(scene?.turns[0].speakerRef, 'hauler');
+});
+
+test('a one-line fragment is a valid scene', () => {
+  const outcome = acceptSceneReply('No, the OTHER dog.', ambient({ shape: 'reply-unheard', lines: 1 }), 'id', 60_000);
+  assert.ok(outcome.ok);
+});

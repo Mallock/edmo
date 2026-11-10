@@ -526,13 +526,31 @@ export async function ardentSystemCommodities(system: string): Promise<ArdentSys
   return JSON.parse(await invoke<string>('ardent_system_commodities', { system })) as ArdentSystemRow[];
 }
 
-/** Opt-in galaxy-wide commodity lookup; sends only the system + commodity. */
+/** One system's galactic coordinates, so an old market reading can be placed. */
+export async function ardentSystemCoords(
+  system: string,
+): Promise<{ system: string; x: number; y: number; z: number } | null> {
+  const raw = await invoke<string>('ardent_system_coords', { system });
+  return JSON.parse(raw) as { system: string; x: number; y: number; z: number } | null;
+}
+
+/**
+ * Opt-in galaxy-wide commodity lookup; sends only the system + commodity.
+ *
+ * `maxDistanceLy` widens the ring. Ardent's own default is 100 ly, which is a
+ * bubble-shaped assumption: from a colonisation build 15,000 ly out it returns
+ * nothing at all for steel, tritium, water or gold, while the hub 464 ly away
+ * holds hundreds of thousands of tons of every one of them.
+ */
 export async function ardentMarket(
   system: string,
   commodity: string,
   side: 'buy' | 'sell',
+  maxDistanceLy?: number | null,
 ): Promise<ArdentMarketRow[]> {
-  return JSON.parse(await invoke<string>('ardent_market', { system, commodity, side })) as ArdentMarketRow[];
+  return JSON.parse(
+    await invoke<string>('ardent_market', { system, commodity, side, maxDistanceLy: maxDistanceLy ?? null }),
+  ) as ArdentMarketRow[];
 }
 
 /** Origin exports + destination imports, for a run the commander already plans. */

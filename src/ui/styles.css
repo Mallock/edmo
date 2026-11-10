@@ -2106,6 +2106,66 @@ body {
   color: var(--amber);
 }
 
+/* The horizon line under the bar: how long the build has left, and how much of
+   it the commander already owns. Two facts the game states nowhere. */
+.arc-clock {
+  margin-top: 3px;
+  font-size: var(--fs-meta);
+  color: var(--amber);
+}
+
+.arc-clock.own {
+  color: var(--phos);
+}
+
+/* What the site is, named from its total tonnage. Sits under the system line
+   in the head, quieter than the title and louder than a hint. */
+.arc-what {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+  font-size: var(--fs-meta);
+  color: var(--text);
+}
+
+.arc-what-pts {
+  margin-left: auto;
+  color: var(--dim);
+  font-size: var(--fs-micro);
+  white-space: nowrap;
+}
+
+/* The next load sits above everything else in the tree: it is the only block
+   that answers "what do I do in the next ten minutes". */
+.arc-load {
+  margin-top: 8px;
+}
+
+/* Orbital / Ground, for the price list. Two slots that are not interchangeable
+   and never want to be shown together. */
+.arc-slots {
+  display: flex;
+  gap: 4px;
+  padding: 4px 4px 2px;
+}
+
+.arc-slot {
+  padding: 2px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
+  font-size: var(--fs-micro);
+  cursor: pointer;
+}
+
+.arc-slot.on {
+  border-color: var(--amber);
+  color: var(--amber);
+}
+
 .arc-tools {
   display: flex;
   align-items: center;
@@ -2232,6 +2292,15 @@ body {
   flex: none;
 }
 
+/* "+1,000 t held" beside a line the carrier only part-covers. Tinted the same
+   phosphor as every other carrier figure so the eye reads one thing. */
+.arc-onfc {
+  color: var(--phos);
+  font-size: var(--fs-micro);
+  flex: none;
+  white-space: nowrap;
+}
+
 /* How much of this commodity is already delivered. */
 .arc-bar {
   width: 34px;
@@ -2259,6 +2328,65 @@ body {
 }
 
 .arc-src.hold {
+  color: var(--green);
+}
+
+/* Carrier stock wears the commander's own phosphor: it is not a state of the
+   build, it is a thing they already own. */
+.arc-src.fc {
+  color: var(--phos);
+}
+
+/* "464 ly · 14 jumps" — the leg, brighter than the system name beside it,
+   because it is the number that decides whether the trip happens tonight. */
+.arc-leg {
+  color: var(--amber);
+}
+
+/* Copy the system name for the galaxy map.
+   The whole NAME is the button — the first cut put a 0.68em glyph at 55%
+   opacity next to it and it was, correctly, described as something no user
+   would notice. The name is the widest target on the row and the thing the
+   eye is already on. */
+.arc-sysname {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.arc-sysname:hover {
+  color: var(--phos);
+}
+
+/* The affordance: a word, not a glyph, so it needs no emoji font and reads at
+   a glance. Bordered like the pad/carrier chips, which are already legible. */
+.arc-copy {
+  flex: none;
+  padding: 0 4px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 3px;
+  font-size: var(--fs-micro);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.arc-sysname:hover .arc-copy {
+  border-color: var(--phos);
+  color: var(--phos);
+}
+
+.arc-copy.done,
+.arc-sysname:hover .arc-copy.done {
+  border-color: var(--green);
   color: var(--green);
 }
 
@@ -2909,6 +3037,15 @@ body {
   letter-spacing: 0.08em;
 }
 .comms-entry-age { margin-left: auto; }
+/* The ambient beat's tag — the topic roll made this one about somebody else. */
+.comms-entry-topic {
+  color: var(--dim);
+  border: 1px solid var(--dim);
+  border-radius: 3px;
+  padding: 0 4px;
+  opacity: 0.8;
+  cursor: help;
+}
 .comms-intel-flag {
   color: var(--cyan);
   border: 1px solid var(--cyan);
@@ -2964,4 +3101,42 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The basket at the pad — the only block about the next sixty seconds, so it
+   sits above the plan and wears the delivered-green of work already done. */
+.arc-basket {
+  margin-top: 8px;
+}
+
+.arc-basket .arc-progress-bar {
+  margin: 2px 4px 4px;
+}
+
+.arc-known.done .arc-name,
+.arc-known.done .arc-need {
+  color: var(--dim);
+  text-decoration: line-through;
+}
+
+.arc-known.done .arc-twist {
+  color: var(--green);
+}
+
+/* The cart — the carrier as a trolley being filled. Wears the commander's own
+   phosphor while gathering and flips to delivered-green when it is full. */
+.arc-cart {
+  margin-top: 8px;
+}
+
+.arc-cart .arc-progress-bar {
+  margin: 2px 4px 4px;
+}
+
+.arc-cart.full .arc-group-head {
+  background: rgba(64, 224, 96, 0.07);
+}
+
+.arc-hint.good {
+  color: var(--green);
 }

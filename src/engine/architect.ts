@@ -27,10 +27,14 @@
  */
 import type { JournalEvent } from './types.ts';
 import type { MarketRecord } from './trade.ts';
-import { rankMarketRows, reportAgeDays, STALE_DAYS, type MarketLookupRow } from './tools.ts';
+import { reportAgeDays, STALE_DAYS, type MarketLookupRow } from './tools.ts';
+import { jumpsFor, type ReachEstimate } from './starmap.ts';
 
 const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
 const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+
+/** A fleet carrier's registration plate — "V6W-TTJ". The only tell in a name. */
+const CALLSIGN = /^[A-Z0-9]{3}-[A-Z0-9]{3}$/;
 
 /**
  * One commodity, one key, whatever wrapper the game put around the name.
@@ -77,6 +81,41 @@ export interface DepotState {
    * which memory to let go of first.
    */
   lastDockedAt?: string | null;
+}
+
+/**
+ * The name the game wrote, made readable.
+ *
+ * A colonisation ship's StationName is not a name, it is a localisation token
+ * with a name stuck on the end:
+ *
+ *   "$EXT_PANEL_ColonisationShip; Byeong-cheon Reach"
+ *
+ * The game's own UI resolves `$EXT_PANEL_ColonisationShip;` to "Colonisation
+ * Ship" and shows the pair. We were rendering the raw token — as the panel
+ * title, in the feed, in the sites list, and out loud, where a text-to-speech
+ * voice has to make something of "dollar E X T underscore panel". Every other
+ * construction site in the game reads perfectly ("Orbital Construction Site:
+ * Perga's Progress"), so this one token was the whole problem.
+ *
+ * Unknown `$…;` tokens are un-camel-cased rather than dropped: the game adds
+ * new ones, and "Foo Bar: Some Name" is a good guess where deleting the token
+ * would lose which KIND of place this is.
+ */
+export function stationDisplayName(name: string | null | undefined): string {
+  const raw = str(name);
+  if (!raw) return '';
+  const m = /^\$([A-Za-z0-9_]+?)_?;?\s*(?:;|\s)\s*(.*)$/.exec(raw) ?? /^\$([A-Za-z0-9_]+);?\s*$/.exec(raw);
+  if (!m) return raw;
+  const token = m[1].replace(/^EXT_PANEL_/i, '').replace(/_name$/i, '');
+  const label = token
+    // ColonisationShip → Colonisation Ship; keeps runs like "FC" together.
+    .replace(/_/g, ' ')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .trim();
+  const rest = (m[2] ?? '').trim();
+  if (!label) return rest || raw;
+  return rest ? `${label}: ${rest}` : label;
 }
 
 /** A construction site is the only station type that asks for contributions. */
@@ -678,9 +717,17 @@ export interface Source {
    * 200,000. "No jump" does not mean "next door".
    */
   distanceLs?: number | null;
+  /**
+   * Jumps to get there, at the ship's measured laden range.
+   *
+   * Light years are the honest number and jumps are the one a commander
+   * actually feels: 464 ly is abstract, fourteen jumps is an evening. Null
+   * whenever the distance or the range is unknown — never a guess.
+   */
+  jumps?: number | null;
 }
 
-export type Bucket = 'deliver' | 'here' | 'system' | 'nearby' | 'unknown' | 'done';
+export type Bucket = 'deliver' | 'carrier' | 'here' | 'system' | 'nearby' | 'unknown' | 'done';
 
 export interface ShoppingItem {
   key: string;
@@ -693,6 +740,22 @@ export interface ShoppingItem {
   inHold: number;
   /** What can be handed over on this docking without flying anywhere. */
   deliverNow: number;
+  /**
+   * Tons of it already sitting in the fleet carrier's hold.
+   *
+   * Not deliverable — it still has to be shuttled — but it is bought and paid
+   * for, and a list that ignores it sends the commander to buy steel they
+   * already own 4,500 t of.
+   */
+  onCarrier: number;
+  /**
+   * What still has to be ACQUIRED: remaining, less what the carrier holds.
+   *
+   * `remaining` is what the depot wants; `toBuy` is what the commander has to
+   * go and find. On a build with no carrier behind it the two are identical,
+   * which is why every ordering below can safely use this one.
+   */
+  toBuy: number;
   /** Best place to buy the rest, and the runners-up. */
   best: Source | null;
   alternatives: Source[];
@@ -740,6 +803,43 @@ export interface ShoppingInput {
   sources?: ReadonlyMap<string, readonly MarketLookupRow[]>;
   /** Hold size, for the trip count. */
   cargoCapacity?: number | null;
+  /**
+   * What the commander's own fleet carrier is holding, and where it is.
+   *
+   * The staging warehouse of every deep-space build. `tons` is commodity key →
+   * tons, as `CarrierHold.tons()` returns it; `system` decides whether that
+   * tonnage is a supercruise hop away or a carrier jump away, which is the
+   * difference between an afternoon and a week.
+   */
+  carrier?: {
+    tons: ReadonlyMap<string, number>;
+    system?: string | null;
+    callsign?: string | null;
+  } | null;
+  /**
+   * Light years from the commander to a system, for markets THEY read.
+   *
+   * Community rows arrive with a distance already on them; first-hand ones
+   * never have, because market memory records a station, a system and a price
+   * and has never known where any of it is. Without this the commander's own
+   * five best sellers of titanium show no distance at all and cannot be
+   * ordered by the only thing that decides the trip.
+   */
+  distanceFrom?: (system: string) => number | null;
+  /** The ship's measured reach, for turning light years into jumps. */
+  reach?: ReachEstimate | null;
+  /**
+   * Leave other commanders' fleet carriers out of the list.
+   *
+   * A carrier is not a supplier. It moves, it sells out, its owner reprices it
+   * on a whim and may refuse the dock outright — and a colonisation haul runs
+   * for days. Of the five nearest sellers of steel to the commander's build,
+   * every single one was a carrier; the permanent stations holding 793,835 t
+   * and 482,353 t were pushed off the end of the list by them.
+   */
+  stationsOnly?: boolean;
+  /** The commander's own carrier, which is never filtered — it is their warehouse. */
+  ownCarrier?: string | null;
   nowMs?: number;
 }
 
@@ -775,11 +875,15 @@ function byStop(items: readonly ShoppingItem[]): ShoppingItem[] {
     if (at) at.push(i);
     else stops.set(k, [i]);
   }
+  // Ranked by `toBuy`, never by `remaining`: a stop is worth flying to for what
+  // it still has to SELL us. Ranking by what the depot wants would put a stop
+  // top of the list for 4,067 t of steel the commander's own carrier is already
+  // holding two hundred Ls from the site.
   const clusters = [...stops.values()].map((group) => {
-    const sorted = [...group].sort((a, b) => b.remaining - a.remaining);
+    const sorted = [...group].sort((a, b) => b.toBuy - a.toBuy);
     return {
       items: sorted,
-      tons: sorted.reduce((n, i) => n + i.remaining, 0),
+      tons: sorted.reduce((n, i) => n + i.toBuy, 0),
       ring: Math.min(...sorted.map((i) => ring(i.best?.distanceLy ?? null))),
     };
   });
@@ -848,13 +952,18 @@ export function buildShoppingList(
       const at: Source = {
         station: m.station,
         system: m.system,
-        // Inside the build's own system there is no jump to make at all; from
-        // anywhere else our memory carries no light-year figure.
-        distanceLy: sameSystem ? 0 : null,
+        // Inside the build's own system there is no jump to make at all.
+        // Anywhere else, the star map measures it — every system in market
+        // memory is one the commander flew to, so its StarPos is on record.
+        distanceLy: sameSystem ? 0 : (input.distanceFrom?.(m.system) ?? null),
         price: i.buy,
         stock: i.stock,
         pad: null,
-        carrier: false,
+        // Market memory records a station name and never a station TYPE, so a
+        // board read on a carrier used to render as a permanent station. The
+        // callsign shape is the only tell there is, and it is the same test
+        // trade.ts already uses to keep carriers out of route starts.
+        carrier: CALLSIGN.test(m.station),
         updatedAt: m.at,
         ageDays: reportAgeDays(m.at, nowMs),
         own: true,
@@ -869,9 +978,18 @@ export function buildShoppingList(
     for (const r of depot.resources) if (!stocked.has(r.key)) seenEmpty.add(`${m.station}|${m.system}|${r.key}`);
   }
 
+  const carrierTons = input.carrier?.tons ?? new Map<string, number>();
   const items: ShoppingItem[] = depot.resources.map((r) => {
     const inHold = cargo.get(r.key) ?? 0;
     const deliverNow = Math.min(inHold, r.remaining);
+    // Only what the carrier holds AGAINST this line counts. A carrier sitting
+    // on 900 t of tritium against a build that wants none of it is not 900 t
+    // of progress, and must not be allowed to read as any.
+    const onCarrier = Math.min(carrierTons.get(r.key) ?? 0, r.remaining);
+    // The hold and the carrier are separate stacks, so both come off what is
+    // still to be found. Capped at the requirement — over-supply is not credit
+    // against the next commodity.
+    const toBuy = Math.max(0, r.remaining - deliverNow - onCarrier);
     const rows = sources.get(r.key);
     const scanned = rows != null;
     const here = local.get(r.key);
@@ -887,15 +1005,70 @@ export function buildShoppingList(
     // No jump beats everything except our own eyes on the same trip: a station
     // in the build's own system is supercruise, not a route. Inside each tier
     // the usual ranking applies — can it fill the order, then price.
-    const rank = (rows: MarketLookupRow[]): Source[] =>
-      rankMarketRows(rows, 'buy', r.remaining || null, nowMs).map((x) => toSource(x, nowMs, home));
-    const cheapest = (a: Source, b: Source): number => (a.price ?? Infinity) - (b.price ?? Infinity);
+    /**
+     * Nearest first — this is a haul, not a bargain hunt.
+     *
+     * The general lookup in tools.ts ranks by price, and for a trader that is
+     * right. A colonisation run is the opposite problem: the site PAYS more
+     * than any of these sellers charge (5,360 cr/t against 3,883), so every
+     * source on the list is profitable and the only real cost is the flying.
+     * Ordering five sellers of titanium by a 477 cr spread, when one of them
+     * is in the next system and another is fourteen jumps away, sorts by the
+     * number that does not matter.
+     *
+     * One guard ahead of distance: a seller who cannot fill even a single hold
+     * is a stop, not a supply, and leading with a nearer one holding 40 t sends
+     * the commander to a pad for nothing.
+     */
+    const worthLoad = Math.max(1, Math.min(toBuy || r.remaining, capacity ?? Infinity));
+    const thin = (s: Source): number => ((s.stock ?? Infinity) >= worthLoad ? 0 : 1);
+    const byNear = (a: Source, b: Source): number =>
+      thin(a) - thin(b) ||
+      // An unknown distance sorts as far away, because that is the honest
+      // assumption: the systems we cannot measure are the ones visited long
+      // ago, and out here that usually means the bubble.
+      (a.distanceLy ?? Infinity) - (b.distanceLy ?? Infinity) ||
+      // Only NOW does having been there matter: two equally distant boards,
+      // and the one we read ourselves is the one whose price is real.
+      Number(!!b.own) - Number(!!a.own) ||
+      (a.price ?? Infinity) - (b.price ?? Infinity) ||
+      (b.stock ?? 0) - (a.stock ?? 0);
+    /**
+     * Somebody else's fleet carrier, when the commander has asked for none.
+     *
+     * Their OWN carrier is exempt: it is the warehouse the rest of this panel
+     * is built around and the door is always open to them.
+     */
+    const ownRig = (input.ownCarrier ?? '').trim().toLowerCase();
+    const shunned = (s: { carrier?: boolean; station: string }): boolean =>
+      !!input.stationsOnly && !!s.carrier && s.station.trim().toLowerCase() !== ownRig;
+    const asSources = (rows: MarketLookupRow[]): Source[] =>
+      rows.filter((x) => !shunned(x)).map((x) => toSource(x, nowMs, home));
+    /**
+     * OUT OF SYSTEM, FIRST-HAND KNOWLEDGE IS NOT A TIER. IT IS A TIE-BREAK.
+     *
+     * This used to rank every market the commander had personally read above
+     * every community row, which is obviously right inside the build's own
+     * system and catastrophically wrong outside it. A commander colonising
+     * Floanth PW-G b16-3 was shown five sellers of steel in HIP 71120, all
+     * marked "you saw it", all listed under "Found nearby" — and HIP 71120 is
+     * in the BUBBLE, 15,114 light years away. Four hundred and fifty-six jumps,
+     * one way. The nearest real seller, FLK-B2Z at 107 ly, was ranked beneath
+     * them because a stranger reported it.
+     *
+     * Having stood on a pad two months ago says the price was real. It says
+     * nothing whatever about the place being near, and the two must never be
+     * confused again.
+     */
+    const ours = mine.filter((s) => !shunned(s));
+    const away = [...ours.filter((s) => !s.inSystem), ...asSources(community.filter((x) => x.system.toLowerCase() !== home))];
     const ranked = [
-      ...mine.filter((s) => s.inSystem).sort(cheapest),
-      ...rank(community.filter((x) => x.system.toLowerCase() === home)),
-      ...mine.filter((s) => !s.inSystem).sort(cheapest),
-      ...rank(community.filter((x) => x.system.toLowerCase() !== home)),
+      // The build's own system genuinely IS a tier: no jump, at any price.
+      ...[...ours.filter((s) => s.inSystem), ...asSources(community.filter((x) => x.system.toLowerCase() === home))].sort(byNear),
+      ...away.sort(byNear),
     ];
+    // Light years into jumps, once, for every row this line will show.
+    for (const s of ranked) s.jumps = jumpsFor(s.distanceLy, input.reach ?? null);
     // The market we are standing on beats anything a stranger reported: no
     // travel, and the price is on the board rather than days old.
     const hereSource: Source | null =
@@ -911,21 +1084,29 @@ export function buildShoppingList(
             updatedAt: localAt.at,
             ageDays: reportAgeDays(localAt.at, nowMs),
             own: true,
+            // The ship is standing on it. No distance, and no jumps.
+            jumps: 0,
           }
         : null;
     const best = hereSource ?? ranked[0] ?? null;
+    // Carrier stock outranks every shop: the tons are bought, paid for and
+    // already in deep space. A line the carrier covers in full is not a
+    // shopping problem at all, it is a shuttle run — so it leaves the buy
+    // groups entirely rather than sitting in them with a footnote.
     const bucket: Bucket =
       r.remaining <= 0
         ? 'done'
         : deliverNow > 0
           ? 'deliver'
-          : hereSource
-            ? 'here'
-            : best?.inSystem
-              ? 'system'
-              : ranked.length
-                ? 'nearby'
-                : 'unknown';
+          : toBuy <= 0 && onCarrier > 0
+            ? 'carrier'
+            : hereSource
+              ? 'here'
+              : best?.inSystem
+                ? 'system'
+                : ranked.length
+                  ? 'nearby'
+                  : 'unknown';
     return {
       key: r.key,
       name: r.name,
@@ -935,6 +1116,8 @@ export function buildShoppingList(
       payment: r.payment,
       inHold,
       deliverNow,
+      onCarrier,
+      toBuy,
       best,
       alternatives: hereSource ? ranked.slice(0, 4) : ranked.slice(1, 5),
       trips: capacity ? Math.ceil(r.remaining / capacity) : null,
@@ -948,7 +1131,10 @@ export function buildShoppingList(
   // point is precisely that two different lines share one pad.
   const atStop = new Map<string, ShoppingItem[]>();
   for (const i of items) {
-    if (!i.best || i.remaining <= 0) continue;
+    // `toBuy`, not `remaining`: "+2 more from one pad" has to mean two more
+    // lines this stop can actually sell us, or the badge promises a trip that
+    // clears nothing.
+    if (!i.best || i.toBuy <= 0) continue;
     const k = stopKey(i);
     const at = atStop.get(k);
     if (at) at.push(i);
@@ -961,17 +1147,35 @@ export function buildShoppingList(
       station: i.best.station,
       system: i.best.system,
       lines: together.length,
-      tons: together.reduce((n, x) => n + x.remaining, 0),
+      tons: together.reduce((n, x) => n + x.toBuy, 0),
     };
   }
 
-  const byTons = (a: ShoppingItem, b: ShoppingItem): number => b.remaining - a.remaining;
+  const byTons = (a: ShoppingItem, b: ShoppingItem): number => b.toBuy - a.toBuy;
+  // Where the carrier is decides what the carrier group MEANS. Parked at the
+  // build it is a shuttle run measured in minutes; parked in the bubble it is a
+  // jump, a cooldown and a week — and a hint that says the wrong one of those
+  // is worse than no hint.
+  const carrierSystem = (input.carrier?.system ?? '').toLowerCase();
+  const carrierHere = !!carrierSystem && carrierSystem === home;
+  const carrierWho = input.carrier?.callsign ?? 'your carrier';
   const groups: ShoppingGroup[] = [
     {
       bucket: 'deliver',
       title: 'In your hold — hand it over now',
       hint: 'Already bought and already here. Contribute before you fly anywhere.',
       items: items.filter((i) => i.bucket === 'deliver').sort((a, b) => b.deliverNow - a.deliverNow),
+      tons: 0,
+    },
+    {
+      bucket: 'carrier',
+      title: carrierHere
+        ? `On ${carrierWho} — already here, just shuttle it`
+        : `On ${carrierWho}${input.carrier?.system ? ` in ${input.carrier.system}` : ''} — bought, not delivered`,
+      hint: carrierHere
+        ? 'Parked in this system. Dock, transfer to the ship, fly it over — no market, no credits.'
+        : 'You already own these. Jump the carrier here before buying a single ton of them again.',
+      items: items.filter((i) => i.bucket === 'carrier').sort((a, b) => b.onCarrier - a.onCarrier),
       tons: 0,
     },
     {
@@ -1010,8 +1214,16 @@ export function buildShoppingList(
       tons: 0,
     },
   ];
+  // Each group counts the tonnage its own action moves: what can be handed
+  // over now, what is waiting on the carrier, what still has to be bought. A
+  // single `remaining` across all of them would count the same ton twice.
   for (const g of groups) {
-    g.tons = g.items.reduce((n, i) => n + (g.bucket === 'deliver' ? i.deliverNow : i.remaining), 0);
+    g.tons = g.items.reduce(
+      (n, i) =>
+        n +
+        (g.bucket === 'deliver' ? i.deliverNow : g.bucket === 'carrier' ? i.onCarrier : i.toBuy),
+      0,
+    );
   }
   return groups.filter((g) => g.items.length);
 }
@@ -1080,13 +1292,13 @@ export function describeDepot(
   groups: readonly ShoppingGroup[],
 ): string | null {
   if (!depot) return null;
-  if (depot.complete) return `${depot.station ?? 'The construction site'} is complete.`;
-  if (depot.failed) return `${depot.station ?? 'The construction site'} has failed.`;
+  if (depot.complete) return `${stationDisplayName(depot.station) || 'The construction site'} is complete.`;
+  if (depot.failed) return `${stationDisplayName(depot.station) || 'The construction site'} has failed.`;
   const left = tonsRemaining(depot);
-  if (left <= 0) return `${depot.station ?? 'The site'} has everything it asked for.`;
+  if (left <= 0) return `${stationDisplayName(depot.station) || 'The site'} has everything it asked for.`;
   const pct = Math.round(depot.progress * 1000) / 10;
   const wanted = depot.resources.filter((r) => r.remaining > 0).length;
-  const head = `${depot.station ?? 'Construction site'}: ${tons(left)} still wanted across ${wanted} commodit${
+  const head = `${stationDisplayName(depot.station) || 'Construction site'}: ${tons(left)} still wanted across ${wanted} commodit${
     wanted === 1 ? 'y' : 'ies'
   }, ${pct}% built.`;
   const deliver = groups.find((g) => g.bucket === 'deliver');
@@ -1106,7 +1318,7 @@ export function architectFacts(
   if (!depot) return null;
   const lines: string[] = [];
   lines.push(
-    `CONSTRUCTION: ${depot.station ?? 'site'} in ${depot.system ?? '?'} — ${Math.round(
+    `CONSTRUCTION: ${stationDisplayName(depot.station) || 'site'} in ${depot.system ?? '?'} — ${Math.round(
       depot.progress * 1000,
     ) / 10}% built, ${tons(tonsRemaining(depot))} outstanding.`,
   );
@@ -1118,7 +1330,9 @@ export function architectFacts(
         const where =
           i.bucket === 'deliver'
             ? `${Math.round(i.deliverNow)} t in your hold`
-            : i.best
+            : i.bucket === 'carrier'
+              ? `${Math.round(i.onCarrier)} t already on your fleet carrier — do NOT suggest buying it`
+              : i.best
               ? `${i.best.station}${i.best.system !== depot.system ? ` (${i.best.system}${
                   i.best.distanceLy != null ? `, ${Math.round(i.best.distanceLy)} ly` : ''
                 })` : ''}${i.best.price != null ? ` at ${i.best.price.toLocaleString('en-US')} cr` : ''}`
@@ -1133,4 +1347,34 @@ export function architectFacts(
     .filter((i) => i.best && !i.best.own && (i.best.ageDays ?? 0) > STALE_DAYS).length;
   if (stale) lines.push(`${stale} of these sources are community reports over ${STALE_DAYS} days old — may be wrong.`);
   return lines.join('\n');
+}
+
+/** What the carrier's hold is worth to this build. */
+export interface CarrierCoverage {
+  /** Outstanding lines the carrier can close on its own. */
+  lines: number;
+  /** Outstanding lines in total, so the ratio can be stated. */
+  ofLines: number;
+  /** Tons of the outstanding requirement the carrier already holds. */
+  tons: number;
+  /** Tons still to be bought once the carrier and the hold are counted. */
+  toBuy: number;
+}
+
+/**
+ * How much of the build is already paid for and parked in deep space.
+ *
+ * The one number that changes a plan. A commander looking at "20,464 t still
+ * wanted" and a commander looking at "20,464 t wanted, 12,900 t of it already
+ * on your carrier in the next system" are running different operations, and
+ * the game shows only the first of those figures.
+ */
+export function carrierCoverage(groups: readonly ShoppingGroup[]): CarrierCoverage {
+  const all = groups.flatMap((g) => g.items).filter((i) => i.remaining > 0);
+  return {
+    lines: all.filter((i) => i.onCarrier > 0).length,
+    ofLines: all.length,
+    tons: all.reduce((n, i) => n + i.onCarrier, 0),
+    toBuy: all.reduce((n, i) => n + i.toBuy, 0),
+  };
 }

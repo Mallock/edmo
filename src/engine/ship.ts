@@ -256,6 +256,13 @@ export class ShipTracker {
 
   apply(ev: JournalEvent): void {
     if (ev.event === 'Loadout') this.current = parseLoadout(ev);
+    // The journal writes a `Cargo` event beside every Cargo.json, and only the
+    // journal has HISTORY. Reading the snapshot alone means a bootstrap replay
+    // knows what is in the hold now and nothing about what was in it at any
+    // earlier moment — which is exactly what a laden jump measurement needs.
+    else if (ev.event === 'Cargo' && typeof ev.Count === 'number' && Number.isFinite(ev.Count)) {
+      this.liveCargo = ev.Count;
+    }
   }
 
   /** Update live cargo from a Cargo.json snapshot's `Count`. */

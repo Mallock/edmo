@@ -74,14 +74,23 @@ export class MarketMemory {
   }
 
   /**
-   * Most recently visited REAL station market in a system, carriers excluded
-   * (registration-plate names like "V6W-TTJ"). The route planner needs a
-   * concrete station as its start — and a fleet carrier is not one.
+   * A station in this system that a route planner will actually recognise.
+   *
+   * Fleet carriers are excluded here because Spansh's market graph leaves them
+   * out. `exclude` is for the other kind of station it has never heard of — a
+   * construction site, which is named nothing like a carrier and is invisible
+   * to community data for exactly as long as it takes to finish building.
    */
-  stationIn(system: string): string | null {
+  stationIn(system: string, exclude: ReadonlySet<string> = new Set()): string | null {
     const carrier = /^[A-Z0-9]{3}-[A-Z0-9]{3}$/;
+    const shut = new Set([...exclude].map((s) => s.toLowerCase()));
     const hit = [...this.markets.values()]
-      .filter((m) => m.system.toLowerCase() === system.toLowerCase() && !carrier.test(m.station))
+      .filter(
+        (m) =>
+          m.system.toLowerCase() === system.toLowerCase() &&
+          !carrier.test(m.station) &&
+          !shut.has(m.station.toLowerCase()),
+      )
       .sort((a, b) => Date.parse(b.at) - Date.parse(a.at))[0];
     return hit?.station ?? null;
   }
@@ -223,4 +232,66 @@ export function findOpportunities(
     out.push({ key, commodity: name, buy, sell, profitPerTon: profit });
   }
   return out.sort((a, b) => b.profitPerTon - a.profitPerTon);
+}
+
+// ------------------------------------------------------------ the route start
+
+/**
+ * Two kinds of station a route planner has never heard of.
+ *
+ * Spansh builds its graph from EDDN market reports, and two kinds of place a
+ * commander routinely stands on are simply absent from it:
+ *
+ *   Fleet carriers — deliberately excluded from the market graph, so asking
+ *   "routes from V6W-TTJ" returns nothing at all.
+ *
+ *   Construction sites — absent because nobody has reported them. A system
+ *   colonised last week has never been seen by EDDN, and the reply is a flat
+ *   {"error":"Could not find station"}. The commander sees "Route search
+ *   failed" at precisely the moment they are standing on the build asking
+ *   where to buy its steel.
+ *
+ * Both are the same problem — an unroutable start — and both are answerable
+ * the same way: use the last real station market read in this system instead,
+ * and say plainly why when there is none.
+ */
+export type RouteStart =
+  | { ok: true; station: string; /** Swapped away from where the ship actually is. */ moved: boolean }
+  | { ok: false; reason: 'depot' | 'carrier' | 'unknown' };
+
+const CARRIER_NAME = /^[A-Z0-9]{3}-[A-Z0-9]{3}$/;
+
+/** True for a callsign like "V6W-TTJ" — the name shape, not a lookup. */
+export const isCarrierName = (station: string | null | undefined): boolean =>
+  !!station && CARRIER_NAME.test(station);
+
+export interface RouteStartInput {
+  system: string;
+  /** Where the ship is docked, or null in space. */
+  station: string | null;
+  /** The Docked event said this is a construction site. */
+  atConstructionSite?: boolean;
+  /** Every construction site we know of, by name — all of them unroutable. */
+  knownSites?: Iterable<string>;
+  /** Markets read first-hand, for the fallback. */
+  memory: Pick<MarketMemory, 'stationIn'>;
+}
+
+/**
+ * Where a route search should actually start from.
+ *
+ * Pure, so the decision can be tested without a network or a Tauri shell —
+ * which is the whole reason it does not live inside the fetch.
+ */
+export function routeStartFrom(input: RouteStartInput): RouteStart {
+  const sites = new Set<string>();
+  for (const s of input.knownSites ?? []) if (s) sites.add(s);
+  const station = input.station;
+  const onSite = !!station && (input.atConstructionSite === true || sites.has(station));
+  const onCarrier = isCarrierName(station);
+  if (station && !onSite && !onCarrier) return { ok: true, station, moved: false };
+  if (station && onSite) sites.add(station);
+  const fallback = input.memory.stationIn(input.system, sites);
+  if (fallback) return { ok: true, station: fallback, moved: true };
+  return { ok: false, reason: onSite ? 'depot' : onCarrier ? 'carrier' : 'unknown' };
 }

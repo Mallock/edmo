@@ -159,6 +159,24 @@ populated should this system sound" are different questions. The default, *busy*
 ninety transmissions an hour in a system with ports in it: roughly one every forty seconds, spread
 across whichever channels are open.
 
+**Most of it is not about you.** Every written beat takes a *topic roll* before it takes a brief,
+and only a minority — **How much is about you**, a third by default — concern your cargo, your
+contract or your approach. The rest is other people's business overheard: a divorce being
+negotiated on the open channel by two people who do not know it is open, a bar advertising its one
+working chair, a station official reading out the clause numbers of a form that does not exist, a
+man who is certain the station only rotates to hide something. Turn the dial down and the channel
+stops being a service and becomes a place. The same category cannot come straight back — the roll
+is rerolled if it wants cargo again too soon — and about a third of these beats are *fragments*:
+half an argument, a punchline whose setup you missed, somebody answering a question you never
+heard. The tower and the emergency channel never roll; a clearance is always a clearance.
+
+**The regulars come back.** The comedy voices are named, keep a fixed manner and a fixed voice,
+and are remembered across restarts. Each carries a running bit, and only what they actually said
+on the air is kept — so when the Sidewinder pilot's insurance saga returns an hour later it does
+not reference the earlier episode, it *escalates* it: same detail, worse. A voice that has
+escalated all the way retires and somebody new is born with a fresh bit. The log tags each
+ambient beat with its category, so you can see the roll working with the audio off.
+
 **The model keeps writing.** Where a fixed grammar eventually repeats itself — however many lines
 are authored, the rotation is finite — your local LLM writes fresh scenes into the same slots the
 event triggers use, continuously, for whatever channels are live. The bundled templates are the

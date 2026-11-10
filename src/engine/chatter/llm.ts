@@ -33,7 +33,39 @@ import { MAX_TURNS, validateScene, type Scene, type SceneTurn } from './scenes.t
 import { estimateTokens } from '../copilot.ts';
 import { isModelAside } from '../aside.ts';
 import { commsAnchorLean, commsRegister, sceneEnergy } from '../tone.ts';
+import { SHAPE_BRIEF, type BeatShape, type TopicCategory } from './topics.ts';
 import type { Act, ChannelId, DramaticFunction } from './types.ts';
+
+/**
+ * An AMBIENT beat — one that is about somebody else's business.
+ *
+ * When present, the scene is written from the topic's brief and seed instead
+ * of from the system briefing and the commander's facts, and the prompt says
+ * in as many words that nobody on the channel knows the listener exists. See
+ * topics.ts for the roll that decides which beats get one.
+ */
+export interface TopicRequest {
+  category: TopicCategory;
+  label: string;
+  /** What this kind of beat is, for the model. */
+  brief: string;
+  /** The idea this time — a seed, or a regular's running bit. */
+  seed: string;
+  shape: BeatShape;
+  /** Lines the shape asks for; undefined defers to `lines`/the roster. */
+  lines?: number;
+  /** The recurring voice carrying it, when one is. Takes the first line. */
+  regular?: {
+    id: string;
+    ref: string;
+    name: string;
+    character: string;
+    bit: string;
+    /** What they said on the air before, oldest first. */
+    ledger: readonly string[];
+    returning: boolean;
+  };
+}
 
 /** How each channel should sound to the model. */
 const CHANNEL_STYLE: Readonly<Record<ChannelId, string>> = {
@@ -174,6 +206,14 @@ export interface SceneRequest {
    * capped by MAX_TURNS regardless.
    */
   lines?: number;
+  /**
+   * Set when the topic roll made this an ambient beat.
+   *
+   * Ignored by the tower, which only ever answers the commander. Everywhere
+   * else it replaces the grounding instruction: the briefing becomes scenery
+   * and the beat is somebody else's business.
+   */
+  topic?: TopicRequest;
 }
 
 /**
@@ -199,9 +239,16 @@ export function buildSceneChat(req: SceneRequest, history: ChatMessage[] = []): 
   const { brief } = req;
   const hedge = hedgeToken(brief);
 
+  // The tower never carries an ambient beat: it is the one channel that talks
+  // TO the commander, and a clearance with a bit in it is a missed clearance.
+  const topic = req.channel === 'TOWER' ? undefined : req.topic;
+  const regular = topic?.regular;
+
   const roster = req.speakers
     .map((ref, i) => {
-      const who = req.cast?.find((c) => c.ref === ref);
+      const who =
+        req.cast?.find((c) => c.ref === ref) ??
+        (regular && regular.ref === ref ? regular : undefined);
       const name = who?.name ?? req.speakerNames[ref] ?? ref;
       const character = who ? `, who ${who.character}` : '';
       const seen = who?.returning ? ' — the commander has heard them before' : '';
@@ -215,7 +262,7 @@ export function buildSceneChat(req: SceneRequest, history: ChatMessage[] = []): 
         `Frame it as something the speaker last heard — for example "${hedge}".`
       : '';
 
-  const n = Math.max(1, Math.min(MAX_TURNS, req.lines ?? req.speakers.length));
+  const n = Math.max(1, Math.min(MAX_TURNS, topic?.lines ?? req.lines ?? req.speakers.length));
 
   // THE TOWER GETS ITS OWN SYSTEM PROMPT, not a variation on the ambient one.
   //
@@ -389,7 +436,7 @@ Write the transmission now.`,
         'shapes. Surprise the listener with something that has not appeared earlier.',
     },
     ...history,
-    {
+    topic ? ambientUserTurn(req, topic, roster, n) : {
       role: 'user',
       content:
         (req.dossier
@@ -525,6 +572,114 @@ Write the transmission now.`,
         `Write the ${n} line${n === 1 ? '' : 's'} now.`,
     },
   ];
+}
+
+/**
+ * The user turn for an AMBIENT beat — somebody else's business, overheard.
+ *
+ * Same system prompt as every other scene, because the channel still sounds
+ * like itself; what changes is the ask. The grounding order ("choose one
+ * concrete fact from the briefing and make it the driver") is the instruction
+ * that made every beat about the commander's world, so it is gone from this
+ * turn entirely. The briefing rides in as scenery, the topic's brief and seed
+ * are the driver, and the two rules that matter most sit at the very end,
+ * where position makes them count at this model size.
+ *
+ * What is NOT here, on the codebase's oldest evidence: no example lines, no
+ * list of forbidden words. Anything quotable gets quoted, and a prohibition
+ * is quotable. The rules name subjects and give somewhere to go instead.
+ */
+function ambientUserTurn(
+  req: SceneRequest,
+  topic: TopicRequest,
+  roster: string,
+  n: number,
+): ChatMessage {
+  const regular = topic.regular;
+  const speaking =
+    n === 1
+      ? `WHO IS SPEAKING — one line, spoken by the first person below. `
+      : `WHO IS SPEAKING — line 1 is spoken by the first person below, line 2 by the second. `;
+
+  // The regular's ledger is the running gag, and this is the only place in
+  // the app that deliberately hands the model its own earlier lines. The echo
+  // guard downstream refuses a verbatim return; what is asked for is the
+  // detail, made worse.
+  const callback = regular
+    ? regular.ledger.length
+      ? `A REGULAR ON THIS CHANNEL: ${regular.name} — who ${regular.character}. Their running ` +
+        `bit: ${regular.bit}.\n` +
+        `WHAT THEY SAID ON THE AIR BEFORE, oldest first:\n` +
+        regular.ledger.map((l) => `- ${l}`).join('\n') +
+        `\nCONTINUE THE BIT AND ESCALATE. Take one specific detail from what they said before ` +
+        `and make it worse — bigger, more certain, more expensive, more people involved, ` +
+        `further along. Never repeat an earlier line and never merely refer back to one: the ` +
+        `escalation is the joke, and it only works if the detail is the same and the scale ` +
+        `is not.\n\n`
+      : `A REGULAR ON THIS CHANNEL: ${regular.name} — who ${regular.character}. This is their ` +
+        `FIRST APPEARANCE. Establish their bit — ${regular.bit} — with one concrete, specific, ` +
+        `slightly absurd detail that could be made worse next time.\n\n`
+    : '';
+
+  const shape = SHAPE_BRIEF[topic.shape];
+
+  return {
+    role: 'user',
+    content:
+      (req.dossier
+        ? `WHERE THIS IS HAPPENING — scenery only. A place or a name from it may drop into a ` +
+          `line in passing; the exchange is NOT about any of it:\n${req.dossier}\n\n`
+        : '') +
+
+      `${speaking}Their names are for YOU, not for the lines:\n${roster}\n\n` +
+
+      `SCENE PURPOSE — this exchange exists to: ${FUNCTION_BRIEF[req.func]}\n` +
+      `REGISTER — how to pitch it: ${commsRegister(req.rotate ?? 0)}\n` +
+      `THE MOMENT — what kind of exchange this is: ${sceneEnergy(req.rotate ?? 0)}\n\n` +
+
+      `THIS BEAT — ${topic.label.toUpperCase()}: ${topic.brief}\n` +
+      `THE IDEA THIS TIME: ${topic.seed}\n\n` +
+
+      callback +
+
+      (n === 1
+        ? `Write one line of intercepted radio from these conditions. Invent the concrete ` +
+          `details that make it feel already underway.\n\n`
+        : `Build a ${n}-line radio scene from these conditions. Invent the concrete details ` +
+          `needed to make the moment feel already underway. Keep it as one live ` +
+          `back-and-forth: each line should directly respond to what was just said.\n\n`) +
+
+      `NOBODY HERE KNOWS THE LISTENER EXISTS. This is not about the listener, their ship, ` +
+      `their cargo, their work or where they are going. It is other people's business, ` +
+      `overheard — and the people having it would be mortified to learn anyone was ` +
+      `listening.\n\n` +
+
+      `STAY INSIDE THE WORLD. Everyone on this channel is a person in this universe with a ` +
+      `radio, and nothing exists outside it: no winks at the listener, no commentary on the ` +
+      `scene itself, no joke that needs anything but a radio and a station to land.\n\n` +
+
+      (shape ? `${shape}\n\n` : '') +
+
+      `NOT ABOUT EQUIPMENT. These are people talking, not a maintenance report. If something ` +
+      `aboard matters, name it the way its owner would in one plain word and move straight on ` +
+      `to what it costs somebody.\n\n` +
+
+      `PLAYED STRAIGHT. Nobody on the channel thinks they are being funny. The comedy is in ` +
+      `how seriously they take it, and in the one specific detail that gives the whole ` +
+      `thing away.\n\n` +
+
+      `ONE THOUGHT PER LINE. A line is a single short spoken sentence — most run six to ` +
+      `fourteen words. No stacked clauses, no line that states a fact and then explains it. ` +
+      `Say the one thing and stop.\n\n` +
+
+      (n >= 2
+        ? `THE SECOND LINE IS A PERSON, NOT MORE INFORMATION. The first line puts something on ` +
+          `the table; every line after it is somebody REACTING — agreeing, refusing, ` +
+          `complaining, teasing, worrying about a person, or telling them what to do.\n\n`
+        : '') +
+
+      `Write the ${n} line${n === 1 ? '' : 's'} now.`,
+  };
 }
 
 /**
@@ -838,6 +993,17 @@ export function acceptSceneReply(
     arcId,
     tier: 'llm',
   };
+  // The tower ignores topics at prompt time, so the scene must not carry one
+  // either — the cast would seat a regular in the controller's chair.
+  if (req.topic && req.channel !== 'TOWER') {
+    scene.topic = {
+      category: req.topic.category,
+      label: req.topic.label,
+      shape: req.topic.shape,
+      regularId: req.topic.regular?.id,
+      regularRef: req.topic.regular?.ref,
+    };
+  }
 
   const structural = validateScene(scene);
   if (structural) return { ok: false, why: 'invalid', detail: structural };

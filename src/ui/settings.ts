@@ -153,6 +153,15 @@ export interface AppSettings {
   comms: {
     enabled: boolean;
     density: 'sparse' | 'normal' | 'busy' | 'bustling';
+    /**
+     * How much of the written chatter is about the commander's own business.
+     *
+     * Independent of density and of the copilot's involvement: how often the
+     * galaxy talks and how much of it concerns you are different questions.
+     * 'low' is the funny setting — the channel becomes a place rather than a
+     * service. See engine/chatter/topics.ts.
+     */
+    relevance: 'low' | 'medium' | 'high';
     volume: number;
     mutedChannels: string[];
     /** Legacy compatibility; source controls model/template policy now. */
@@ -175,6 +184,22 @@ export interface AppSettings {
   exobio: {
     enabled: boolean; // track bodies with uncollected biological signals
   };
+  /** The colonisation panel's own preferences. */
+  architect: {
+    /**
+     * Leave other commanders' fleet carriers out of the shopping list.
+     *
+     * A carrier is not a supplier. It moves, it sells out, its owner changes
+     * the price at will, and it may refuse the dock outright — the six-day-old
+     * listing that looks best today can be nine hundred light years away by the
+     * time a 20,000 t haul gets there. Permanent stations restock and stay put,
+     * which over a build measured in days is worth far more than a price.
+     *
+     * The commander's OWN carrier is never filtered: it is their warehouse and
+     * the door is always open.
+     */
+    stationsOnly: boolean;
+  };
   /** OPT-IN community data sources. Both are off by default and each states
    *  exactly what leaves the machine. */
   external: {
@@ -182,6 +207,17 @@ export interface AppSettings {
     galnet: boolean;
     /** Ardent Insight galaxy-wide markets. Sends the system + commodity asked about. */
     ardent: boolean;
+    /**
+     * How far a commodity lookup reaches, in light years.
+     *
+     * 100 is Ardent's own default and is right inside the bubble, where a
+     * wider ring only adds noise. It is useless in deep space: a build 15,000
+     * ly out returns zero sellers of steel, tritium, water and gold alike,
+     * while the nearest hub sits 464 ly away with 482,353 t of steel. A search
+     * that comes back empty widens itself to {@link MAX_MARKET_RADIUS_LY}
+     * regardless, so this is the floor rather than the ceiling.
+     */
+    marketRadiusLy: number;
     /** EDAstro exploration catalogue. Sends the system name asked about. */
     edastro: boolean;
   };
@@ -281,6 +317,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   comms: {
     enabled: false,
     density: 'busy',
+    // About a third of the written beats concern the commander; the rest is
+    // other people's business overheard. Turn it down for a funnier channel.
+    relevance: 'medium',
     volume: 70,
     mutedChannels: [],
     useModel: true,
@@ -302,12 +341,20 @@ export const DEFAULT_SETTINGS: AppSettings = {
   exobio: {
     enabled: true,
   },
+  architect: {
+    // On by default. A colonisation haul runs for days, and a supplier
+    // that can jump away overnight is not one.
+    stationsOnly: true,
+  },
   external: {
     // Off by default like every other network feature; Galnet sends nothing
     // identifying, Ardent sends a system + commodity name (as Spansh already does).
     galnet: false,
     ardent: false,
     edastro: false,
+    // Ardent's own default. Deep space is served by the automatic widening
+    // rather than by making every bubble commander search a thousand ly.
+    marketRadiusLy: 100,
   },
   memory: {
     enabled: true,

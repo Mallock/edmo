@@ -50,8 +50,10 @@ export interface ToolContext {
     | null;
   /** Galaxy-wide market lookup (Ardent Insight, EDDN data). Injected the same
    *  way; null when the commander has not opted in. */
+  /** Search radius in light years; the lookup widens itself when it finds nothing. */
+  marketRadiusLy?: number | null;
   galaxyMarket:
-    | ((commodity: string, side: 'buy' | 'sell', nearSystem: string) => Promise<
+    | ((commodity: string, side: 'buy' | 'sell', nearSystem: string, maxDistanceLy?: number) => Promise<
         Array<{
           station: string; system: string; distanceLy: number | null; price: number | null;
           stock: number | null; demand: number | null; pad: string | null; carrier: boolean;
@@ -455,6 +457,18 @@ export function reportAgeDays(updatedAt: string | null | undefined, nowMs = Date
  */
 export const STALE_DAYS = 7;
 
+/**
+ * How far a lookup reaches when the configured ring comes back empty.
+ *
+ * 1,000 ly is not a guess. From the commander's build in Floanth PW-G b16-3 the
+ * whole of the Greae Hype hub network sits at 464 ly — Cleaver City with
+ * 482,353 t of steel and 411,318 t of tritium, Gustard Watch with 793,835 t of
+ * steel, both restocked daily — and every one of them was invisible at 100 ly.
+ * Widening past 1,000 adds nothing: the furthest seller of anything that build
+ * needs is 464 ly out, and the request gets slower for empty space.
+ */
+export const MAX_MARKET_RADIUS_LY = 1000;
+
 const ageWord = (days: number | null): string =>
   days == null ? 'age unknown' : days === 0 ? 'seen today' : days === 1 ? 'seen yesterday' : `seen ${days} days ago`;
 
@@ -480,6 +494,18 @@ const ageWord = (days: number | null): string =>
  * distance then decides between them. When none can, the order is unchanged and
  * the caller says so outright rather than quietly topping the list with 31%.
  */
+/**
+ * Prices this close together are the same price.
+ *
+ * Only ever reached once the search ring is wide. Inside 100 ly every row is
+ * near, so price-first ranking was fine. Reaching 1,000 ly to find the deep
+ * space hubs put Cleaver City (4,142 cr, 464 ly) one place above a carrier at
+ * 4,179 cr and 107 ly — a 0.9% saving bought with 357 extra light-years each
+ * way. Treating that spread as a tie lets freshness and distance decide it,
+ * which is what a commander would do with the same two numbers.
+ */
+const PRICE_TIE = 0.03;
+
 export function rankMarketRows<T extends MarketLookupRow>(
   rows: readonly T[],
   side: 'buy' | 'sell',
@@ -500,16 +526,55 @@ export function rankMarketRows<T extends MarketLookupRow>(
   // while a few extra light-years costs minutes. Bucketed rather than sorted
   // by exact age so a one-day difference does not shuffle the list.
   const stale = (r: T): number => ((reportAgeDays(r.updatedAt, nowMs) ?? STALE_DAYS) > STALE_DAYS ? 1 : 0);
-  return [...rows].sort((a, b) => {
-    const ca = covers(a);
-    if (ca !== covers(b)) return ca - covers(b);
-    // Nobody in this list can fill the order on their own, so the trip is
-    // several stops whatever happens and the useful first one is the biggest
-    // holding, not the closest. Leading with a carrier holding 7% of the need
-    // because it is 6 ly nearer optimises the wrong thing.
-    if (shopping && ca === 1) return qty(b) - qty(a) || byPrice(a, b) || far(a) - far(b);
-    return byPrice(a, b) || stale(a) - stale(b) || far(a) - far(b) || qty(b) - qty(a);
-  });
+  /** The order inside one price band: freshest, then nearest, then biggest. */
+  const within = (a: T, b: T): number =>
+    stale(a) - stale(b) || far(a) - far(b) || qty(b) - qty(a);
+
+  // Nobody can fill the order on their own, so the trip is several stops
+  // whatever happens and the useful first one is the biggest holding, not the
+  // closest. Leading with a carrier holding 7% of the need because it is 6 ly
+  // nearer optimises the wrong thing. Ranked whole, before any banding.
+  const short = (list: readonly T[]): T[] =>
+    [...list].sort((a, b) => qty(b) - qty(a) || byPrice(a, b) || far(a) - far(b));
+
+  /**
+   * Band by price, then order inside each band.
+   *
+   * Grouped by walking the price-sorted list rather than by a pairwise
+   * "within 3%" test, which is not transitive and would make the comparator
+   * itself ill-defined. Each band keeps the price it was opened with as its
+   * anchor, so a long ramp of prices cannot chain into one enormous band.
+   */
+  const banded = (list: readonly T[]): T[] => {
+    const sorted = [...list].sort(byPrice);
+    const out: T[] = [];
+    let band: T[] = [];
+    let anchor: number | null = null;
+    const flush = (): void => {
+      band.sort(within);
+      out.push(...band);
+      band = [];
+    };
+    for (const r of sorted) {
+      const p = price(r);
+      // An unknown price is not near anything — it sorts last on its own.
+      const near =
+        anchor != null && Number.isFinite(p) && Number.isFinite(anchor) &&
+        Math.abs(p - anchor) <= Math.abs(anchor) * PRICE_TIE;
+      if (!near) {
+        if (band.length) flush();
+        anchor = Number.isFinite(p) ? p : null;
+      }
+      band.push(r);
+    }
+    if (band.length) flush();
+    return out;
+  };
+
+  if (!shopping) return banded(rows);
+  // Sellers who can fill the whole order lead, and are banded among themselves;
+  // the ones who cannot follow in their own order.
+  return [...banded(rows.filter((r) => covers(r) === 0)), ...short(rows.filter((r) => covers(r) === 1))];
 }
 
 /**
@@ -535,15 +600,36 @@ async function findMarketInGalaxy(
   // and searching outward from wherever we happen to be standing answers a
   // different one.
   const around = nearSystem || ctx.system;
+  // The ring the commander configured, then — only if that finds nothing — the
+  // widest one there is. Inside the bubble the first pass always answers and
+  // the second never runs; in deep space the first pass is always empty and
+  // the second is the whole feature.
+  const ring = Math.max(10, Math.round(ctx.marketRadiusLy ?? 100));
   let rows;
+  let usedRing = ring;
   try {
-    rows = await ctx.galaxyMarket(commodity, side, around);
+    rows = await ctx.galaxyMarket(commodity, side, around, ring);
+    if (!rows.length && ring < MAX_MARKET_RADIUS_LY) {
+      usedRing = MAX_MARKET_RADIUS_LY;
+      rows = await ctx.galaxyMarket(commodity, side, around, MAX_MARKET_RADIUS_LY);
+    }
   } catch (e) {
     return `The market service did not answer (${String(e).slice(0, 80)}). Fall back on what we have visited.`;
   }
   if (!rows.length) {
-    return `No ${side === 'buy' ? 'sellers' : 'buyers'} of ${commodity} reported near ${around}.`;
+    // "No sellers reported near X" reads as "this commodity is unavailable",
+    // which is the wrong lesson entirely: out past the bubble it means nobody
+    // has ever reported a market within reach. Say which, and say what to do.
+    return (
+      `No ${side === 'buy' ? 'sellers' : 'buyers'} of ${commodity} reported within ` +
+      `${usedRing.toLocaleString('en-US')} ly of ${around} — that is the limit of the search, not of the galaxy. ` +
+      `Out in deep space this is normal: community data only covers places commanders have visited and reported. ` +
+      `Tell the commander the radius, and offer to look around a named hub or staging system instead.`
+    );
   }
+  // A wide search is a different answer from a near one, and the commander has
+  // to be told which they got — 464 ly is a very different trip from 40.
+  const widened = usedRing > ring;
   const nowMs = Date.now();
   const verb = side === 'buy' ? 'Buy' : 'Sell';
   const need = ctx.commodityNeed?.(commodity) ?? null;
@@ -631,6 +717,11 @@ async function findMarketInGalaxy(
   return (
     // "near X" was read as "in X" and reported back as "Luchtaine has it at
     // 2,565" when the seller was a carrier two systems over. Say it outright.
+    (widened
+      ? `Nothing within ${ring} ly of ${around}, so this search was widened to ${usedRing.toLocaleString(
+          'en-US',
+        )} ly — these are DEEP SPACE distances and the commander must be told how far, in light years, before they undock.\n`
+      : '') +
     `${verb} ${commodity} — nearest to ${around}, NOT necessarily IN ${around}; each line names ` +
     // "may be hours old" was wishful: the row that stranded a commander was
     // twelve DAYS old. Every line now states its own age; say it out loud.
