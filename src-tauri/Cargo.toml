@@ -34,7 +34,7 @@ tokio-native-tls = "0.3"
 # Windows-only; Linux uses tar + skips glances.
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 base64 = "0.22"
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 windows-registry = "0.6"
 windows-sys = { version = "0.59", features = [
     "Win32_System_SystemInformation",
